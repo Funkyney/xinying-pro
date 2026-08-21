@@ -1,0 +1,136 @@
+{
+  "name": "xinying-director",
+  "version": "0.5.0",
+  "private": true,
+  "description": "心影Pro Windows / macOS 桌面客户端",
+  "author": "Funkyney",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Funkyney/xinying-pro.git"
+  },
+  "main": "dist-electron/main/main.js",
+  "bin": {
+    "xinying": "dist-electron/cli/index.js"
+  },
+  "scripts": {
+    "dev": "concurrently -k -n renderer,electron -c cyan,magenta \"npm:dev:renderer\" \"npm:dev:electron\"",
+    "dev:renderer": "vite --host 127.0.0.1",
+    "dev:electron": "wait-on tcp:5173 && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron .",
+    "build:main": "tsc -p tsconfig.main.json",
+    "build:renderer": "vite build",
+    "build": "npm run build:main && npm run build:renderer",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.main.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "smoke:electron": "node scripts/smoke-electron.mjs",
+    "icons": "node scripts/render-icon.mjs && node scripts/render-native-icons.mjs",
+    "inspect:platform": "node scripts/inspect-platform.mjs",
+    "verify:cli": "node scripts/verify-cli-json.mjs",
+    "verify:portraits": "node scripts/verify-platform-portrait-sync.mjs",
+    "verify:platform-projects": "node scripts/verify-platform-projects.mjs",
+    "verify:projects-ui": "node scripts/capture-platform-projects-ui.mjs",
+    "cli": "node dist-electron/cli/index.js",
+    "pack:win": "npm run build && electron-builder --win nsis",
+    "pack:mac": "npm run build && electron-builder --mac dmg zip --universal",
+    "rebuild": "electron-builder install-app-deps",
+    "postinstall": "electron-builder install-app-deps"
+  },
+  "dependencies": {
+    "@dnd-kit/core": "^6.3.1",
+    "@dnd-kit/sortable": "^10.0.0",
+    "@dnd-kit/utilities": "^3.2.2",
+    "better-sqlite3": "^13.0.3",
+    "commander": "^14.0.2",
+    "electron-updater": "^6.8.9",
+    "lucide-react": "^0.544.0",
+    "playwright-core": "^1.62.1",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^24.10.0",
+    "@types/react": "^19.2.2",
+    "@types/react-dom": "^19.2.2",
+    "@vitejs/plugin-react": "^5.0.4",
+    "concurrently": "^9.2.1",
+    "cross-env": "^10.1.0",
+    "electron": "^43.4.1",
+    "electron-builder": "^26.0.12",
+    "jsdom": "^27.1.0",
+    "png2icons": "^2.0.1",
+    "typescript": "^5.9.3",
+    "vite": "^8.2.2",
+    "vitest": "^4.0.17",
+    "wait-on": "^9.0.1"
+  },
+  "build": {
+    "appId": "com.liambao.xinyingdirector",
+    "productName": "心影Pro",
+    "asar": true,
+    "asarUnpack": [
+      "node_modules/better-sqlite3/**/*"
+    ],
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "config/**/*",
+      "package.json"
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "Funkyney",
+        "repo": "xinying-pro",
+        "releaseType": "release"
+      }
+    ],
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "Xinying-Pro-${version}-win-${arch}.${ext}"
+    },
+    "mac": {
+      "category": "public.app-category.video",
+      "icon": "build/icon.icns",
+      "hardenedRuntime": true,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.inherit.plist",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "universal"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "universal"
+          ]
+        }
+      ],
+      "artifactName": "Xinying-Pro-${version}-mac-${arch}.${ext}"
+    },
+    "dmg": {
+      "title": "心影Pro ${version}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    }
+  }
+}

@@ -1,0 +1,116 @@
+name: Build and release 心影Pro
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: xinying-pro-release
+  cancel-in-progress: true
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.value }}
+    steps:
+      - uses: actions/checkout@v6
+      - id: version
+        shell: bash
+        run: |
+          BASE_VERSION=$(node -p "require('./package.json').version.split('.').slice(0,2).join('.')")
+          echo "value=${BASE_VERSION}.${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+
+  verify:
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+  windows:
+    needs: [prepare, verify]
+    runs-on: windows-latest
+    env:
+      RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - shell: pwsh
+        run: npm version $env:RELEASE_VERSION --no-git-tag-version
+      - run: npm run build
+      - run: npx electron-builder --win nsis --x64 --publish never
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-${{ needs.prepare.outputs.version }}
+          if-no-files-found: error
+          path: |
+            release/*.exe
+            release/*.exe.blockmap
+            release/latest.yml
+
+  macos:
+    needs: [prepare, verify]
+    runs-on: macos-15-intel
+    env:
+      RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+      CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+      CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm version "$RELEASE_VERSION" --no-git-tag-version
+      - run: npm run build
+      - run: npx electron-builder --mac dmg zip --universal --publish never
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ needs.prepare.outputs.version }}
+          if-no-files-found: error
+          path: |
+            release/*.dmg
+            release/*.zip
+            release/*.blockmap
+            release/latest-mac.yml
+
+  release:
+    needs: [prepare, windows, macos]
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - shell: bash
+        run: |
+          gh release create "v${RELEASE_VERSION}" artifacts/* \
+            --repo "${GITHUB_REPOSITORY}" \
+            --target "${GITHUB_SHA}" \
+            --title "心影Pro ${RELEASE_VERSION}" \
+            --generate-notes
+

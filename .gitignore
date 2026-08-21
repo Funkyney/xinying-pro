@@ -1,0 +1,14 @@
+node_modules/
+dist/
+dist-electron/
+release/
+release*/
+.codex-*/
+playwright-report/
+test-results/
+.xinying-data/
+.DS_Store
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.log

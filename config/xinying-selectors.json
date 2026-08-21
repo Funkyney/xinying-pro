@@ -1,0 +1,107 @@
+{
+  "version": 4,
+  "updatedAt": "2026-08-21",
+  "baseUrl": "https://blueaivideo.com/",
+  "loginUrl": "https://blueaivideo.com/login?from=%252Fhome",
+  "authenticatedUrlPatterns": ["/home", "/avpAgent", "/aiCharacter"],
+  "humanCheckpointTexts": [
+    "验证码",
+    "请使用飞书扫码",
+    "重新登录",
+    "实名认证",
+    "支付确认",
+    "确认支付",
+    "余额不足",
+    "安全验证"
+  ],
+  "projects": {
+    "homePath": "/home",
+    "selectorTrigger": [".selector-trigger"],
+    "selectorPanel": [".THeaderPopper.-selector", ".THeaderPopper:has-text('切换项目')"],
+    "workspaceItems": [".selector-team-item"],
+    "projectItems": [".selector-project-item", "[class*='project-item']", "[class*='projectItem']"],
+    "newProjectButtons": [".newProjectBtn", ".btn-new-text"],
+    "newProjectDialog": [".PDialog:has-text('新建项目')", ".el-dialog:has-text('项目名称')"],
+    "projectNameInputs": ["input[placeholder='请输入项目名称']"],
+    "customerInputs": ["input[placeholder='请选择所属客户']"],
+    "creationTypeInputs": ["input[placeholder='请选择视频创作类型，以提高剪辑效率']"]
+  },
+  "generation": {
+    "composer": [
+      ".ContentChatInput"
+    ],
+    "prompt": [
+      ".ContentChatInput .mention-editor[contenteditable='true']",
+      "[contenteditable='true'][data-placeholder*='上传视频/音频']",
+      "textarea[placeholder*='描述']",
+      "textarea[placeholder*='提示词']"
+    ],
+    "imageInput": [
+      "input[type='file'][accept*='.jpeg'][accept*='.png']",
+      "input[type='file'][accept*='image']"
+    ],
+    "materialList": [
+      ".ContentChatInput .material-list"
+    ],
+    "modelToggle": [
+      ".ContentChatInput .ContentChatOptionItem._model"
+    ],
+    "modelDialog": [
+      ".ContentChatOptionItemDialog",
+      ".el-dialog:has-text('选择模型')"
+    ],
+    "parameterToggle": [
+      ".ContentChatInput .ContentChatOptionItem._popover"
+    ],
+    "parameterPopover": [
+      ".ContentChatOptionItemPopover"
+    ],
+    "audioToggle": [
+      ".ContentChatInput .ContentChatOptionItem._toggle:has-text('有声')",
+      ".ContentChatInput .ContentChatOptionItem._toggle:has-text('无声')"
+    ],
+    "portraitEntry": [
+      ".ContentChatInput .material-list .ContentChatUploadItem:has-text('+V角色') .characterWrapper"
+    ],
+    "portraitDialog": [
+      ".Dialog4StudioSetting:has-text('心影认证角色库')"
+    ],
+    "portraitCards": [
+      ".faceCard"
+    ],
+    "portraitCheckbox": [
+      ".p-checkbox-black"
+    ],
+    "submitButtons": [
+      ".ContentChatInput .btn-send:not(.disabled)",
+      "button:has-text('生成')",
+      "button:has-text('开始创作')"
+    ],
+    "userMessages": [
+      ".ContentChatListItem.userChat"
+    ],
+    "agentMessages": [
+      ".ContentChatListItem.agentChat"
+    ],
+    "videoResults": [
+      ".ContentChatListItem.agentChat .content-item._video"
+    ],
+    "downloadButtons": [
+      ".icon-xiazai",
+      "button:has-text('下载')"
+    ],
+    "taskIdAttributes": ["data-task-id", "data-id"]
+  },
+  "portrait": {
+    "pagePath": "/aiCharacter",
+    "entryTexts": ["心影角色库", "虚拟人像"],
+    "createTexts": ["新建虚拟形象"],
+    "localUploadTexts": ["本地上传"],
+    "dialog": [".createCharacter", ".el-dialog:has-text('新建虚拟人像')"],
+    "uploadInput": [
+      ".createCharacter input[type='file'][accept*='.mp4']",
+      ".createCharacter input[type='file']"
+    ],
+    "submitButtons": [".createCharacter button:has-text('确定')"]
+  }
+}
