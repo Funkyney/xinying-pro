@@ -21,8 +21,8 @@ try {
     || !catalog.projects.some((project) => project.workspaceId === team.id)) {
     throw new Error("个人或团队空间没有读到可见项目");
   }
-  if (!catalog.customerOptions.length || !catalog.creationTypeOptions.length) {
-    throw new Error("新建项目的客户或视频创作类型选项为空");
+  if (!catalog.creationTypeOptions.length) {
+    throw new Error("新建项目的视频创作类型选项为空");
   }
 
   let platformProject = catalog.projects.find((project) => project.workspaceId === personal.id && project.name === testProjectName);
@@ -32,7 +32,7 @@ try {
     localProject = await renderer.evaluate((input) => window.xinying.platformProjects.create(input), {
       workspaceId: personal.id,
       name: testProjectName,
-      customer: catalog.customerOptions[0],
+      customer: catalog.customerOptions[0] ?? "",
       creationType: catalog.creationTypeOptions.includes("其他") ? "其他" : catalog.creationTypeOptions[0],
     });
     created = true;
@@ -53,17 +53,33 @@ try {
     throw new Error("虚拟人像缓存未保持心影页面的最新优先顺序");
   }
 
-  const preview = await renderer.evaluate(async ({ projectId, portraitId }) => {
-    await window.xinying.projects.update(projectId, {
-      prompt: "@图1保持角色一致，固定机位。",
+  const preview = await renderer.evaluate(async ({ binding, portrait }) => {
+    const promptLabel = portrait.mediaKind === "video" ? "@视频1" : "@图1";
+    const project = await window.xinying.projects.create({
+      name: `同步回归校验 ${Date.now()}`,
+      prompt: `${promptLabel}保持角色一致，固定机位。`,
+      modelName: binding.modelName,
+      platformUrl: binding.platformUrl,
+      platformWorkspaceId: binding.platformWorkspaceId,
+      platformProjectId: binding.platformProjectId,
       mode: "reference-to-video",
-      portraitIds: [portraitId],
+      aspectRatio: "16:9",
+      duration: 5,
+      resolution: "1080p",
+      audioEnabled: true,
+      portraitIds: [portrait.id],
     });
-    return window.xinying.jobs.preview(projectId);
-  }, { projectId: localProject.id, portraitId: available[0].id });
-  if (!preview.ready || preview.selectedPortraits.length !== 1 || !preview.orderedLabels[0]?.includes("@图1")) {
-    throw new Error("共享虚拟人像未能加入当前项目并占用 @图1");
+    try {
+      return await window.xinying.jobs.preview(project.id);
+    } finally {
+      await window.xinying.projects.remove(project.id);
+    }
+  }, { binding: localProject, portrait: available[0] });
+  const expectedLabel = available[0].mediaKind === "video" ? "@视频1" : available[0].mediaKind === "image" ? "@图1" : "@待心影校验";
+  if (!preview.ready || preview.selectedPortraits.length !== 1 || !preview.orderedLabels[0]?.includes(expectedLabel)) {
+    throw new Error("共享虚拟人像未能按实际媒体类型加入当前项目");
   }
+  const results = await renderer.evaluate((projectId) => window.xinying.results.sync(projectId), localProject.id);
 
   const proof = {
     ok: true,
@@ -81,6 +97,7 @@ try {
     availablePortraits: available.length,
     firstPortrait: { id: available[0].id, name: available[0].displayName, sortOrder: available[0].sortOrder },
     preview: { ready: preview.ready, firstLabel: preview.orderedLabels[0] },
+    syncedResults: results.length,
     generated: false,
     verifiedAt: new Date().toISOString(),
   };

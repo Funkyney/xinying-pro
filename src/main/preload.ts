@@ -45,10 +45,12 @@ const IPC = {
   resultsBatchDownload: "results:batch-download",
   sessionStatus: "session:status",
   sessionOpenLogin: "session:open-login",
+  sessionLoginCompleted: "session:login-completed",
   sessionOpenUrl: "session:open-url",
   sessionShowPlatform: "session:show-platform",
   sessionReload: "session:reload",
   platformVisible: "platform-view:visible",
+  platformVisibleState: "platform-view:visible-state",
   platformBounds: "platform-view:bounds",
   updateState: "update:state",
   updateCheck: "update:check",
@@ -112,12 +114,18 @@ const api: XinyingApi = {
   session: {
     status: () => ipcRenderer.invoke(IPC.sessionStatus),
     openLogin: () => ipcRenderer.invoke(IPC.sessionOpenLogin),
+    onLoginCompleted: (listener) => {
+      const handler = () => listener();
+      ipcRenderer.on(IPC.sessionLoginCompleted, handler);
+      return () => ipcRenderer.removeListener(IPC.sessionLoginCompleted, handler);
+    },
     openUrl: (url: string) => ipcRenderer.invoke(IPC.sessionOpenUrl, url),
     showPlatform: () => ipcRenderer.invoke(IPC.sessionShowPlatform),
     reloadPlatform: () => ipcRenderer.invoke(IPC.sessionReload),
   },
   platformView: {
     setVisible: (visible: boolean) => ipcRenderer.invoke(IPC.platformVisible, visible),
+    isVisible: () => ipcRenderer.invoke(IPC.platformVisibleState),
     setBounds: (bounds: PlatformViewBounds) => ipcRenderer.invoke(IPC.platformBounds, bounds),
   },
   updates: {

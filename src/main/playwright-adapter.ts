@@ -20,6 +20,7 @@ import type {
 import type { AppPaths } from "../core/paths";
 import { AppError } from "../core/errors";
 import type { SelectorPack } from "./selector-pack";
+import { classifyPlatformNavigation, platformHomeUrl, sessionNavigationPriority } from "./platform-navigation";
 import { parseMaterialKey, portraitMaterialKey, referenceMaterialKey } from "../shared/material-order";
 import { assignMediaLabels, findAddedMediaLabel, mediaKindFromMime, portraitMediaKindFromPreviewUrl } from "../shared/media";
 
@@ -43,8 +44,8 @@ interface MatchedChatResponse {
 
 async function firstVisible(page: Page, selectors: string[]): Promise<Locator | null> {
   for (const selector of selectors) {
-    const locator = page.locator(selector).first();
-    if ((await locator.count()) > 0 && (await locator.isVisible().catch(() => false))) return locator;
+    const locator = page.locator(selector).filter({ visible: true }).first();
+    if ((await locator.count()) > 0) return locator;
   }
   return null;
 }
@@ -59,7 +60,7 @@ async function firstExisting(page: Page, selectors: string[]): Promise<Locator |
 
 async function firstCollection(page: Page, selectors: string[]): Promise<Locator | null> {
   for (const selector of selectors) {
-    const locator = page.locator(selector);
+    const locator = page.locator(selector).filter({ visible: true });
     if ((await locator.count()) > 0) return locator;
   }
   return null;
@@ -75,7 +76,7 @@ async function firstVisibleWithin(scope: Locator, selectors: string[]): Promise<
 
 async function firstCollectionWithin(scope: Locator, selectors: string[]): Promise<Locator | null> {
   for (const selector of selectors) {
-    const locator = scope.locator(selector);
+    const locator = scope.locator(selector).filter({ visible: true });
     if ((await locator.count()) > 0) return locator;
   }
   return null;
@@ -247,30 +248,27 @@ export class PlaywrightXinyingAdapter {
     try {
       const browser = await this.connect();
       const pages = browser.contexts().flatMap((context) => context.pages());
-      const candidates = [...pages].reverse().filter((candidate) => {
+      const candidates = [...pages].reverse().map((candidate) => ({
+        page: candidate,
+        kind: classifyPlatformNavigation(candidate.url(), this.selectors.authenticatedUrlPatterns),
+      })).filter(({ page }) => {
         try {
-          const host = new URL(candidate.url()).hostname;
+          const host = new URL(page.url()).hostname;
           return hostMatches(host, "blueaivideo.com") || hostMatches(host, "feishu.cn") || hostMatches(host, "larksuite.com");
         } catch {
           return false;
         }
       });
-      const page = candidates.find((candidate) => {
-        try {
-          return hostMatches(new URL(candidate.url()).hostname, "blueaivideo.com");
-        } catch {
-          return false;
-        }
-      }) ?? candidates[0];
-      if (!page) throw new AppError("PLATFORM_PAGE_NOT_FOUND", "尚未打开心影或飞书登录页面");
+      candidates.sort((left, right) => sessionNavigationPriority(right.kind) - sessionNavigationPriority(left.kind));
+      const selected = candidates[0];
+      if (!selected) throw new AppError("PLATFORM_PAGE_NOT_FOUND", "尚未打开心影或飞书登录页面");
+      const { page, kind } = selected;
       const url = page.url();
-      const host = new URL(url).hostname;
-      if (hostMatches(host, "feishu.cn") || hostMatches(host, "larksuite.com")) {
+      if (kind === "auth-provider") {
         return { status: "needs-human", url, reason: "请使用飞书/豆包移动端扫码并在手机上确认登录", checkedAt };
       }
-      if (url.includes("/login")) return { status: "logged-out", url, checkedAt };
-      const authenticated = this.selectors.authenticatedUrlPatterns.some((pattern) => url.includes(pattern));
-      if (authenticated) {
+      if (kind === "login") return { status: "logged-out", url, checkedAt };
+      if (kind === "authenticated") {
         const greeting = page.getByText(/^Hi[，,]/).filter({ visible: true }).first();
         const accountLabel = (await greeting.count()) ? (await greeting.innerText()).trim() : undefined;
         return { status: "logged-in", url, ...(accountLabel ? { accountLabel } : {}), checkedAt };
@@ -286,6 +284,16 @@ export class PlaywrightXinyingAdapter {
     }
   }
 
+  private requireAuthenticatedPage(page: Page): void {
+    const kind = classifyPlatformNavigation(page.url(), this.selectors.authenticatedUrlPatterns);
+    if (kind === "login" || kind === "auth-provider") {
+      throw new AppError("PLATFORM_LOGIN_REQUIRED", "心影登录已失效，请先完成飞书扫码登录");
+    }
+    if (kind !== "authenticated") {
+      throw new AppError("PLATFORM_PAGE_NOT_READY", "心影页面尚未进入工作台，请先完成登录");
+    }
+  }
+
   private async ensureHomePage(page: Page): Promise<Page> {
     let current: URL;
     try {
@@ -293,14 +301,14 @@ export class PlaywrightXinyingAdapter {
     } catch {
       throw new AppError("PLATFORM_PAGE_NOT_FOUND", "当前心影页面地址无效");
     }
-    const projectId = current.searchParams.get("projectId");
-    if (!projectId) throw new AppError("PLATFORM_PROJECT_REQUIRED", "请先在心影中选择任一项目");
+    this.requireAuthenticatedPage(page);
     if (current.pathname !== this.selectors.projects.homePath) {
-      await page.goto(`${this.selectors.baseUrl.replace(/\/$/, "")}${this.selectors.projects.homePath}?projectId=${encodeURIComponent(projectId)}`, {
+      await page.goto(platformHomeUrl(current.toString(), this.selectors.baseUrl, this.selectors.projects.homePath), {
         waitUntil: "domcontentloaded",
         timeout: 30_000,
       });
     }
+    this.requireAuthenticatedPage(page);
     const trigger = await this.waitForVisible(page, this.selectors.projects.selectorTrigger, 20_000);
     if (!trigger) throw new AppError("PROJECT_SELECTOR_NOT_FOUND", "心影空间与项目选择器未加载");
     return page;
@@ -320,7 +328,10 @@ export class PlaywrightXinyingAdapter {
   private async showWorkspaceLayer(page: Page, panel: Locator): Promise<Locator> {
     if ((await panel.getByText("项目列表", { exact: true }).filter({ visible: true }).count()) > 0) {
       const back = panel.getByText("返回", { exact: true }).filter({ visible: true }).first();
-      if ((await back.count()) > 0) await clickDom(back);
+      if ((await back.count()) > 0) {
+        await clickDom(back);
+        await page.waitForTimeout(500);
+      }
     }
     const workspaces = await waitForCollectionWithin(panel, this.selectors.projects.workspaceItems, 8_000);
     if (!workspaces) throw new AppError("WORKSPACE_LIST_NOT_FOUND", "心影没有显示个人或团队空间列表");
@@ -351,26 +362,28 @@ export class PlaywrightXinyingAdapter {
   }
 
   private async chooseWorkspace(page: Page, panel: Locator, workspace: PlatformWorkspace): Promise<void> {
-    const items = await this.showWorkspaceLayer(page, panel);
-    const candidates = items.filter({ hasText: workspace.name });
-    let target: Locator | null = null;
-    for (let index = 0; index < await candidates.count(); index += 1) {
-      const candidate = candidates.nth(index);
-      const text = (await candidate.innerText().catch(() => "")).replace(/\s+/g, " ").trim();
-      if (workspace.kind === "personal" ? text.includes("个人空间") : text === workspace.name) {
-        target = candidate;
-        break;
+    let currentPanel = panel;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      currentPanel = await this.openProjectSelector(page);
+      const items = await this.showWorkspaceLayer(page, currentPanel);
+      const clicked = await items.evaluateAll((elements, target) => {
+        const match = elements.find((element) => {
+          const text = ((element as HTMLElement).innerText ?? "").replace(/\s+/g, " ").trim();
+          return target.kind === "personal" ? text.includes("个人空间") : text === target.name;
+        });
+        if (!(match instanceof HTMLElement)) return false;
+        match.click();
+        return true;
+      }, { name: workspace.name, kind: workspace.kind }).catch(() => false);
+      if (!clicked) throw new AppError("WORKSPACE_NOT_FOUND", `找不到心影空间：${workspace.name}`);
+      const deadline = Date.now() + 4_000;
+      while (Date.now() < deadline) {
+        const heading = currentPanel.locator(".selector-back .elp1").filter({ visible: true }).first();
+        const headingText = (await heading.innerText().catch(() => "")).replace(/\s+/g, " ").trim();
+        const hasProjectLayer = (await currentPanel.getByText("项目列表", { exact: true }).filter({ visible: true }).count()) > 0;
+        if (hasProjectLayer && headingText === workspace.name) return;
+        await page.waitForTimeout(150);
       }
-    }
-    if (!target) throw new AppError("WORKSPACE_NOT_FOUND", `找不到心影空间：${workspace.name}`);
-    await clickDom(target);
-    const deadline = Date.now() + 12_000;
-    while (Date.now() < deadline) {
-      const opened = await panel.evaluate((element, expectedWorkspace) =>
-        ((element as HTMLElement).innerText ?? "").replace(/\s+/g, "").includes(`${expectedWorkspace}项目列表`),
-      workspace.name).catch(() => false);
-      if (opened) return;
-      await page.waitForTimeout(150);
     }
     throw new AppError("PROJECT_LIST_NOT_FOUND", `未能打开“${workspace.name}”的项目列表`);
   }
@@ -382,8 +395,10 @@ export class PlaywrightXinyingAdapter {
     currentName: string,
     currentRemoteId: string,
   ): Promise<PlatformProject[]> {
-    const projectCards = await waitForCollectionWithin(panel, this.selectors.projects.projectItems, 8_000);
-    const rows = await (projectCards ?? panel.locator("div")).evaluateAll((elements) => {
+    const primarySelector = this.selectors.projects.projectItems[0] ?? ".selector-project-item";
+    const projectCards = panel.locator(primarySelector).filter({ visible: true });
+    await projectCards.first().waitFor({ state: "visible", timeout: 3_000 }).catch(() => undefined);
+    const rows = await ((await projectCards.count()) > 0 ? projectCards : panel.locator("div").filter({ visible: true })).evaluateAll((elements) => {
       const records: Array<{ name: string; shortId: string; active: boolean; top: number }> = [];
       for (const element of elements) {
         const text = (element as HTMLElement).innerText?.trim() ?? "";
@@ -424,19 +439,23 @@ export class PlaywrightXinyingAdapter {
   }
 
   private async chooseProject(page: Page, panel: Locator, project: PlatformProject): Promise<string> {
-    const names = panel.getByText(project.name, { exact: true }).filter({ visible: true });
-    let target: Locator | null = null;
-    for (let index = 0; index < await names.count(); index += 1) {
-      const candidate = names.nth(index);
-      const card = candidate.locator("xpath=ancestor::div[contains(normalize-space(.), 'ID：') or contains(normalize-space(.), 'ID:')][1]");
-      const cardText = (await card.innerText().catch(() => "")).replace(/\s+/g, " ");
-      if (!project.shortId || cardText.includes(project.shortId)) {
-        target = candidate;
-        break;
-      }
-    }
-    if (!target) throw new AppError("PLATFORM_PROJECT_NOT_FOUND", `找不到心影项目：${project.name}`);
-    await clickDom(target);
+    const primarySelector = this.selectors.projects.projectItems[0] ?? ".selector-project-item";
+    const cards = panel.locator(primarySelector).filter({ visible: true });
+    const loaded = await cards.first().waitFor({ state: "visible", timeout: 8_000 }).then(() => true).catch(() => false);
+    if (!loaded) throw new AppError("PLATFORM_PROJECT_NOT_FOUND", `找不到心影项目：${project.name}`);
+    const clicked = await cards.evaluateAll((elements, target) => {
+      const match = elements.find((element) => {
+        const name = element.querySelector(".project-item-name")?.textContent?.trim()
+          ?? (element as HTMLElement).innerText.split(/\r?\n/)[0]?.trim()
+          ?? "";
+        const text = ((element as HTMLElement).innerText ?? "").replace(/\s+/g, " ");
+        return name === target.name && (!target.shortId || text.includes(target.shortId));
+      });
+      if (!(match instanceof HTMLElement)) return false;
+      match.click();
+      return true;
+    }, { name: project.name, shortId: project.shortId }).catch(() => false);
+    if (!clicked) throw new AppError("PLATFORM_PROJECT_NOT_FOUND", `找不到心影项目：${project.name}`);
     const deadline = Date.now() + 12_000;
     while (Date.now() < deadline) {
       const remoteId = new URL(page.url()).searchParams.get("projectId") ?? "";
@@ -477,18 +496,19 @@ export class PlaywrightXinyingAdapter {
         await existingDialog.waitFor({ state: "hidden", timeout: 8_000 }).catch(() => undefined);
       }
     }
+    await page.keyboard.press("Escape").catch(() => undefined);
+    await page.waitForTimeout(150);
     const button = await firstVisible(page, this.selectors.projects.newProjectButtons);
     if (!button) return { customerOptions: [], creationTypeOptions: [] };
-    await page.keyboard.press("Escape").catch(() => undefined);
     await clickDom(button);
     const dialog = await this.waitForVisible(page, this.selectors.projects.newProjectDialog, 8_000);
     if (!dialog) return { customerOptions: [], creationTypeOptions: [] };
     const read = async (input: Locator | null, chooseFirst: boolean): Promise<string[]> => {
       if (!input) return [];
       await clickDom(input);
-      await page.waitForTimeout(150);
       const control = await input.getAttribute("aria-controls");
       const options = control ? page.locator(`[id="${control}"] [role="option"]`).filter({ visible: true }) : page.getByRole("option").filter({ visible: true });
+      await options.first().waitFor({ state: "visible", timeout: 3_000 }).catch(() => undefined);
       const values = (await options.allTextContents()).map((item) => item.trim()).filter(Boolean);
       if (chooseFirst && values.length && !(await input.inputValue()).trim()) await clickDom(options.first());
       else await page.keyboard.press("Escape");
@@ -655,6 +675,7 @@ export class PlaywrightXinyingAdapter {
     if (safeGenerationUrl(page.url())?.toString() !== target.toString()) {
       await page.goto(target.toString(), { waitUntil: "domcontentloaded", timeout: 30_000 });
     }
+    this.requireAuthenticatedPage(page);
     const composer = await this.waitForVisible(page, this.selectors.generation.composer, 20_000);
     if (!composer) throw new AppError("GENERATION_PAGE_NOT_READY", "心影内容生成页未完成加载");
     const modelToggle = await firstVisible(page, this.selectors.generation.modelToggle);
@@ -814,6 +835,7 @@ export class PlaywrightXinyingAdapter {
     if (safeGenerationUrl(page.url())?.toString() !== target.toString()) {
       await page.goto(target.toString(), { waitUntil: "domcontentloaded", timeout: 30_000 });
     }
+    this.requireAuthenticatedPage(page);
     const composer = await this.waitForVisible(page, this.selectors.generation.composer, 20_000);
     if (!composer) throw new AppError("GENERATION_PAGE_NOT_READY", "心影内容生成页未完成加载");
     const modelToggle = await firstVisible(page, this.selectors.generation.modelToggle);
@@ -1646,6 +1668,7 @@ export class PlaywrightXinyingAdapter {
     if (safeGenerationUrl(page.url())?.searchParams.get("projectId") !== target.searchParams.get("projectId")) {
       await page.goto(target.toString(), { waitUntil: "domcontentloaded", timeout: 30_000 });
     }
+    this.requireAuthenticatedPage(page);
     const composer = await this.waitForVisible(page, this.selectors.generation.composer, 20_000);
     if (!composer) throw new AppError("GENERATION_PAGE_NOT_READY", "心影当前项目结果页未完成加载");
     await page.keyboard.press("Escape").catch(() => undefined);

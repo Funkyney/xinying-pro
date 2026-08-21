@@ -335,12 +335,14 @@ export interface XinyingApi {
   session: {
     status(): Promise<SessionState>;
     openLogin(): Promise<void>;
+    onLoginCompleted(listener: () => void): () => void;
     openUrl(url: string): Promise<void>;
     showPlatform(): Promise<void>;
     reloadPlatform(): Promise<void>;
   };
   platformView: {
     setVisible(visible: boolean): Promise<void>;
+    isVisible(): Promise<boolean>;
     setBounds(bounds: PlatformViewBounds): Promise<void>;
   };
   updates: {

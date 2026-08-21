@@ -156,7 +156,7 @@ export function registerIpcHandlers(
     if (result.canceled || !result.filePath) return job;
     if (!job.outputPath) {
       try {
-        const captured = await adapter.downloadVisibleResult(job);
+        const captured = await platform.withAutomationViewport(() => adapter.downloadVisibleResult(job));
         service.updateJob(id, { outputPath: captured });
       } catch (error) {
         if (!job.outputUrl) throw error;
@@ -212,6 +212,13 @@ export function registerIpcHandlers(
   handle(IPC.sessionOpenUrl, (_event, url: string) => platform.openUrl(url));
   handle(IPC.sessionShowPlatform, () => platform.openPlatform());
   handle(IPC.sessionReload, () => platform.reload());
-  handle(IPC.platformVisible, (_event, visible: boolean) => (visible ? platform.show() : platform.hide()));
+  handle(IPC.platformVisible, (_event, visible: boolean) => {
+    if (visible) platform.show();
+    else {
+      platform.cancelLogin();
+      platform.hide();
+    }
+  });
+  handle(IPC.platformVisibleState, () => platform.isVisible());
   handle(IPC.platformBounds, (_event, bounds: PlatformViewBounds) => platform.setBounds(bounds));
 }

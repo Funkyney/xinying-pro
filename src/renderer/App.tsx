@@ -163,6 +163,12 @@ export function App() {
     return window.xinying.updates.onStateChange(setUpdateState);
   }, []);
 
+  useEffect(() => window.xinying.session.onLoginCompleted(() => {
+    setPage("dashboard");
+    setToast("飞书登录成功，已返回工作台");
+    void refresh();
+  }), [refresh]);
+
   const handleUpdate = async () => {
     if (updateState.status === "downloaded") {
       if (confirm("新版已经下载完成。现在重启心影Pro并安装更新？")) await window.xinying.updates.install();
@@ -208,7 +214,7 @@ export function App() {
         <div className={`session-card session-${session?.status ?? "unknown"}`}>
           <div className="session-dot" />
           <div><strong>{session?.status === "logged-in" ? "心影已连接" : session?.status === "needs-human" ? "等待扫码确认" : "心影未连接"}</strong><span>{session?.status === "logged-in" ? (session.accountLabel ?? "飞书会话有效") : session?.status === "needs-human" ? "请在手机飞书确认" : "请扫码登录"}</span></div>
-          {session?.status !== "logged-in" && <button onClick={() => run(() => window.xinying.session.openLogin())}><LogIn size={15} /></button>}
+          {session?.status !== "logged-in" && <button title="登录心影" aria-label="登录心影" onClick={() => { setPage("platform"); void run(() => window.xinying.session.openLogin()); }}><LogIn size={15} /></button>}
         </div>
         <div className="codex-card"><Bot size={18} /><div><strong>Codex Ready</strong><span>xinying CLI · JSON</span></div></div>
       </aside>

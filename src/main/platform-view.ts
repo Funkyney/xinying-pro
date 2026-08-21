@@ -1,8 +1,11 @@
 import fs from "node:fs";
 import path from "node:path";
-import { BrowserWindow, WebContentsView, app, session, shell } from "electron";
+import { BrowserWindow, WebContentsView, app, session, shell, type WebContents } from "electron";
 import type { PlatformViewBounds } from "../shared/contracts";
 import type { SelectorPack } from "./selector-pack";
+import { classifyPlatformNavigation } from "./platform-navigation";
+import { AsyncOperationQueue } from "./async-operation-queue";
+import { backgroundAutomationBounds } from "./platform-layout";
 
 const ALLOWED_HOSTS = [
   "blueaivideo.com",
@@ -35,6 +38,11 @@ export class PlatformViewManager {
   readonly view: WebContentsView;
   private visible = false;
   private automationDepth = 0;
+  private readonly automationQueue = new AsyncOperationQueue();
+  private loginFlowActive = false;
+  private loginChallengeObserved = false;
+  private completingLogin = false;
+  private readonly loginWindows = new Set<BrowserWindow>();
   private bounds: PlatformViewBounds = { x: 272, y: 84, width: 900, height: 650 };
   private pendingDownload: {
     outputDirectory: string;
@@ -47,6 +55,7 @@ export class PlatformViewManager {
   constructor(
     private readonly window: BrowserWindow,
     private readonly selectors: SelectorPack,
+    private readonly onLoginCompleted?: () => void,
   ) {
     this.view = new WebContentsView({
       webPreferences: {
@@ -60,6 +69,7 @@ export class PlatformViewManager {
     window.contentView.addChildView(this.view);
     this.view.setVisible(false);
     this.configureSecurity();
+    this.observeLoginNavigation(this.view.webContents);
     void this.view.webContents.loadURL(selectors.baseUrl);
   }
 
@@ -92,6 +102,8 @@ export class PlatformViewManager {
           overrideBrowserWindowOptions: {
             width: 1080,
             height: 760,
+            autoHideMenuBar: true,
+            title: "飞书登录 · 心影Pro",
             webPreferences: {
               partition: "persist:xinying-platform",
               contextIsolation: true,
@@ -105,14 +117,87 @@ export class PlatformViewManager {
       return { action: "deny" };
     });
 
+    this.view.webContents.on("did-create-window", (childWindow, details) => {
+      const kind = classifyPlatformNavigation(details.url, this.selectors.authenticatedUrlPatterns);
+      if (!this.loginFlowActive && kind !== "login" && kind !== "auth-provider") return;
+      this.loginWindows.add(childWindow);
+      childWindow.on("closed", () => this.loginWindows.delete(childWindow));
+      childWindow.webContents.setWindowOpenHandler(({ url }) => {
+        if (isSafeExternalUrl(url)) void shell.openExternal(url);
+        return { action: "deny" };
+      });
+      childWindow.webContents.on("will-navigate", (event, url) => {
+        if (isAllowedUrl(url)) return;
+        event.preventDefault();
+        if (isSafeExternalUrl(url)) void shell.openExternal(url);
+      });
+      this.observeLoginNavigation(childWindow.webContents);
+    });
+
     this.view.webContents.on("will-navigate", (event, url) => {
       if (!isAllowedUrl(url)) event.preventDefault();
     });
   }
 
+  private observeLoginNavigation(contents: WebContents): void {
+    const inspect = (url: string) => {
+      if (!this.loginFlowActive) return;
+      const kind = classifyPlatformNavigation(url, this.selectors.authenticatedUrlPatterns);
+      if (kind === "login" || kind === "auth-provider") this.loginChallengeObserved = true;
+      if (kind === "authenticated" && this.loginChallengeObserved) {
+        void this.completeLogin(contents);
+      }
+    };
+    contents.on("did-navigate", (_event, url) => inspect(url));
+    contents.on("did-redirect-navigation", (_event, url) => inspect(url));
+    contents.on("did-navigate-in-page", (_event, url) => inspect(url));
+    contents.on("did-finish-load", () => inspect(contents.getURL()));
+  }
+
+  private closeLoginWindows(): void {
+    for (const loginWindow of this.loginWindows) {
+      if (!loginWindow.isDestroyed()) loginWindow.close();
+    }
+    this.loginWindows.clear();
+  }
+
+  private async completeLogin(source: WebContents): Promise<void> {
+    if (!this.loginFlowActive || this.completingLogin) return;
+    this.loginFlowActive = false;
+    this.completingLogin = true;
+    this.hide();
+    try {
+      if (source !== this.view.webContents && !this.view.webContents.isDestroyed()) {
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        await this.view.webContents.loadURL(this.selectors.baseUrl);
+      }
+    } catch {
+      // The authenticated popup is already authoritative; a background home refresh can be retried later.
+    } finally {
+      this.closeLoginWindows();
+      if (!this.window.isDestroyed()) {
+        this.window.show();
+        this.window.focus();
+      }
+      this.onLoginCompleted?.();
+      this.completingLogin = false;
+    }
+  }
+
+  cancelLogin(): void {
+    this.loginFlowActive = false;
+    this.loginChallengeObserved = false;
+    this.completingLogin = false;
+    this.closeLoginWindows();
+  }
+
   show(): void {
     this.visible = true;
     this.syncVisibility();
+  }
+
+  isVisible(): boolean {
+    return this.visible;
   }
 
   hide(): void {
@@ -131,15 +216,17 @@ export class PlatformViewManager {
   }
 
   async withAutomationViewport<T>(operation: () => Promise<T>): Promise<T> {
-    this.automationDepth += 1;
-    this.syncVisibility();
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    try {
-      return await operation();
-    } finally {
-      this.automationDepth = Math.max(0, this.automationDepth - 1);
+    return this.automationQueue.run(async () => {
+      this.automationDepth += 1;
       this.syncVisibility();
-    }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      try {
+        return await operation();
+      } finally {
+        this.automationDepth = Math.max(0, this.automationDepth - 1);
+        this.syncVisibility();
+      }
+    });
   }
 
   private syncVisibility(): void {
@@ -149,7 +236,10 @@ export class PlatformViewManager {
       return;
     }
     if (this.automationDepth > 0) {
-      this.view.setBounds({ ...this.bounds, x: -this.bounds.width - 200 });
+      // Electron collapses a WebContentsView's page viewport to 0×0 when the
+      // native view is completely outside its parent. Keep one clipped pixel
+      // intersecting the window so responsive platform content still renders.
+      this.view.setBounds(backgroundAutomationBounds(this.bounds));
       this.view.setVisible(true);
       return;
     }
@@ -157,8 +247,16 @@ export class PlatformViewManager {
   }
 
   async openLogin(): Promise<void> {
-    await this.view.webContents.loadURL(this.selectors.loginUrl);
-    this.show();
+    this.cancelLogin();
+    this.loginFlowActive = true;
+    this.loginChallengeObserved = false;
+    try {
+      await this.view.webContents.loadURL(this.selectors.loginUrl);
+      if (this.loginFlowActive) this.show();
+    } catch (error) {
+      this.loginFlowActive = false;
+      throw error;
+    }
   }
 
   async openUrl(rawUrl: string): Promise<void> {
@@ -166,6 +264,7 @@ export class PlatformViewManager {
     if (url.hostname !== "blueaivideo.com" || url.pathname !== "/avpAgent" || !isAllowedUrl(url.toString())) {
       throw new Error("只能在兼容模式中打开心影 avpAgent 会话链接");
     }
+    this.cancelLogin();
     await this.view.webContents.loadURL(url.toString());
     this.show();
   }
@@ -205,6 +304,7 @@ export class PlatformViewManager {
   }
 
   destroy(): void {
+    this.cancelLogin();
     if (this.pendingDownload) {
       clearTimeout(this.pendingDownload.timer);
       this.pendingDownload.reject(new Error("心影页面已关闭，下载已取消"));

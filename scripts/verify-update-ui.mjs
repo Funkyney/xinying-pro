@@ -13,9 +13,18 @@ try {
 
   const state = await page.evaluate(() => window.xinying.updates.state());
   const buttonText = (await page.locator(".update-button").innerText()).trim();
-  const knownStatus = /(更新|开发版本)/.test(buttonText);
+  const knownStatuses = new Set([
+    "idle",
+    "checking",
+    "available",
+    "not-available",
+    "downloading",
+    "downloaded",
+    "error",
+    "unsupported",
+  ]);
 
-  if (!knownStatus || !/^\d+\.\d+\.\d+/.test(state.currentVersion)) {
+  if (!buttonText || !knownStatuses.has(state.status) || !/^\d+\.\d+\.\d+/.test(state.currentVersion)) {
     throw new Error(`更新控件状态不符合预期：${buttonText} / ${JSON.stringify(state)}`);
   }
 

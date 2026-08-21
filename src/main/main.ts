@@ -10,6 +10,7 @@ import { PlaywrightXinyingAdapter } from "./playwright-adapter";
 import { JobWorker } from "./job-worker";
 import { registerIpcHandlers } from "./ipc-handlers";
 import { registerAppUpdater } from "./app-updater";
+import { IPC } from "../shared/ipc";
 
 const CDP_PORT = Number(process.env.XINYING_CDP_PORT ?? 9333);
 app.commandLine.appendSwitch("remote-debugging-address", "127.0.0.1");
@@ -53,7 +54,9 @@ function createWindow(): void {
     },
   });
 
-  platformManager = new PlatformViewManager(mainWindow, selectors);
+  platformManager = new PlatformViewManager(mainWindow, selectors, () => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(IPC.sessionLoginCompleted);
+  });
   adapter = new PlaywrightXinyingAdapter(
     CDP_PORT,
     selectors,

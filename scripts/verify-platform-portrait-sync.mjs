@@ -15,10 +15,11 @@ try {
   const available = cached.filter((portrait) => portrait.available && (!portrait.workspaceId || portrait.workspaceId === boundProject.platformWorkspaceId));
   const unique = new Set(available.map((portrait) => portrait.id));
   if (!available.length || unique.size !== available.length) throw new Error("心影虚拟人像同步结果为空或存在重复 ID");
-  const verification = await renderer.evaluate(async ({ portraitId, binding }) => {
+  const verification = await renderer.evaluate(async ({ portrait, binding }) => {
+    const promptLabel = portrait.mediaKind === "video" ? "@视频1" : "@图1";
     const project = await window.xinying.projects.create({
       name: `0.3.0 角色与4K校验 ${Date.now()}`,
-      prompt: "@图1保持角色一致，固定机位。",
+      prompt: `${promptLabel}保持角色一致，固定机位。`,
       modelName: "Seedance 2.0 全能参考",
       platformUrl: binding.platformUrl,
       platformWorkspaceId: binding.platformWorkspaceId,
@@ -28,7 +29,7 @@ try {
       duration: 15,
       resolution: "4k",
       audioEnabled: true,
-      portraitIds: [portraitId],
+      portraitIds: [portrait.id],
     });
     try {
       const preview = await window.xinying.jobs.preview(project.id);
@@ -36,6 +37,7 @@ try {
         modelName: project.modelName,
         resolution: project.resolution,
         duration: project.duration,
+        mediaKind: portrait.mediaKind,
         portraitCount: preview.selectedPortraits.length,
         firstLabel: preview.orderedLabels[0],
         ready: preview.ready,
@@ -43,8 +45,9 @@ try {
     } finally {
       await window.xinying.projects.remove(project.id);
     }
-  }, { portraitId: available[0].id, binding: boundProject });
-  if (!verification.ready || verification.resolution !== "4k" || verification.portraitCount !== 1 || !verification.firstLabel?.includes("@图1")) {
+  }, { portrait: available[0], binding: boundProject });
+  const expectedLabel = verification.mediaKind === "video" ? "@视频1" : verification.mediaKind === "image" ? "@图1" : "@待心影校验";
+  if (!verification.ready || verification.resolution !== "4k" || verification.portraitCount !== 1 || !verification.firstLabel?.includes(expectedLabel)) {
     throw new Error("Seedance 2.0 4K 与心影虚拟人像项目快照校验失败");
   }
   process.stdout.write(`${JSON.stringify({
