@@ -154,7 +154,7 @@ export function ReferenceBoard(props: ReferenceBoardProps) {
         <div>
           <span className="eyebrow">FINAL REFERENCE ORDER</span>
           <h2>参考素材 · 最终编号顺序</h2>
-          <p>APP 保留任意混排；心影即使按媒体类型分组显示，也会逐项回读新增编号，确保提示词映射不变。</p>
+          <p>APP 保留任意混排；心影重排虚拟人像时，会按角色逐项回读并自动映射实际编号。</p>
         </div>
         <div className="heading-actions">
           <button className="button ghost" disabled={!props.assets.length} onClick={props.onBatchReplace}><RefreshCw size={16} />批量替换本地素材</button>

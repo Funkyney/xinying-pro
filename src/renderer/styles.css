@@ -125,11 +125,6 @@ p { color: var(--muted); line-height: 1.6; }
 .fine-print { margin: 12px 20px 0; font-size: 10px; }
 
 .reference-board { margin-bottom: 14px; padding-bottom: 20px; }
-.material-order-warning { display: flex; align-items: flex-start; gap: 10px; margin: -2px 0 14px; padding: 11px 13px; border: 1px solid rgba(255,189,102,.24); border-radius: 10px; color: #ffc77e; background: rgba(255,189,102,.055); }
-.material-order-warning > svg { flex: 0 0 auto; margin-top: 1px; }
-.material-order-warning > div { display: flex; flex-direction: column; gap: 3px; }
-.material-order-warning strong { font-size: 10px; }
-.material-order-warning span { color: #c6a77c; font-size: 9px; line-height: 1.5; }
 .reference-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(175px, 1fr)); gap: 12px; padding: 18px 20px 0; }
 .reference-card { position: relative; overflow: hidden; border: 1px solid var(--line); border-radius: 12px; background: #10131b; box-shadow: 0 10px 25px rgba(0,0,0,.15); }
 .reference-preview { position: relative; height: 118px; overflow: hidden; background: #07090e; }

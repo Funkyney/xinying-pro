@@ -42,6 +42,11 @@ interface MatchedChatResponse {
   userIndex: number;
 }
 
+interface UploadedMaterialSnapshot {
+  label: string;
+  previewText: string;
+}
+
 async function firstVisible(page: Page, selectors: string[]): Promise<Locator | null> {
   for (const selector of selectors) {
     const locator = page.locator(selector).filter({ visible: true }).first();
@@ -107,6 +112,21 @@ function stringParameter(job: Job, key: string): string {
 function explicitParameterValue(job: Job, key: string): string | null {
   const value = stringParameter(job, key);
   return !value || value.toLowerCase() === "auto" ? null : value;
+}
+
+function parseSelectedPortraitCount(text: string): number | null {
+  const match = text.match(/已选\s*(\d+)\s*项/);
+  if (!match) return null;
+  const count = Number(match[1]);
+  return Number.isInteger(count) ? count : null;
+}
+
+function remapPromptLabels(prompt: string, mapping: ReadonlyMap<string, string>): string {
+  return prompt.replace(/@(图|视频|音频)\d+/g, (label) => mapping.get(label) ?? label);
+}
+
+function normalizePromptLabels(prompt: string): string {
+  return prompt.replace(/@(图|视频|音频)\d+/g, "@$1#");
 }
 
 function platformPortraitsParameter(job: Job): PlatformPortrait[] {
@@ -1015,11 +1035,21 @@ export class PlaywrightXinyingAdapter {
   }
 
   private async uploadedMaterialLabels(page: Page): Promise<string[]> {
+    return (await this.uploadedMaterialSnapshots(page)).map((material) => material.label);
+  }
+
+  private async uploadedMaterialSnapshots(page: Page): Promise<UploadedMaterialSnapshot[]> {
     const list = await firstVisible(page, this.selectors.generation.materialList);
     if (!list) return [];
-    return list.locator(":scope > *").evaluateAll((elements) => elements
-      .map((element) => (element.textContent ?? "").trim())
-      .filter((text) => /^(?:图|视频|音频)\d+$/.test(text)));
+    return list.locator(":scope > *").evaluateAll((elements) => elements.flatMap((element) => {
+      const label = (element.textContent ?? "").trim();
+      if (!/^(?:图|视频|音频)\d+$/.test(label)) return [];
+      const previewParts = [element.getAttribute("style") ?? ""];
+      for (const child of Array.from(element.querySelectorAll("[style], [src], [poster]"))) {
+        previewParts.push(child.getAttribute("style") ?? "", child.getAttribute("src") ?? "", child.getAttribute("poster") ?? "");
+      }
+      return [{ label, previewText: previewParts.filter(Boolean).join("\n") }];
+    }));
   }
 
   private async clearUploadedMaterials(page: Page): Promise<void> {
@@ -1189,15 +1219,36 @@ export class PlaywrightXinyingAdapter {
       await matched.scrollIntoViewIfNeeded().catch(() => undefined);
       const checkbox = await firstVisibleWithin(matched, this.selectors.generation.portraitCheckbox);
       if (!checkbox) return { reason: "page-changed", message: `虚拟人像不可选择：${portrait.displayName}` };
-      await checkbox.click({ force: true });
-      await page.waitForTimeout(100);
+      const alreadySelected = (await checkbox.locator(".check-inner, .check-icon").count()) > 0;
+      if (!alreadySelected) {
+        await checkbox.click({ force: true });
+        const selectionDeadline = Date.now() + 3_000;
+        while (Date.now() < selectionDeadline && (await checkbox.locator(".check-inner, .check-icon").count()) === 0) {
+          await page.waitForTimeout(100);
+        }
+        if ((await checkbox.locator(".check-inner, .check-icon").count()) === 0) {
+          return { reason: "page-changed", message: `心影没有勾选虚拟人像：${portrait.displayName}` };
+        }
+      }
     }
 
-    const selectedText = dialog.getByText(new RegExp(`已选\\s*${portraits.length}\\s*项`)).filter({ visible: true }).first();
-    if ((await selectedText.count()) === 0) {
+    let selectedCount: number | null = null;
+    const selectedCountDeadline = Date.now() + 5_000;
+    while (Date.now() < selectedCountDeadline) {
+      const selectedText = dialog.getByText(/已选\s*\d+\s*项/).filter({ visible: true }).first();
+      selectedCount = (await selectedText.count()) > 0
+        ? parseSelectedPortraitCount(await selectedText.innerText().catch(() => ""))
+        : null;
+      if (selectedCount === portraits.length) break;
+      await page.waitForTimeout(150);
+    }
+    if (selectedCount !== portraits.length) {
       const cancel = dialog.getByText("取消", { exact: true }).filter({ visible: true }).first();
       if ((await cancel.count()) > 0) await clickDom(cancel).catch(() => undefined);
-      return { reason: "page-changed", message: "心影未确认全部虚拟人像选择" };
+      return {
+        reason: "page-changed",
+        message: `心影角色库显示已选 ${selectedCount ?? "未知"} 项，但 APP 需要 ${portraits.length} 项；已停止提交，请重新同步后再试`,
+      };
     }
     const confirm = dialog.getByText("确定", { exact: true }).filter({ visible: true }).first();
     if ((await confirm.count()) === 0 || !(await confirm.isEnabled())) return { reason: "page-changed", message: "心影虚拟人像确认按钮不可用" };
@@ -1256,6 +1307,7 @@ export class PlaywrightXinyingAdapter {
       throw new AppError("REFERENCE_FILE_MISSING", "至少一项参考素材文件已丢失");
     }
     const firstLastMode = stringParameter(job, "mode") === "first-last-frame";
+    let promptForPlatform = job.promptSnapshot;
     if (firstLastMode) {
       for (let index = 0; index < orderedReferences.length; index += 1) {
         const inputs = await firstCollection(page, this.selectors.generation.imageInput);
@@ -1272,33 +1324,55 @@ export class PlaywrightXinyingAdapter {
       }
     } else {
       let materialCount = 0;
-      const actualLabels: string[] = [];
-      for (const key of materialOrder) {
+      let portraitsAdded = false;
+      const actualLabelByKey = new Map<string, string>();
+      const orderedPortraits = materialOrder
+        .map(parseMaterialKey)
+        .filter((item): item is { kind: "portrait"; id: string } => item?.kind === "portrait")
+        .map((item) => portraitsById.get(item.id))
+        .filter((portrait): portrait is PlatformPortrait => Boolean(portrait));
+      if (orderedPortraits.length !== selectedPortraits.length) {
+        return { status: "needs-human", checkpoint: { reason: "page-changed", message: "任务快照中的虚拟人像顺序不完整，已安全停止" } };
+      }
+      for (let materialIndex = 0; materialIndex < materialOrder.length; materialIndex += 1) {
+        const key = materialOrder[materialIndex];
         const item = parseMaterialKey(key);
         if (item?.kind === "portrait") {
-          const portrait = portraitsById.get(item.id);
-          if (!portrait) return { status: "needs-human", checkpoint: { reason: "page-changed", message: `任务快照缺少心影虚拟人像：${item.id}` } };
-          const beforeLabels = await this.uploadedMaterialLabels(page);
-          const portraitCheckpoint = await this.selectPlatformPortraits(page, [portrait], materialCount + 1);
+          if (portraitsAdded) continue;
+          const portraitCheckpoint = await this.selectPlatformPortraits(page, orderedPortraits, materialCount + orderedPortraits.length);
           if (portraitCheckpoint) return { status: "needs-human", checkpoint: portraitCheckpoint };
-          materialCount += 1;
-          const labels = await this.uploadedMaterialLabels(page);
-          const actual = findAddedMediaLabel(beforeLabels, labels) ?? "";
-          if (!actual) {
-            await this.clearUploadedMaterials(page);
-            return { status: "needs-human", checkpoint: { reason: "page-changed", message: `心影加入虚拟人像“${portrait.displayName}”后没有产生可识别的新编号，已安全停止` } };
+          portraitsAdded = true;
+          materialCount += orderedPortraits.length;
+          const materials = await this.uploadedMaterialSnapshots(page);
+          for (const portrait of orderedPortraits) {
+            const matches = materials.filter((material) => material.previewText.includes(portrait.platformAssetId));
+            if (matches.length !== 1) {
+              await this.clearUploadedMaterials(page);
+              return {
+                status: "needs-human",
+                checkpoint: {
+                  reason: "page-changed",
+                  message: `心影已加入虚拟人像“${portrait.displayName}”，但 APP 无法唯一确认它的实际编号，已安全停止`,
+                },
+              };
+            }
+            const actual = matches[0].label;
+            const actualKind = this.mediaKindFromPlatformLabel(actual);
+            if (actualKind === "audio") {
+              await this.clearUploadedMaterials(page);
+              return { status: "needs-human", checkpoint: { reason: "page-changed", message: `心影把虚拟人像“${portrait.displayName}”识别成音频，已安全停止` } };
+            }
+            this.persistPlatformPortraitMediaKind?.(portrait.id, actualKind);
+            if (portrait.mediaKind !== "unknown" && portrait.mediaKind !== actualKind) {
+              await this.clearUploadedMaterials(page);
+              return { status: "needs-human", checkpoint: { reason: "page-changed", message: `虚拟人像“${portrait.displayName}”实际编号为 @${actual}，APP 已更新类型；请检查提示词后重新提交` } };
+            }
+            actualLabelByKey.set(portraitMaterialKey(portrait.id), `@${actual}`);
           }
-          const actualKind = this.mediaKindFromPlatformLabel(actual);
-          if (actualKind === "audio") {
+          if (actualLabelByKey.size < orderedPortraits.length) {
             await this.clearUploadedMaterials(page);
-            return { status: "needs-human", checkpoint: { reason: "page-changed", message: `心影把虚拟人像“${portrait.displayName}”识别成音频，已安全停止` } };
+            return { status: "needs-human", checkpoint: { reason: "page-changed", message: "心影没有为全部虚拟人像返回可核验编号，已安全停止" } };
           }
-          this.persistPlatformPortraitMediaKind?.(portrait.id, actualKind);
-          if (portrait.mediaKind !== "unknown" && portrait.mediaKind !== actualKind) {
-            await this.clearUploadedMaterials(page);
-            return { status: "needs-human", checkpoint: { reason: "page-changed", message: `虚拟人像“${portrait.displayName}”实际编号为 @${actual}，APP 已更新类型；请检查提示词后重新提交` } };
-          }
-          actualLabels.push(`@${actual}`);
           continue;
         }
         if (item?.kind !== "reference") continue;
@@ -1326,31 +1400,33 @@ export class PlaywrightXinyingAdapter {
           await this.clearUploadedMaterials(page);
           return { status: "needs-human", checkpoint: { reason: "page-changed", message: `心影把“${reference.name}”编号为 @${actual}，与 APP 识别类型不一致，已安全停止` } };
         }
-        actualLabels.push(`@${actual}`);
+        actualLabelByKey.set(key, `@${actual}`);
+      }
+      const actualLabels = materialOrder.map((key) => actualLabelByKey.get(key) ?? "");
+      if (actualLabels.some((label) => !label) || new Set(actualLabels).size !== materialOrder.length) {
+        await this.clearUploadedMaterials(page);
+        return { status: "needs-human", checkpoint: { reason: "page-changed", message: "心影实际素材编号与 APP 素材清单无法一一对应，已安全停止" } };
       }
       const expectedLabels = assignMediaLabels(materialOrder.map((key) => {
         const item = parseMaterialKey(key)!;
         if (item.kind === "reference") return mediaKindFromMime(referencesById.get(item.id)!.mimeType);
         const portrait = portraitsById.get(item.id)!;
-        const actual = actualLabels[materialOrder.indexOf(key)] ?? "";
+        const actual = actualLabelByKey.get(key) ?? "";
         return portrait.mediaKind === "unknown" ? this.mediaKindFromPlatformLabel(actual.replace(/^@/, "")) as "image" | "video" : portrait.mediaKind;
       }));
-      if (expectedLabels.some((label, index) => label !== actualLabels[index])) {
-        await this.clearUploadedMaterials(page);
-        return { status: "needs-human", checkpoint: { reason: "page-changed", message: `心影实际素材编号 ${actualLabels.join("、")} 与 APP 计划 ${expectedLabels.join("、")} 不一致，已安全停止` } };
-      }
       const promptLabels = [...job.promptSnapshot.matchAll(/@(图|视频|音频)\d+/g)].map((match) => match[0]);
-      const invalidPromptLabels = [...new Set(promptLabels.filter((label) => !actualLabels.includes(label)))];
+      const invalidPromptLabels = [...new Set(promptLabels.filter((label) => !expectedLabels.includes(label)))];
       if (invalidPromptLabels.length) {
         await this.clearUploadedMaterials(page);
-        return { status: "needs-human", checkpoint: { reason: "approval", message: `提示词引用 ${invalidPromptLabels.join("、")}，但心影实际编号是 ${actualLabels.join("、")}；已停止提交，请按 APP 最新编号修改提示词` } };
+        return { status: "needs-human", checkpoint: { reason: "approval", message: `提示词引用了当前 APP 素材清单中不存在的编号：${invalidPromptLabels.join("、")}；已停止提交` } };
       }
+      promptForPlatform = remapPromptLabels(job.promptSnapshot, new Map(expectedLabels.map((label, index) => [label, actualLabels[index]])));
     }
     if (!firstLastMode && (await this.uploadedMaterialCount(page)) !== materialOrder.length) {
       return { status: "needs-human", checkpoint: { reason: "page-changed", message: "心影素材槽位数量与本地参考顺序不一致，已暂停提交" } };
     }
 
-    await prompt.fill(job.promptSnapshot);
+    await prompt.fill(promptForPlatform);
     const userMessages = await firstCollection(page, this.selectors.generation.userMessages);
     const beforeUserCount = userMessages ? await userMessages.count() : 0;
     const currentUrl = safeGenerationUrl(page.url());
@@ -1393,7 +1469,7 @@ export class PlaywrightXinyingAdapter {
       ...taskRef,
       sessionId: submittedUrl?.searchParams.get("sessionId") ?? taskRef.sessionId,
     });
-    return { status: "running", platformTaskId, message: "已按 @图顺序通过心影可见页面提交生成" };
+    return { status: "running", platformTaskId, message: "已核验虚拟人像并按 APP 顺序映射心影实际编号后提交生成" };
   }
 
   async submitPortraitReview(job: Job, portrait: PortraitAsset): Promise<AdapterOutcome> {
@@ -1856,16 +1932,19 @@ export class PlaywrightXinyingAdapter {
     const users = await firstCollection(page, this.selectors.generation.userMessages);
     if (!users) return null;
     const count = await users.count();
+    const normalizedSnapshot = normalizePromptLabels(promptSnapshot);
+    const matchesSnapshot = (text: string) => text.includes(promptSnapshot)
+      || (Boolean(normalizedSnapshot) && normalizePromptLabels(text).includes(normalizedSnapshot));
     if (count > ref.userIndex) {
       const indexed = users.nth(ref.userIndex);
       const indexedText = (await indexed.innerText().catch(() => "")).trim();
-      if (!promptSnapshot || indexedText.includes(promptSnapshot)) return { user: indexed, userIndex: ref.userIndex };
+      if (!promptSnapshot || matchesSnapshot(indexedText)) return { user: indexed, userIndex: ref.userIndex };
     }
     if (!promptSnapshot) return null;
     for (let index = count - 1; index >= 0; index -= 1) {
       const candidate = users.nth(index);
       const text = (await candidate.innerText().catch(() => "")).trim();
-      if (text.includes(promptSnapshot)) return { user: candidate, userIndex: index };
+      if (matchesSnapshot(text)) return { user: candidate, userIndex: index };
     }
     return null;
   }
@@ -1897,6 +1976,9 @@ export const adapterInternals = {
   decodePendingTaskRef,
   safeGenerationUrl,
   explicitParameterValue,
+  parseSelectedPortraitCount,
+  remapPromptLabels,
+  normalizePromptLabels,
   classifyPortraitCardText,
   classifyGenerationCard,
   platformPortraitIdentity,

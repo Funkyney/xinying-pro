@@ -24,6 +24,14 @@ describe("Playwright adapter task references", () => {
     expect(adapterInternals.explicitParameterValue(explicit, "resolution")).toBe("2K");
   });
 
+  it("parses Heart's retained portrait selection and remaps platform labels without swap collisions", () => {
+    expect(adapterInternals.parseSelectedPortraitCount("已选 2 项")).toBe(2);
+    expect(adapterInternals.parseSelectedPortraitCount("尚未选择")).toBeNull();
+    expect(adapterInternals.remapPromptLabels("@图1 先看 @图2，再回到 @图1", new Map([["@图1", "@图2"], ["@图2", "@图1"]])))
+      .toBe("@图2 先看 @图1，再回到 @图2");
+    expect(adapterInternals.normalizePromptLabels("@图2 先看 @视频3")).toBe("@图# 先看 @视频#");
+  });
+
   it("classifies only the matched portrait card status", () => {
     expect(adapterInternals.classifyPortraitCardText("审核失败 测试人像")).toBe("failed");
     expect(adapterInternals.classifyPortraitCardText("正在审核中... 测试人像")).toBe("running");
