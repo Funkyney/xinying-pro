@@ -152,15 +152,16 @@ export function ReferenceBoard(props: ReferenceBoardProps) {
     <section className="panel reference-board">
       <div className="panel-heading">
         <div>
-          <span className="eyebrow">FINAL REFERENCE ORDER</span>
-          <h2>参考素材 · 最终编号顺序</h2>
-          <p>APP 保留任意混排；心影重排虚拟人像时，会按角色逐项回读并自动映射实际编号。</p>
+          <span className="eyebrow">APP CREATIVE ORDER</span>
+          <h2>参考素材 · APP 创作编号</h2>
+          <p>本地素材按此顺序上传；多个 V 角色由心影官方排序，提交时 APP 会自动换算提示词编号。</p>
         </div>
         <div className="heading-actions">
           <button className="button ghost" disabled={!props.assets.length} onClick={props.onBatchReplace}><RefreshCw size={16} />批量替换本地素材</button>
           <button className="button secondary" onClick={props.onAdd}><ImagePlus size={16} />添加图片/视频/音频</button>
         </div>
       </div>
+      {props.portraits.length > 1 && <div className="platform-order-notice"><ShieldAlert size={16} /><span><strong>心影的 V 角色卡片顺序无法手动控制</strong>这里仍按你的创作顺序编号；提交时 APP 会读取心影实际顺序并改写提示词，让每个引用继续指向正确素材。</span></div>}
       {ids.length ? (
         <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
           <SortableContext items={ids} strategy={rectSortingStrategy}>

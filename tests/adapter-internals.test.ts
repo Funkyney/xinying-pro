@@ -32,6 +32,14 @@ describe("Playwright adapter task references", () => {
     expect(adapterInternals.normalizePromptLabels("@图2 先看 @视频3")).toBe("@图# 先看 @视频#");
   });
 
+  it("canonicalizes Chinese material numbers and remaps the creator's order to Heart's order", () => {
+    const mapping = new Map([["@图1", "@图1"], ["@图2", "@图3"], ["@图3", "@图4"], ["@图4", "@图2"]]);
+    expect(adapterInternals.remapPromptLabels("让@图一的女人和@图四的男人对话，女人参考@图二。男人参考图三。", mapping))
+      .toBe("让@图1的女人和@图2的男人对话，女人参考@图3。男人参考@图4。");
+    expect(adapterInternals.normalizePromptLabels("＠图十先看参考视频二，再听@音频三"))
+      .toBe("@图#先看参考@视频#，再听@音频#");
+  });
+
   it("classifies only the matched portrait card status", () => {
     expect(adapterInternals.classifyPortraitCardText("审核失败 测试人像")).toBe("failed");
     expect(adapterInternals.classifyPortraitCardText("正在审核中... 测试人像")).toBe("running");

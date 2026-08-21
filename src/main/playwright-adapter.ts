@@ -22,7 +22,14 @@ import { AppError } from "../core/errors";
 import type { SelectorPack } from "./selector-pack";
 import { classifyPlatformNavigation, platformHomeUrl, sessionNavigationPriority } from "./platform-navigation";
 import { parseMaterialKey, portraitMaterialKey, referenceMaterialKey } from "../shared/material-order";
-import { assignMediaLabels, findAddedMediaLabel, mediaKindFromMime, portraitMediaKindFromPreviewUrl } from "../shared/media";
+import {
+  assignMediaLabels,
+  canonicalizePromptMaterialReferences,
+  findAddedMediaLabel,
+  mediaKindFromMime,
+  portraitMediaKindFromPreviewUrl,
+  promptMaterialLabels,
+} from "../shared/media";
 
 export type AdapterOutcome =
   | { status: "running"; platformTaskId?: string; message: string }
@@ -122,11 +129,11 @@ function parseSelectedPortraitCount(text: string): number | null {
 }
 
 function remapPromptLabels(prompt: string, mapping: ReadonlyMap<string, string>): string {
-  return prompt.replace(/@(图|视频|音频)\d+/g, (label) => mapping.get(label) ?? label);
+  return canonicalizePromptMaterialReferences(prompt).replace(/@(图|视频|音频)\d+/g, (label) => mapping.get(label) ?? label);
 }
 
 function normalizePromptLabels(prompt: string): string {
-  return prompt.replace(/@(图|视频|音频)\d+/g, "@$1#");
+  return canonicalizePromptMaterialReferences(prompt).replace(/@(图|视频|音频)\d+/g, "@$1#");
 }
 
 function platformPortraitsParameter(job: Job): PlatformPortrait[] {
@@ -1414,7 +1421,7 @@ export class PlaywrightXinyingAdapter {
         const actual = actualLabelByKey.get(key) ?? "";
         return portrait.mediaKind === "unknown" ? this.mediaKindFromPlatformLabel(actual.replace(/^@/, "")) as "image" | "video" : portrait.mediaKind;
       }));
-      const promptLabels = [...job.promptSnapshot.matchAll(/@(图|视频|音频)\d+/g)].map((match) => match[0]);
+      const promptLabels = promptMaterialLabels(job.promptSnapshot);
       const invalidPromptLabels = [...new Set(promptLabels.filter((label) => !expectedLabels.includes(label)))];
       if (invalidPromptLabels.length) {
         await this.clearUploadedMaterials(page);
