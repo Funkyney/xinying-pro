@@ -11,18 +11,23 @@ import { JobWorker } from "./job-worker";
 import { registerIpcHandlers } from "./ipc-handlers";
 import { registerAppUpdater } from "./app-updater";
 import { IPC } from "../shared/ipc";
+import { reserveAutomationPort } from "../shared/automation-port";
 
-const CDP_PORT = Number(process.env.XINYING_CDP_PORT ?? 9333);
+app.setName("xinying-director");
+
+const singleInstance = app.requestSingleInstanceLock();
+if (!singleInstance) app.quit();
+
+const bootstrapPaths = createAppPaths();
+const CDP_PORT = singleInstance
+  ? reserveAutomationPort(bootstrapPaths.dataDir, process.env.XINYING_CDP_PORT, process.argv.includes("--updated"))
+  : Number(process.env.XINYING_CDP_PORT ?? 9333);
 app.commandLine.appendSwitch("remote-debugging-address", "127.0.0.1");
 app.commandLine.appendSwitch("remote-debugging-port", String(CDP_PORT));
-app.setName("xinying-director");
 
 protocol.registerSchemesAsPrivileged([
   { scheme: "xinying-media", privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } },
 ]);
-
-const singleInstance = app.requestSingleInstanceLock();
-if (!singleInstance) app.quit();
 
 let mainWindow: BrowserWindow | null = null;
 let platformManager: PlatformViewManager | null = null;

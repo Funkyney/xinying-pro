@@ -39,6 +39,7 @@
     "verify:login-lifecycle": "node scripts/verify-login-lifecycle.mjs",
     "verify:concurrent-sync": "node scripts/verify-concurrent-sync.mjs",
     "verify:update-ui": "node scripts/verify-update-ui.mjs",
+    "verify:update-port": "node scripts/verify-automation-port-recovery.mjs",
     "cli": "node dist-electron/cli/index.js",
     "pack:win": "npm run build && electron-builder --win nsis",
     "pack:mac": "npm run build && electron-builder --mac dmg zip --universal",

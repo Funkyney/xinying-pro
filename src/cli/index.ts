@@ -17,6 +17,8 @@ import { createAppPaths } from "../core/paths";
 import { XinyingDatabase } from "../core/database";
 import { XinyingService } from "../core/service";
 import { AppError, asAppError } from "../core/errors";
+import { automationPortCandidates } from "../shared/automation-port";
+import type { Browser } from "playwright-core";
 
 let currentCommand = "xinying";
 let database: XinyingDatabase | null = null;
@@ -65,10 +67,18 @@ type AppOperation = "platform-sync" | "platform-open" | "platform-create" | "por
 
 async function invokeRunningApp(operation: AppOperation, args: unknown[] = []): Promise<unknown> {
   const { chromium } = await import("playwright-core");
-  const port = Number(process.env.XINYING_CDP_PORT ?? 9333);
-  const remote = await chromium.connectOverCDP(`http://127.0.0.1:${port}`, { timeout: 10_000 }).catch((error: unknown) => {
-    throw new AppError("APP_NOT_RUNNING", "请先启动心影Pro APP，再执行需要操作心影网页的命令", error);
-  });
+  const ports = automationPortCandidates(createAppPaths().dataDir, process.env.XINYING_CDP_PORT);
+  let remote: Browser | null = null;
+  let connectionError: unknown;
+  for (const port of ports) {
+    try {
+      remote = await chromium.connectOverCDP(`http://127.0.0.1:${port}`, { timeout: 3_500 });
+      break;
+    } catch (error) {
+      connectionError = error;
+    }
+  }
+  if (!remote) throw new AppError("APP_NOT_RUNNING", "请先启动心影Pro APP，再执行需要操作心影网页的命令", connectionError);
   try {
     const renderer = remote.contexts().flatMap((context) => context.pages())
       .find((page) => page.url().startsWith("file:") || page.url().includes("127.0.0.1:5173"));

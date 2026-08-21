@@ -1,8 +1,15 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { chromium } from "playwright-core";
 
-const port = Number(process.env.XINYING_CDP_PORT ?? 9333);
+const dataDir = process.env.XINYING_DATA_DIR
+  ? path.resolve(process.env.XINYING_DATA_DIR)
+  : path.join(process.env.APPDATA ?? path.join(os.homedir(), "AppData", "Roaming"), "xinying-director");
+const markedPort = fs.existsSync(path.join(dataDir, "automation-port"))
+  ? fs.readFileSync(path.join(dataDir, "automation-port"), "utf8").trim()
+  : "";
+const port = Number(process.env.XINYING_CDP_PORT ?? (markedPort || "9333"));
 const remote = await chromium.connectOverCDP(`http://127.0.0.1:${port}`, { timeout: 15_000 });
 
 try {
