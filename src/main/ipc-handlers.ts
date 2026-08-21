@@ -116,7 +116,7 @@ export function registerIpcHandlers(
     const targetProject = projectId ? service.getProject(projectId) : service.listProjects().find((project) => project.platformUrl);
     if (!targetProject?.platformUrl) throw new Error("请先选择并进入一个心影项目，再同步该空间的虚拟人像库");
     const portraits = await platform.withAutomationViewport(() => adapter.syncPlatformPortraits(targetProject.platformUrl, targetProject.modelName, targetProject.platformWorkspaceId));
-    return service.syncPlatformPortraits(portraits, targetProject.platformWorkspaceId);
+    return service.syncPlatformPortraits(portraits, targetProject.platformWorkspaceId, false);
   });
   handle(IPC.portraitsPlatformDelete, async (_event, projectId: string, ids: string[]) => {
     const conflicting = service.listJobs().find((job) => ["submitting", "running"].includes(job.status));

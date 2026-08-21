@@ -32,9 +32,10 @@ const pointerDrag = async (page, source, target) => {
 let browser;
 try {
   browser = await chromium.connectOverCDP(`http://127.0.0.1:${Number(process.env.XINYING_CDP_PORT ?? 9333)}`, { timeout: 10_000 });
-  const page = browser.contexts().flatMap((context) => context.pages()).find((candidate) => candidate.url().startsWith("file:"));
+  const page = browser.contexts().flatMap((context) => context.pages())
+    .find((candidate) => candidate.url().startsWith("file:") || candidate.url().includes("127.0.0.1:5173"));
   if (!page) throw new Error("找不到心影Pro主窗口");
-  await page.getByRole("button", { name: "生成工作台" }).click();
+  await page.getByRole("button", { name: "生成工作台", exact: true }).click();
   const projectSelect = page.locator(".topbar select").first();
   await projectSelect.selectOption(projectId);
   await page.locator(".reference-board").waitFor({ state: "visible", timeout: 15_000 });

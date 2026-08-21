@@ -694,7 +694,9 @@ export class PlaywrightXinyingAdapter {
       await this.setPortraitSourceFilter(page, dialog, "全部");
       const cards = await waitForCollectionWithin(dialog, this.selectors.generation.portraitCards, 20_000);
       if (!cards) throw new AppError("PORTRAIT_LIBRARY_EMPTY", "心影认证角色库没有可同步的人像卡片");
-      await this.loadPortraitCards(page, cards, 30, 3, 350);
+      // “全部人像”会持续按约 45 张一批追加，实际不是一个可穷尽的快照。
+      // 读取最新的一段窗口并由本地增量合并；不能因本轮未滚到旧角色而将其失效。
+      await this.loadPortraitCards(page, cards, 30, 6, 400);
       const syncedAt = new Date().toISOString();
       const entries = await this.readPortraitCardEntries(cards);
       const unique = new Map<string, PlatformPortrait>();

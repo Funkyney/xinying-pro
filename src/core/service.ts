@@ -613,7 +613,11 @@ export class XinyingService {
     if (missing.length) throw new AppError("PLATFORM_PORTRAIT_NOT_AVAILABLE", `所选心影虚拟人像不可用：${missing.join(", ")}`);
   }
 
-  syncPlatformPortraits(portraits: PlatformPortrait[], workspaceId = portraits[0]?.workspaceId ?? ""): PlatformPortrait[] {
+  syncPlatformPortraits(
+    portraits: PlatformPortrait[],
+    workspaceId = portraits[0]?.workspaceId ?? "",
+    authoritative = true,
+  ): PlatformPortrait[] {
     const existingById = new Map(this.listPlatformPortraits().map((portrait) => [portrait.id, portrait]));
     const approvedLocalByName = new Map(this.listPortraits()
       .filter((portrait) => portrait.platformStatus === "approved")
@@ -650,7 +654,9 @@ export class XinyingService {
     }
     this.database.transaction(() => {
       if (workspaceId) this.database.db.prepare("UPDATE platform_portraits SET available = 0 WHERE workspace_id = ''").run();
-      this.database.db.prepare("UPDATE platform_portraits SET available = 0 WHERE workspace_id = ?").run(workspaceId);
+      // 心影网页的“全部人像”是有读取上限的增量窗口，并非完整快照。
+      // 只有调用方明确提供权威快照时，才把本轮未出现的人像标记为不可用。
+      if (authoritative) this.database.db.prepare("UPDATE platform_portraits SET available = 0 WHERE workspace_id = ?").run(workspaceId);
       const upsert = this.database.db.prepare(`INSERT INTO platform_portraits
         (id, display_name, preview_url, platform_asset_id, workspace_id, media_kind, sort_order, delete_sort_order, can_delete, available, last_seen_at)
         VALUES (@id, @displayName, @previewUrl, @platformAssetId, @workspaceId, @mediaKind, @sortOrder, @deleteSortOrder, @canDelete, 1, @lastSeenAt)

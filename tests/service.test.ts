@@ -488,6 +488,27 @@ describe("XinyingService", () => {
     expect(service.listPlatformPortraits("personal")[0].available).toBe(true);
   });
 
+  it("does not invalidate cached portraits when Heart returns a non-authoritative lazy-loaded window", () => {
+    const workspaceId = "workspace-large";
+    const portraits = Array.from({ length: 120 }, (_, index) => ({
+      id: `portrait-${index}`,
+      displayName: `角色 ${index}`,
+      previewUrl: `https://blueai-video-global.bluemediacdn.com/portrait-${index}.png`,
+      platformAssetId: `asset-${index}`,
+      workspaceId,
+      mediaKind: "image" as const,
+      sortOrder: index,
+      deleteSortOrder: null,
+      canDelete: false,
+      available: true,
+      lastSeenAt: new Date().toISOString(),
+    }));
+    service.syncPlatformPortraits(portraits, workspaceId);
+    service.syncPlatformPortraits(portraits.slice(0, 60), workspaceId, false);
+
+    expect(service.listPlatformPortraits(workspaceId).filter((portrait) => portrait.available)).toHaveLength(120);
+  });
+
   it("validates remote deletion permissions and removes deleted portraits from live projects only", () => {
     const synced = service.syncPlatformPortraits([
       {

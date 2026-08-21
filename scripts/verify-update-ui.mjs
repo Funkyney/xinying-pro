@@ -2,7 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { chromium } from "playwright-core";
 
-const remote = await chromium.connectOverCDP("http://127.0.0.1:9333", { timeout: 15_000 });
+const port = Number(process.env.XINYING_CDP_PORT ?? 9333);
+const remote = await chromium.connectOverCDP(`http://127.0.0.1:${port}`, { timeout: 15_000 });
 
 try {
   const page = remote.contexts()
@@ -11,7 +12,9 @@ try {
 
   if (!page) throw new Error("找不到心影Pro主窗口");
 
-  const state = await page.evaluate(() => window.xinying.updates.state());
+  const state = process.env.XINYING_CHECK_UPDATE === "1"
+    ? await page.evaluate(() => window.xinying.updates.check())
+    : await page.evaluate(() => window.xinying.updates.state());
   const buttonText = (await page.locator(".update-button").innerText()).trim();
   const knownStatuses = new Set([
     "idle",

@@ -12,7 +12,10 @@ try {
   const dashboard = await renderer.evaluate(() => window.xinying.dashboard());
   const project = dashboard.projects.find((item) => item.platformWorkspaceId && item.platformProjectId && item.platformUrl);
   if (!project) throw new Error("没有已绑定心影空间和项目的本地项目");
-  const synced = await renderer.evaluate((projectId) => window.xinying.portraits.sync(projectId), project.id);
+  const skipSync = process.env.XINYING_SKIP_PORTRAIT_SYNC === "1";
+  const synced = skipSync
+    ? await renderer.evaluate(() => window.xinying.portraits.platformList())
+    : await renderer.evaluate((projectId) => window.xinying.portraits.sync(projectId), project.id);
   const available = synced.filter((portrait) => portrait.available && portrait.workspaceId === project.platformWorkspaceId);
   const deletable = available.filter((portrait) => portrait.canDelete);
   if (!available.length) throw new Error("当前心影空间没有已同步虚拟人像");
@@ -69,6 +72,7 @@ try {
     selectedCount,
     confirmationChecked: false,
     deleteInvoked: false,
+    source: skipSync ? "cached" : "synced",
     screenshot: path.resolve("test-results", "portrait-batch-management-ui.png"),
   }, null, 2)}\n`);
 } catch (error) {
