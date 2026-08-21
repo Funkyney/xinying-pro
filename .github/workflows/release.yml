@@ -70,11 +70,7 @@ jobs:
     runs-on: macos-15-intel
     env:
       RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
-      CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
-      CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
-      APPLE_ID: ${{ secrets.APPLE_ID }}
-      APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      HAS_MAC_CERTIFICATE: ${{ secrets.MAC_CSC_LINK != '' }}
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
@@ -84,7 +80,20 @@ jobs:
       - run: npm ci
       - run: npm version "$RELEASE_VERSION" --no-git-tag-version
       - run: npm run build
-      - run: npx electron-builder --mac dmg zip --universal --publish never
+      - name: Build unsigned macOS package
+        if: env.HAS_MAC_CERTIFICATE != 'true'
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+        run: npx electron-builder --mac dmg zip --universal --publish never
+      - name: Build signed macOS package
+        if: env.HAS_MAC_CERTIFICATE == 'true'
+        env:
+          CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: npx electron-builder --mac dmg zip --universal --publish never
       - uses: actions/upload-artifact@v4
         with:
           name: macos-${{ needs.prepare.outputs.version }}
@@ -113,4 +122,3 @@ jobs:
             --target "${GITHUB_SHA}" \
             --title "心影Pro ${RELEASE_VERSION}" \
             --generate-notes
-
