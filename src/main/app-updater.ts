@@ -71,7 +71,9 @@ export function registerAppUpdater(getWindow: () => BrowserWindow | null): void 
   handle(IPC.updateInstall, () => {
     if (state.status !== "downloaded") return state;
     const next = publish({ message: "正在重启并安装新版…" });
-    setImmediate(() => autoUpdater.quitAndInstall(false, true));
+    // 一次点击后静默替换当前安装并自动重启；false 会再次弹出 NSIS 安装向导，
+    // 让同事误以为 APP 卡在“正在安装”。
+    setImmediate(() => autoUpdater.quitAndInstall(true, true));
     return next;
   });
 
