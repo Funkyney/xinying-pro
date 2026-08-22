@@ -15,6 +15,7 @@ import type {
   ProjectInput,
   ReferenceAsset,
   ReferenceRole,
+  SharedMediaAsset,
   SubmissionPreview,
 } from "../shared/contracts";
 import { assignMediaLabels, mediaKindEnglishLabel, mediaKindFromMime } from "../shared/media";
@@ -65,6 +66,7 @@ interface PreparedReferenceReplacement {
   mimeType: string;
   fileSize: number;
   sha256: string;
+  sourceSharedMediaId: string;
 }
 
 function now(): string {
@@ -197,6 +199,7 @@ export class XinyingService {
     readonly paths: AppPaths,
   ) {
     this.backfillPortraitSourceReferences();
+    this.backfillSharedMediaLibrary();
   }
 
   private backfillPortraitSourceReferences(): void {
@@ -208,6 +211,23 @@ export class XinyingService {
       const referenceId = path.parse(candidate.name).name;
       if (this.database.rows.reference(referenceId)) update.run(referenceId, candidate.id);
     }
+  }
+
+  private backfillSharedMediaLibrary(): void {
+    const migrationKey = "shared_media_library_migration_v1";
+    const migrated = this.database.db.prepare("SELECT 1 FROM settings WHERE key = ?").get(migrationKey);
+    if (migrated) return;
+    const rows = this.database.db.prepare(
+      "SELECT * FROM reference_assets WHERE source_shared_media_id IS NULL ORDER BY created_at ASC",
+    ).all() as Array<{ id: string; name: string; file_path: string }>;
+    const update = this.database.db.prepare("UPDATE reference_assets SET source_shared_media_id = ? WHERE id = ?");
+    for (const row of rows) {
+      if (!fs.existsSync(row.file_path)) continue;
+      const shared = this.ensureSharedMediaAsset(row.file_path, row.name);
+      update.run(shared.id, row.id);
+    }
+    this.database.db.prepare("INSERT INTO settings (key, value_json, updated_at) VALUES (?, 'true', ?)")
+      .run(migrationKey, now());
   }
 
   listProjects(): Project[] {
@@ -400,18 +420,99 @@ export class XinyingService {
     return this.database.rows.references(projectId).map((row) => this.database.mapReference(row));
   }
 
+  listSharedMedia(): SharedMediaAsset[] {
+    return this.database.rows.sharedMedia().map((row) => this.database.mapSharedMedia(row));
+  }
+
+  private ensureSharedMediaAsset(sourcePath: string, preferredName = path.basename(sourcePath)): SharedMediaAsset {
+    ensureFile(sourcePath, REFERENCE_EXTENSIONS);
+    const sha256 = hashFile(sourcePath);
+    const existing = this.database.rows.sharedMediaByHash(sha256);
+    if (existing) {
+      if (!fs.existsSync(existing.file_path)) {
+        fs.mkdirSync(path.dirname(existing.file_path), { recursive: true });
+        fs.copyFileSync(sourcePath, existing.file_path);
+      }
+      return this.database.mapSharedMedia(existing);
+    }
+
+    const id = crypto.randomUUID();
+    const extension = path.extname(sourcePath).toLowerCase();
+    const targetPath = path.join(this.paths.sharedMediaDir, `${id}${extension}`);
+    fs.mkdirSync(this.paths.sharedMediaDir, { recursive: true });
+    fs.copyFileSync(sourcePath, targetPath);
+    const stats = fs.statSync(targetPath);
+    const timestamp = now();
+    const asset: SharedMediaAsset = {
+      id,
+      name: path.basename(preferredName),
+      filePath: targetPath,
+      mimeType: mimeFromExtension(targetPath),
+      mediaKind: mediaKindFromMime(mimeFromExtension(targetPath)),
+      fileSize: stats.size,
+      sha256,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    try {
+      this.database.db.prepare(`INSERT INTO shared_media_assets
+        (id, name, file_path, mime_type, file_size, sha256, created_at, updated_at)
+        VALUES (@id, @name, @filePath, @mimeType, @fileSize, @sha256, @createdAt, @updatedAt)`).run(asset);
+    } catch (error) {
+      fs.rmSync(targetPath, { force: true });
+      throw error;
+    }
+    return asset;
+  }
+
+  addSharedMedia(filePaths: string[]): SharedMediaAsset[] {
+    filePaths.forEach((filePath) => ensureFile(filePath, REFERENCE_EXTENSIONS));
+    filePaths.forEach((filePath) => this.ensureSharedMediaAsset(filePath));
+    return this.listSharedMedia();
+  }
+
+  addSharedMediaToProject(projectId: string, id: string): ReferenceAsset[] {
+    const row = this.database.rows.sharedMediaAsset(id);
+    if (!row) throw new AppError("SHARED_MEDIA_NOT_FOUND", `共享素材不存在：${id}`);
+    const asset = this.database.mapSharedMedia(row);
+    return this.addReferences(projectId, [asset.filePath]);
+  }
+
+  removeSharedMediaFromProject(projectId: string, id: string): ReferenceAsset[] {
+    const reference = this.listReferences(projectId).find((item) => item.sourceSharedMediaId === id);
+    if (reference) this.removeReference(reference.id);
+    return this.listReferences(projectId);
+  }
+
+  removeSharedMedia(id: string): void {
+    const row = this.database.rows.sharedMediaAsset(id);
+    if (!row) throw new AppError("SHARED_MEDIA_NOT_FOUND", `共享素材不存在：${id}`);
+    const asset = this.database.mapSharedMedia(row);
+    this.database.transaction(() => {
+      this.database.db.prepare("UPDATE reference_assets SET source_shared_media_id = NULL WHERE source_shared_media_id = ?").run(id);
+      this.database.db.prepare("DELETE FROM shared_media_assets WHERE id = ?").run(id);
+    });
+    fs.rmSync(asset.filePath, { force: true });
+  }
+
   addReferences(projectId: string, filePaths: string[]): ReferenceAsset[] {
     const project = this.getProject(projectId);
     if (!filePaths.length) return this.listReferences(projectId);
     filePaths.forEach((sourcePath) => ensureFile(sourcePath, REFERENCE_EXTENSIONS));
     const existing = this.listReferences(projectId);
+    const selectedSharedMedia = filePaths.map((sourcePath) => this.ensureSharedMediaAsset(sourcePath));
+    const existingSharedIds = new Set(existing.map((reference) => reference.sourceSharedMediaId).filter(Boolean));
+    const uniqueSelections = selectedSharedMedia.filter((asset, index) =>
+      !existingSharedIds.has(asset.id) && selectedSharedMedia.findIndex((candidate) => candidate.id === asset.id) === index);
+    if (!uniqueSelections.length) return existing;
     const projectDir = path.join(this.paths.assetsDir, projectId);
     fs.mkdirSync(projectDir, { recursive: true });
 
     const addedIds: string[] = [];
     let hasFirstImage = existing.some((reference) => mediaKindFromMime(reference.mimeType) === "image");
     this.database.transaction(() => {
-      filePaths.forEach((sourcePath, index) => {
+      uniqueSelections.forEach((sharedMedia, index) => {
+        const sourcePath = sharedMedia.filePath;
         const id = crypto.randomUUID();
         addedIds.push(id);
         const extension = path.extname(sourcePath).toLowerCase();
@@ -427,7 +528,8 @@ export class XinyingService {
         const asset: ReferenceAsset = {
           id,
           projectId,
-          name: path.basename(sourcePath),
+          sourceSharedMediaId: sharedMedia.id,
+          name: sharedMedia.name,
           filePath: targetPath,
           mimeType,
           fileSize: stats.size,
@@ -437,8 +539,8 @@ export class XinyingService {
           createdAt: now(),
         };
         this.database.db.prepare(`INSERT INTO reference_assets
-          (id, project_id, name, file_path, mime_type, file_size, position, role, sha256, created_at)
-          VALUES (@id, @projectId, @name, @filePath, @mimeType, @fileSize, @position, @role, @sha256, @createdAt)`)
+          (id, project_id, source_shared_media_id, name, file_path, mime_type, file_size, position, role, sha256, created_at)
+          VALUES (@id, @projectId, @sourceSharedMediaId, @name, @filePath, @mimeType, @fileSize, @position, @role, @sha256, @createdAt)`)
           .run(asset);
       });
       const materialOrder = reconcileMaterialOrder(
@@ -446,8 +548,8 @@ export class XinyingService {
         project.portraitIds,
         [...existing.map((reference) => reference.id), ...addedIds],
       );
-      this.database.db.prepare("UPDATE projects SET material_order_json = ? WHERE id = ?")
-        .run(JSON.stringify(materialOrder), projectId);
+      this.database.db.prepare("UPDATE projects SET material_order_json = ?, updated_at = ? WHERE id = ?")
+        .run(JSON.stringify(materialOrder), now(), projectId);
     });
     return this.listReferences(projectId);
   }
@@ -492,6 +594,7 @@ export class XinyingService {
     try {
       for (const { asset, sourcePath } of replacements) {
         ensureFile(sourcePath, REFERENCE_EXTENSIONS);
+        const sharedMedia = this.ensureSharedMediaAsset(sourcePath);
         const extension = path.extname(sourcePath).toLowerCase();
         const targetPath = path.join(path.dirname(asset.filePath), `${asset.id}${extension}`);
         const stagingPath = path.join(path.dirname(asset.filePath), `.replace-${asset.id}-${crypto.randomUUID()}${extension}`);
@@ -512,10 +615,11 @@ export class XinyingService {
           stagingPath,
           backupPath,
           hadOriginal,
-          name: path.basename(sourcePath),
+          name: sharedMedia.name,
           mimeType: mimeFromExtension(targetPath),
           fileSize: stats.size,
           sha256: hashFile(stagingPath),
+          sourceSharedMediaId: sharedMedia.id,
         });
       }
 
@@ -523,9 +627,9 @@ export class XinyingService {
       filesApplied = true;
       this.database.transaction(() => {
         const statement = this.database.db.prepare(`UPDATE reference_assets SET
-          name = ?, file_path = ?, mime_type = ?, file_size = ?, sha256 = ? WHERE id = ?`);
+          name = ?, file_path = ?, mime_type = ?, file_size = ?, sha256 = ?, source_shared_media_id = ? WHERE id = ?`);
         for (const item of prepared) {
-          statement.run(item.name, item.targetPath, item.mimeType, item.fileSize, item.sha256, item.asset.id);
+          statement.run(item.name, item.targetPath, item.mimeType, item.fileSize, item.sha256, item.sourceSharedMediaId, item.asset.id);
         }
       });
 

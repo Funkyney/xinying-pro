@@ -28,12 +28,17 @@ function run(name, args, expectedExitCode, expectedOk) {
 }
 
 try {
+  const sharedImage = path.join(dataDir, "shared-cli.png");
+  fs.copyFileSync(path.join(projectDir, "build", "icon.png"), sharedImage);
   const cases = [
     run("success", ["doctor"], 0, true),
     run("help", ["--help"], 0, true),
     run("error", ["job", "status", "missing-job"], 1, false),
     run("platform-confirmation", ["platform", "create", "--workspace-id", "personal", "--name", "test", "--creation-type", "其他"], 1, false),
     run("portrait-delete-confirmation", ["portrait", "platform-delete", "--project-id", "test", "--ids", "portrait-1"], 1, false),
+    run("shared-library-add", ["library", "add", "--file", sharedImage], 0, true),
+    run("shared-library-list", ["library", "list"], 0, true),
+    run("shared-library-delete-confirmation", ["library", "remove", "missing-library-id"], 1, false),
   ];
   process.stdout.write(`${JSON.stringify({ ok: true, cases }, null, 2)}\n`);
 } finally {

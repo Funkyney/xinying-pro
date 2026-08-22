@@ -22,6 +22,7 @@ export function registerIpcHandlers(
     jobs: service.listJobs(),
     portraits: service.listPortraits(),
     platformPortraits: service.listPlatformPortraits(),
+    sharedMedia: service.listSharedMedia(),
     results: service.listResults(),
     platformCatalog: service.getPlatformCatalog(),
     session: await adapter.sessionState(),
@@ -95,6 +96,19 @@ export function registerIpcHandlers(
     return result.canceled ? service.database.mapReference(service.database.rows.reference(id)!) : service.replaceReference(id, result.filePaths[0]);
   });
   handle(IPC.referencesRemove, (_event, id: string) => service.removeReference(id));
+
+  handle(IPC.sharedMediaList, () => service.listSharedMedia());
+  handle(IPC.sharedMediaPickAdd, async () => {
+    const result = await dialog.showOpenDialog(window, {
+      title: "上传到共享素材库",
+      properties: ["openFile", "multiSelections"],
+      filters: [{ name: "图片、视频或音频", extensions: ["png", "jpg", "jpeg", "mp4", "mov", "wav", "mp3"] }],
+    });
+    return result.canceled ? service.listSharedMedia() : service.addSharedMedia(result.filePaths);
+  });
+  handle(IPC.sharedMediaAddToProject, (_event, projectId: string, id: string) => service.addSharedMediaToProject(projectId, id));
+  handle(IPC.sharedMediaRemoveFromProject, (_event, projectId: string, id: string) => service.removeSharedMediaFromProject(projectId, id));
+  handle(IPC.sharedMediaRemove, (_event, id: string) => service.removeSharedMedia(id));
 
   handle(IPC.portraitsList, () => service.listPortraits());
   handle(IPC.portraitsPickAdd, async (_event, consentConfirmed: boolean) => {

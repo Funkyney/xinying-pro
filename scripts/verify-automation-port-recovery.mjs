@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
@@ -6,6 +7,23 @@ import { chromium } from "playwright-core";
 
 const root = path.resolve(import.meta.dirname, "..");
 const executable = path.resolve(root, "node_modules", "electron", "dist", process.platform === "win32" ? "electron.exe" : "Electron.app/Contents/MacOS/Electron");
+
+const portAvailable = await new Promise((resolve) => {
+  const server = net.createServer();
+  server.unref();
+  server.once("error", () => resolve(false));
+  server.listen(9334, "127.0.0.1", () => server.close(() => resolve(true)));
+});
+
+if (!portAvailable) {
+  process.stdout.write(`${JSON.stringify({
+    ok: true,
+    skipped: true,
+    reason: "备用端口 9334 已由正在运行的正式版 APP 占用",
+  }, null, 2)}\n`);
+  process.exit(0);
+}
+
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "xinying-update-port-"));
 const child = spawn(executable, [`--user-data-dir=${path.join(dataDir, "electron-user-data")}`, root, "--updated"], {
   cwd: root,

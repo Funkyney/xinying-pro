@@ -119,11 +119,12 @@ app.whenReady().then(() => {
     if (!filePath) return new Response("Missing path", { status: 400 });
     const permitted = database?.db.prepare(`
       SELECT file_path FROM reference_assets WHERE file_path = ?
+      UNION ALL SELECT file_path FROM shared_media_assets WHERE file_path = ?
       UNION ALL SELECT file_path FROM portrait_assets WHERE file_path = ?
       UNION ALL SELECT output_path AS file_path FROM jobs WHERE output_path = ?
       UNION ALL SELECT output_path AS file_path FROM platform_results WHERE output_path = ?
       LIMIT 1
-    `).get(filePath, filePath, filePath, filePath);
+    `).get(filePath, filePath, filePath, filePath, filePath);
     if (!permitted) return new Response("Media path is not registered in the local project database", { status: 403 });
     return net.fetch(pathToFileURL(filePath).toString());
   });

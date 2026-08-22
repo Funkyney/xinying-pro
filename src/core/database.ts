@@ -10,6 +10,7 @@ import type {
   PlatformResult,
   Project,
   ReferenceAsset,
+  SharedMediaAsset,
 } from "../shared/contracts";
 
 interface ProjectRow {
@@ -36,6 +37,7 @@ interface ProjectRow {
 interface ReferenceRow {
   id: string;
   project_id: string;
+  source_shared_media_id: string | null;
   name: string;
   file_path: string;
   mime_type: string;
@@ -44,6 +46,17 @@ interface ReferenceRow {
   role: ReferenceAsset["role"];
   sha256: string;
   created_at: string;
+}
+
+interface SharedMediaRow {
+  id: string;
+  name: string;
+  file_path: string;
+  mime_type: string;
+  file_size: number;
+  sha256: string;
+  created_at: string;
+  updated_at: string;
 }
 
 interface PortraitRow {
@@ -177,9 +190,25 @@ export class XinyingDatabase {
         updated_at TEXT NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS shared_media_assets (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        file_path TEXT NOT NULL,
+        mime_type TEXT NOT NULL,
+        file_size INTEGER NOT NULL,
+        sha256 TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_shared_media_sha256
+        ON shared_media_assets(sha256);
+      CREATE INDEX IF NOT EXISTS idx_shared_media_created
+        ON shared_media_assets(created_at DESC);
+
       CREATE TABLE IF NOT EXISTS reference_assets (
         id TEXT PRIMARY KEY,
         project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        source_shared_media_id TEXT REFERENCES shared_media_assets(id) ON DELETE SET NULL,
         name TEXT NOT NULL,
         file_path TEXT NOT NULL,
         mime_type TEXT NOT NULL,
@@ -307,6 +336,14 @@ export class XinyingDatabase {
       this.db.exec("ALTER TABLE projects ADD COLUMN platform_project_id TEXT NOT NULL DEFAULT ''");
     }
 
+    const referenceColumns = new Set(
+      (this.db.prepare("PRAGMA table_info(reference_assets)").all() as Array<{ name: string }>).map((column) => column.name),
+    );
+    if (!referenceColumns.has("source_shared_media_id")) {
+      this.db.exec("ALTER TABLE reference_assets ADD COLUMN source_shared_media_id TEXT");
+    }
+    this.db.exec("CREATE INDEX IF NOT EXISTS idx_reference_shared_media ON reference_assets(source_shared_media_id)");
+
     const platformPortraitColumns = new Set(
       (this.db.prepare("PRAGMA table_info(platform_portraits)").all() as Array<{ name: string }>).map((column) => column.name),
     );
@@ -369,6 +406,7 @@ export class XinyingDatabase {
     return {
       id: row.id,
       projectId: row.project_id,
+      sourceSharedMediaId: row.source_shared_media_id,
       name: row.name,
       filePath: row.file_path,
       mimeType: row.mime_type,
@@ -377,6 +415,21 @@ export class XinyingDatabase {
       role: row.role,
       sha256: row.sha256,
       createdAt: row.created_at,
+    };
+  }
+
+  mapSharedMedia(row: SharedMediaRow): SharedMediaAsset {
+    const mimeType = row.mime_type;
+    return {
+      id: row.id,
+      name: row.name,
+      filePath: row.file_path,
+      mimeType,
+      mediaKind: mimeType.startsWith("video/") ? "video" : mimeType.startsWith("audio/") ? "audio" : "image",
+      fileSize: row.file_size,
+      sha256: row.sha256,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
     };
   }
 
@@ -477,6 +530,9 @@ export class XinyingDatabase {
     references: (projectId: string) =>
       this.db.prepare("SELECT * FROM reference_assets WHERE project_id = ? ORDER BY position ASC").all(projectId) as ReferenceRow[],
     reference: (id: string) => this.db.prepare("SELECT * FROM reference_assets WHERE id = ?").get(id) as ReferenceRow | undefined,
+    sharedMedia: () => this.db.prepare("SELECT * FROM shared_media_assets ORDER BY created_at DESC, id DESC").all() as SharedMediaRow[],
+    sharedMediaAsset: (id: string) => this.db.prepare("SELECT * FROM shared_media_assets WHERE id = ?").get(id) as SharedMediaRow | undefined,
+    sharedMediaByHash: (sha256: string) => this.db.prepare("SELECT * FROM shared_media_assets WHERE sha256 = ?").get(sha256) as SharedMediaRow | undefined,
     portraits: () => this.db.prepare("SELECT * FROM portrait_assets ORDER BY updated_at DESC").all() as PortraitRow[],
     platformPortraits: () => this.db.prepare("SELECT * FROM platform_portraits ORDER BY available DESC, sort_order ASC, display_name COLLATE NOCASE ASC").all() as PlatformPortraitRow[],
     platformResults: (projectId?: string) => (projectId

@@ -253,6 +253,26 @@ refs.command("remove").argument("<id>").option("--confirm").action((id: string, 
   output({ removed: id });
 });
 
+const library = program.command("library").description("管理 APP 级共享图片、视频和音频素材库");
+library.command("list").description("按最新上传顺序列出共享素材").action(() => output(runtime().service.listSharedMedia()));
+library.command("add")
+  .requiredOption("--file <path...>", "上传一个或多个图片、视频或音频文件")
+  .action((options) => output(runtime().service.addSharedMedia(options.file.map((item: string) => path.resolve(item)))));
+library.command("project-add")
+  .argument("<id>", "共享素材 ID")
+  .requiredOption("--project-id <id>", "目标本地项目 ID")
+  .action((id: string, options) => output(runtime().service.addSharedMediaToProject(options.projectId, id)));
+library.command("project-remove")
+  .argument("<id>", "共享素材 ID")
+  .requiredOption("--project-id <id>", "目标本地项目 ID")
+  .action((id: string, options) => output(runtime().service.removeSharedMediaFromProject(options.projectId, id)));
+library.command("remove").argument("<id>").option("--confirm", "确认删除共享库母版").action((id: string, options) => {
+  requireConfirm(options.confirm, "删除共享素材库母版");
+  const { service } = runtime();
+  service.removeSharedMedia(id);
+  output({ removed: id });
+});
+
 const portrait = program.command("portrait").description("管理虚拟人像素材与审核任务");
 portrait.command("list").action(() => output(runtime().service.listPortraits()));
 portrait.command("platform-list")

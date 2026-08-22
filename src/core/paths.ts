@@ -14,6 +14,7 @@ export interface AppPaths {
   dataDir: string;
   databasePath: string;
   assetsDir: string;
+  sharedMediaDir: string;
   portraitsDir: string;
   jobSnapshotsDir: string;
   outputsDir: string;
@@ -27,6 +28,7 @@ export function createAppPaths(explicit?: string): AppPaths {
     dataDir,
     databasePath: path.join(dataDir, "xinying.sqlite3"),
     assetsDir: path.join(dataDir, "assets"),
+    sharedMediaDir: path.join(dataDir, "shared-media"),
     portraitsDir: path.join(dataDir, "portraits"),
     jobSnapshotsDir: path.join(dataDir, "job-snapshots"),
     outputsDir: path.join(dataDir, "outputs"),

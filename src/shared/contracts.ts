@@ -110,6 +110,7 @@ export interface ProjectInput {
 export interface ReferenceAsset {
   id: string;
   projectId: string;
+  sourceSharedMediaId: string | null;
   name: string;
   filePath: string;
   mimeType: string;
@@ -118,6 +119,18 @@ export interface ReferenceAsset {
   role: ReferenceRole;
   sha256: string;
   createdAt: string;
+}
+
+export interface SharedMediaAsset {
+  id: string;
+  name: string;
+  filePath: string;
+  mimeType: string;
+  mediaKind: ReferenceMediaKind;
+  fileSize: number;
+  sha256: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface PortraitAsset {
@@ -232,6 +245,7 @@ export interface DashboardSnapshot {
   jobs: Job[];
   portraits: PortraitAsset[];
   platformPortraits: PlatformPortrait[];
+  sharedMedia: SharedMediaAsset[];
   results: PlatformResult[];
   platformCatalog: PlatformCatalogSnapshot;
   session: SessionState;
@@ -303,6 +317,13 @@ export interface XinyingApi {
     replace(id: string): Promise<ReferenceAsset>;
     remove(id: string): Promise<void>;
     mediaUrl(filePath: string): string;
+  };
+  sharedMedia: {
+    list(): Promise<SharedMediaAsset[]>;
+    pickAndAdd(): Promise<SharedMediaAsset[]>;
+    addToProject(projectId: string, id: string): Promise<ReferenceAsset[]>;
+    removeFromProject(projectId: string, id: string): Promise<ReferenceAsset[]>;
+    remove(id: string): Promise<void>;
   };
   portraits: {
     list(): Promise<PortraitAsset[]>;

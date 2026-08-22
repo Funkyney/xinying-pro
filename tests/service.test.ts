@@ -50,6 +50,78 @@ describe("XinyingService", () => {
     expect(updated.platformUrl).toContain("sessionId=test-session");
   });
 
+  it("builds a deduplicated shared image, video, and audio library", () => {
+    const image = fixture("library-image.png", "image-bytes");
+    const duplicateImage = fixture("same-image.png", "image-bytes");
+    const video = fixture("library-video.mp4", "video-bytes");
+    const audio = fixture("library-audio.mp3", "audio-bytes");
+
+    const library = service.addSharedMedia([image, duplicateImage, video, audio]);
+    expect(library).toHaveLength(3);
+    expect(library.map((asset) => asset.mediaKind).sort()).toEqual(["audio", "image", "video"]);
+    expect(library.every((asset) => asset.filePath.startsWith(service.paths.sharedMediaDir))).toBe(true);
+    expect(library.every((asset) => fs.existsSync(asset.filePath))).toBe(true);
+  });
+
+  it("reuses shared media across projects without coupling project copies to the library master", () => {
+    const source = fixture("shared-product.png", "shared-product-image");
+    const [shared] = service.addSharedMedia([source]);
+    const firstProject = service.createProject({ name: "共享素材项目一" });
+    const secondProject = service.createProject({ name: "共享素材项目二" });
+
+    const firstReferences = service.addSharedMediaToProject(firstProject.id, shared.id);
+    const secondReferences = service.addSharedMediaToProject(secondProject.id, shared.id);
+    expect(firstReferences[0].sourceSharedMediaId).toBe(shared.id);
+    expect(secondReferences[0].sourceSharedMediaId).toBe(shared.id);
+    expect(firstReferences[0].filePath).not.toBe(secondReferences[0].filePath);
+    expect(firstReferences[0].filePath).not.toBe(shared.filePath);
+    expect(service.addSharedMediaToProject(firstProject.id, shared.id)).toHaveLength(1);
+
+    service.removeSharedMedia(shared.id);
+    expect(service.listSharedMedia()).toEqual([]);
+    expect(fs.existsSync(firstReferences[0].filePath)).toBe(true);
+    expect(fs.existsSync(secondReferences[0].filePath)).toBe(true);
+    expect(service.listReferences(firstProject.id)[0].sourceSharedMediaId).toBeNull();
+    expect(service.listReferences(secondProject.id)[0].sourceSharedMediaId).toBeNull();
+  });
+
+  it("automatically publishes direct project uploads and removes only the selected project copy", () => {
+    const source = fixture("direct-audio.wav", "audio-reference");
+    const project = service.createProject({ name: "直接上传同步共享库" });
+    const [reference] = service.addReferences(project.id, [source]);
+    const [shared] = service.listSharedMedia();
+    expect(shared.name).toBe("direct-audio.wav");
+    expect(reference.sourceSharedMediaId).toBe(shared.id);
+
+    expect(service.removeSharedMediaFromProject(project.id, shared.id)).toEqual([]);
+    expect(service.listSharedMedia()).toHaveLength(1);
+    expect(fs.existsSync(shared.filePath)).toBe(true);
+  });
+
+  it("backfills existing unlinked project references into the shared library on startup", () => {
+    const project = service.createProject({ name: "旧素材回填" });
+    const [reference] = service.addReferences(project.id, [fixture("legacy-scene.png", "legacy-scene")]);
+    const [oldShared] = service.listSharedMedia();
+    service.removeSharedMedia(oldShared.id);
+    expect(service.listReferences(project.id)[0].sourceSharedMediaId).toBeNull();
+    database.db.prepare("DELETE FROM settings WHERE key = 'shared_media_library_migration_v1'").run();
+
+    database.close();
+    const paths = createAppPaths(tempDir);
+    database = new XinyingDatabase(paths.databasePath);
+    service = new XinyingService(database, paths);
+    const [backfilled] = service.listSharedMedia();
+    expect(backfilled.name).toBe("legacy-scene.png");
+    expect(service.listReferences(project.id)[0]).toMatchObject({ id: reference.id, sourceSharedMediaId: backfilled.id });
+
+    service.removeSharedMedia(backfilled.id);
+    database.close();
+    database = new XinyingDatabase(paths.databasePath);
+    service = new XinyingService(database, paths);
+    expect(service.listSharedMedia()).toEqual([]);
+    expect(service.listReferences(project.id)[0].sourceSharedMediaId).toBeNull();
+  });
+
   it("blocks generation until a Heart workspace and project are selected", () => {
     const project = service.createProject({
       name: "未绑定项目",

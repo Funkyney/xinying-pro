@@ -49,6 +49,7 @@ import type {
   ProjectInput,
   ReferenceAsset,
   ReferenceRole,
+  SharedMediaAsset,
   SubmissionPreview,
 } from "../shared/contracts";
 import { modelProfile, resolutionLabel, XINYING_MODEL_PROFILES } from "../shared/model-profiles";
@@ -60,6 +61,7 @@ import {
 } from "../shared/material-order";
 import { assignMediaLabels, mediaKindFromMime } from "../shared/media";
 import { ReferenceBoard, type ReferenceAuthorizationState } from "./components/ReferenceBoard";
+import { SharedMaterialLibrary } from "./components/SharedMaterialLibrary";
 import { PlatformPanel } from "./components/PlatformPanel";
 import xinyingLogo from "./assets/xinying-logo.svg";
 
@@ -318,29 +320,36 @@ function PlatformProjectsPage({ snapshot, run, onOpen, onCreated }: { snapshot: 
 
 function StudioPage({ project, projects, portraits, platformPortraits, jobs, onSelect, onNavigate, run, onOpenPlatform, onDelete }: { project: Project | null; projects: Project[]; portraits: PortraitAsset[]; platformPortraits: PlatformPortrait[]; jobs: Job[]; onSelect: (id: string) => void; onNavigate: (page: PageKey) => void; run: (action: () => Promise<unknown>, success?: string) => Promise<void>; onOpenPlatform: (url: string) => Promise<void>; onDelete: (id: string) => Promise<void> }) {
   const [references, setReferences] = useState<ReferenceAsset[]>([]);
+  const [sharedMedia, setSharedMedia] = useState<SharedMediaAsset[]>([]);
   const [draft, setDraft] = useState<Partial<ProjectInput>>({});
   const [preview, setPreview] = useState<SubmissionPreview | null>(null);
-  const [portraitQuery, setPortraitQuery] = useState("");
   const [authorizationTarget, setAuthorizationTarget] = useState<ReferenceAsset | null>(null);
   const [authorizationConsent, setAuthorizationConsent] = useState(false);
   const [authorizingReferenceIds, setAuthorizingReferenceIds] = useState<Set<string>>(() => new Set());
   const [referenceDeleteTarget, setReferenceDeleteTarget] = useState<ReferenceAsset | null>(null);
+  const [sharedMediaDeleteTarget, setSharedMediaDeleteTarget] = useState<SharedMediaAsset | null>(null);
 
   useEffect(() => {
     if (!project) return;
     setDraft({ name: project.name, description: project.description, prompt: project.prompt, modelName: project.modelName, platformUrl: project.platformUrl, platformWorkspaceId: project.platformWorkspaceId, platformProjectId: project.platformProjectId, mode: project.mode, aspectRatio: project.aspectRatio, duration: project.duration, resolution: project.resolution, audioEnabled: project.audioEnabled, portraitIds: project.portraitIds, materialOrder: project.materialOrder });
-    void window.xinying.references.list(project.id).then(setReferences);
+    void Promise.all([window.xinying.references.list(project.id), window.xinying.sharedMedia.list()]).then(([nextReferences, nextSharedMedia]) => {
+      setReferences(nextReferences);
+      setSharedMedia(nextSharedMedia);
+    });
   }, [project?.id, project?.updatedAt]);
 
   if (!project || !project.platformProjectId || !project.platformUrl) return <EmptyState title="请先选择心影空间和项目" description="生成工作台只在已选择或新建的心影项目下启用，确保团队/个人内容进入正确的位置。" action={<button className="button primary" onClick={() => onNavigate("projects")}><Building2 size={16} />选择或新建心影项目</button>} />;
   const updateDraft = <K extends keyof ProjectInput>(key: K, value: ProjectInput[K]) => setDraft((current) => ({ ...current, [key]: value }));
-  const reloadRefs = async () => setReferences(await window.xinying.references.list(project.id));
+  const reloadRefs = async () => {
+    const [nextReferences, nextSharedMedia] = await Promise.all([window.xinying.references.list(project.id), window.xinying.sharedMedia.list()]);
+    setReferences(nextReferences);
+    setSharedMedia(nextSharedMedia);
+    return nextReferences;
+  };
   const profile = modelProfile(draft.modelName);
   const selectedPortraitIds = draft.portraitIds ?? [];
   const materialOrder = reconcileMaterialOrder(draft.materialOrder, selectedPortraitIds, references.map((reference) => reference.id));
   const availablePortraits = platformPortraits.filter((portrait) => portrait.available && (!portrait.workspaceId || portrait.workspaceId === project.platformWorkspaceId));
-  const normalizedPortraitQuery = portraitQuery.trim().toLocaleLowerCase("zh-CN");
-  const matchingPortraits = availablePortraits.filter((portrait) => !normalizedPortraitQuery || portrait.displayName.toLocaleLowerCase("zh-CN").includes(normalizedPortraitQuery));
   const selectedPortraits = selectedPortraitIds.map((id) => availablePortraits.find((portrait) => portrait.id === id)).filter((portrait): portrait is PlatformPortrait => Boolean(portrait));
   const referencesById = new Map(references.map((reference) => [reference.id, reference]));
   const portraitsById = new Map(selectedPortraits.map((portrait) => [portrait.id, portrait]));
@@ -350,7 +359,6 @@ function StudioPage({ project, projects, portraits, platformPortraits, jobs, onS
     const reference = item?.kind === "reference" ? referencesById.get(item.id) : undefined;
     return reference ? mediaKindFromMime(reference.mimeType) : "unknown";
   }));
-  const visiblePortraits = [...selectedPortraits, ...matchingPortraits.filter((portrait) => !selectedPortraitIds.includes(portrait.id))].slice(0, 120);
   const authorizationStates = Object.fromEntries(references.map((reference): [string, ReferenceAuthorizationState] => {
     const linkedPortraits = portraits.filter((portrait) => portrait.sourceReferenceId === reference.id);
     const linkedPortraitIds = new Set(linkedPortraits.map((portrait) => portrait.id));
@@ -412,6 +420,19 @@ function StudioPage({ project, projects, portraits, platformPortraits, jobs, onS
       removing ? `“${portrait?.displayName ?? "虚拟人像"}”已从参考素材移除` : `“${portrait?.displayName ?? "虚拟人像"}”已加入上方参考素材`,
     );
   };
+  const toggleSharedMedia = (asset: SharedMediaAsset) => {
+    const selected = references.some((reference) => reference.sourceSharedMediaId === asset.id);
+    void run(async () => {
+      const nextReferences = selected
+        ? await window.xinying.sharedMedia.removeFromProject(project.id, asset.id)
+        : await window.xinying.sharedMedia.addToProject(project.id, asset.id);
+      setReferences(nextReferences);
+      setDraft((current) => ({
+        ...current,
+        materialOrder: reconcileMaterialOrder(current.materialOrder, current.portraitIds ?? [], nextReferences.map((reference) => reference.id)),
+      }));
+    }, selected ? `“${asset.name}”已从当前项目移出，共享库仍保留` : `“${asset.name}”已加入当前项目创作顺序`);
+  };
   const reorderMaterials = (requestedOrder: string[]) => {
     const nextOrder = requestedOrder;
     const nextPortraitIds = nextOrder
@@ -424,11 +445,8 @@ function StudioPage({ project, projects, portraits, platformPortraits, jobs, onS
 
   return <div className="studio-page">
     <div className="page-heading"><div><span className="eyebrow">GENERATION WORKSPACE</span><h1>{project.name}</h1><p>本地素材按 APP 顺序上传；多个虚拟角色由心影官方排序，APP 会按实际编号自动改写提示词。</p></div><div className="heading-actions">{draft.platformUrl && <button className="button ghost" onClick={() => void onOpenPlatform(draft.platformUrl!)}><ExternalLink size={16} />查看绑定会话</button>}<button className="button danger" onClick={() => confirm(`删除项目“${project.name}”及其本地素材？历史任务记录会保留，但项目关联将清空。`) && void onDelete(project.id)}><Trash2 size={16} />删除项目</button><button className="button ghost" onClick={() => run(() => window.xinying.projects.update(project.id, draft), "项目已保存")}><Save size={16} />保存草稿</button><button className="button primary" onClick={() => run(async () => { await window.xinying.projects.update(project.id, draft); setPreview(await window.xinying.jobs.preview(project.id)); })}><Send size={16} />预览提交</button></div></div>
-    <ReferenceBoard assets={references} portraits={selectedPortraits} materialOrder={materialOrder} authorizationStates={authorizationStates} onAdd={() => run(async () => { const nextReferences = await window.xinying.references.pickAndAdd(project.id); setReferences(nextReferences); setDraft((current) => ({ ...current, materialOrder: reconcileMaterialOrder(current.materialOrder, current.portraitIds ?? [], nextReferences.map((reference) => reference.id)) })); }, "参考素材已添加到 APP 创作顺序")} onBatchReplace={() => run(async () => setReferences(await window.xinying.references.batchReplace(project.id)), "全部本地参考素材已替换，编号保持不变")} onReorder={reorderMaterials} onRole={(id, role: ReferenceRole) => run(async () => { await window.xinying.references.updateRole(id, role); await reloadRefs(); })} onReplace={(id) => run(async () => { await window.xinying.references.replace(id); await reloadRefs(); }, "素材已替换，编号保持不变")} onAuthorize={(asset) => { if (localStorage.getItem("xinying:portrait-compliance-v1") === "confirmed") startReferenceAuthorization(asset, true); else { setAuthorizationTarget(asset); setAuthorizationConsent(false); } }} onRemove={(id) => setReferenceDeleteTarget(references.find((reference) => reference.id === id) ?? null)} onRemovePortrait={togglePortrait} />
-    <section className="panel studio-portrait-panel">
-      <div className="panel-heading compact"><div><span className="eyebrow">VERIFIED CHARACTERS</span><h2>心影共享虚拟人像</h2><p>点击后追加到上方末尾；可在 APP 创作顺序中任意穿插、拖动，提交时自动换算心影编号。</p></div><div className="portrait-toolbar"><input className="portrait-search" value={portraitQuery} onChange={(event) => setPortraitQuery(event.target.value)} placeholder="搜索角色名称…" /><button className="button secondary" onClick={() => run(() => window.xinying.portraits.sync(project.id), "当前空间虚拟人像库已同步")}><RefreshCw size={15} />同步当前空间</button></div></div>
-      <div className="platform-portrait-strip">{visiblePortraits.map((portrait) => { const order = materialOrder.indexOf(portraitMaterialKey(portrait.id)); return <button type="button" className={`platform-portrait-choice ${order >= 0 ? "selected" : ""}`} key={portrait.id} onClick={() => togglePortrait(portrait.id)}><img loading="lazy" src={portrait.previewUrl} alt={portrait.displayName} /><span>{portrait.displayName}</span><small>{portrait.mediaKind === "video" ? "视频角色" : portrait.mediaKind === "unknown" ? "首次使用时由心影校验类型" : "图片角色"} · {order >= 0 ? "已加入，点击取消" : "点击加入上方素材"}</small>{order >= 0 && <b>{materialLabels[order]}</b>}</button>; })}{!availablePortraits.length && <div className="inline-empty">尚未同步；点击右上角读取当前个人/团队空间的已授权角色。</div>}{availablePortraits.length > 0 && !visiblePortraits.length && <div className="inline-empty">没有匹配的角色。</div>}</div>
-    </section>
+    <ReferenceBoard assets={references} portraits={selectedPortraits} materialOrder={materialOrder} authorizationStates={authorizationStates} onAdd={() => run(async () => { const nextReferences = await window.xinying.references.pickAndAdd(project.id); setReferences(nextReferences); setSharedMedia(await window.xinying.sharedMedia.list()); setDraft((current) => ({ ...current, materialOrder: reconcileMaterialOrder(current.materialOrder, current.portraitIds ?? [], nextReferences.map((reference) => reference.id)) })); }, "参考素材已加入项目并保存到共享素材库")} onBatchReplace={() => run(async () => { setReferences(await window.xinying.references.batchReplace(project.id)); setSharedMedia(await window.xinying.sharedMedia.list()); }, "全部本地参考素材已替换，新素材已进入共享库")} onReorder={reorderMaterials} onRole={(id, role: ReferenceRole) => run(async () => { await window.xinying.references.updateRole(id, role); await reloadRefs(); })} onReplace={(id) => run(async () => { await window.xinying.references.replace(id); await reloadRefs(); }, "素材已替换并进入共享库，编号保持不变")} onAuthorize={(asset) => { if (localStorage.getItem("xinying:portrait-compliance-v1") === "confirmed") startReferenceAuthorization(asset, true); else { setAuthorizationTarget(asset); setAuthorizationConsent(false); } }} onRemove={(id) => setReferenceDeleteTarget(references.find((reference) => reference.id === id) ?? null)} onRemovePortrait={togglePortrait} />
+    <SharedMaterialLibrary assets={sharedMedia} portraits={availablePortraits} references={references} materialOrder={materialOrder} materialLabels={materialLabels} onUpload={() => run(async () => setSharedMedia(await window.xinying.sharedMedia.pickAndAdd()), "共享素材已上传；点击卡片即可加入当前项目")} onSyncPortraits={() => run(() => window.xinying.portraits.sync(project.id), "当前空间虚拟人像库已同步")} onToggleAsset={toggleSharedMedia} onDeleteAsset={setSharedMediaDeleteTarget} onTogglePortrait={(portrait) => togglePortrait(portrait.id)} />
     <div className="studio-columns">
       <section className="panel prompt-panel"><div className="panel-heading compact"><div><span className="eyebrow">PROMPT</span><h2>导演提示词</h2></div><Sparkles size={19} /></div><textarea value={draft.prompt ?? ""} onChange={(event) => updateDraft("prompt", event.target.value)} placeholder="描述可见动作、镜头、光线、声音和限制…" /><div className="prompt-footer"><span>{(draft.prompt ?? "").length} 字</span><span>支持 @图1、@图一 和“参考图三”，提交时自动换算</span></div></section>
       <section className="panel parameters-panel">
@@ -444,6 +462,7 @@ function StudioPage({ project, projects, portraits, platformPortraits, jobs, onS
     </div>
     {preview && <div className="modal-backdrop"><section className="confirm-modal"><div className="modal-icon"><Send size={21} /></div><h2>提交到心影任务队列？</h2><p>APP 将按下面的素材编号和参数，通过当前登录的心影页面执行。</p><div className="preview-list">{preview.orderedLabels.map((label) => <span key={label}>{label}</span>)}{!preview.orderedLabels.length && <span>无参考素材</span>}</div>{preview.warnings.length > 0 && <div className="warning-box">{preview.warnings.map((warning) => <span key={warning}><ShieldAlert size={14} />{warning}</span>)}</div>}<div className="modal-actions"><button className="button ghost" onClick={() => setPreview(null)}>返回检查</button><button className="button primary" disabled={!preview.ready} onClick={() => run(async () => { await window.xinying.projects.update(project.id, draft); await window.xinying.jobs.submit(project.id); setPreview(null); }, "任务已加入队列")}><Send size={16} />确认提交</button></div></section></div>}
     {authorizationTarget && <div className="modal-backdrop"><section className="confirm-modal portrait-authorization-modal"><div className="modal-icon"><UserRoundCheck size={21} /></div><h2>把“{authorizationTarget.name}”授权为虚拟人像</h2><p>这是首次合规确认。确认后会记住设置，以后点击卡片即可直接在后台授权，不再重复弹出本窗口。</p><label className="consent-banner"><input type="checkbox" checked={authorizationConsent} onChange={(event) => setAuthorizationConsent(event.target.checked)} /><span><strong>确认原创、合法权利与自动授权</strong>我确认该素材为原创设计的虚拟人像，享有完整合法权利，不与任何自然人的肖像或形象相同或相似，并同意心影《虚拟人像素材合规承诺与授权确认书》。</span></label><div className="modal-actions"><button className="button ghost" onClick={() => setAuthorizationTarget(null)}>取消</button><button className="button primary" disabled={!authorizationConsent} onClick={() => startReferenceAuthorization(authorizationTarget, true)}><UserRoundCheck size={16} />确认并开始后台授权</button></div></section></div>}
+    {sharedMediaDeleteTarget && <div className="modal-backdrop"><section className="confirm-modal reference-delete-modal"><div className="modal-icon danger"><Trash2 size={21} /></div><h2>从共享素材库删除“{sharedMediaDeleteTarget.name}”？</h2><p>只删除共享库保存的母版；已经加入各项目的独立参考副本和已排队任务不会受影响。</p><div className="modal-actions"><button type="button" className="button ghost" onClick={() => setSharedMediaDeleteTarget(null)}>取消</button><button type="button" className="button danger" onClick={() => void run(async () => { const id = sharedMediaDeleteTarget.id; await window.xinying.sharedMedia.remove(id); setSharedMedia(await window.xinying.sharedMedia.list()); await reloadRefs(); setSharedMediaDeleteTarget(null); }, "共享素材已删除，项目中的独立副本保持不变")}><Trash2 size={16} />确认删除母版</button></div></section></div>}
     {referenceDeleteTarget && <div className="modal-backdrop"><section className="confirm-modal reference-delete-modal"><div className="modal-icon danger"><Trash2 size={21} /></div><h2>从当前项目删除 {materialLabels[materialOrder.indexOf(referenceMaterialKey(referenceDeleteTarget.id))]}？</h2><div className="reference-delete-summary"><div className="reference-delete-media">{mediaKindFromMime(referenceDeleteTarget.mimeType) === "image" ? <img src={window.xinying.references.mediaUrl(referenceDeleteTarget.filePath)} alt={referenceDeleteTarget.name} /> : mediaKindFromMime(referenceDeleteTarget.mimeType) === "video" ? <video src={window.xinying.references.mediaUrl(referenceDeleteTarget.filePath)} muted /> : <Film size={30} />}</div><div><strong>{referenceDeleteTarget.name}</strong><span>删除后，同类型素材编号会自动前移。</span></div></div><p>只删除 APP 为当前项目保存的这份参考素材，不会删除原始文件，也不会删除已经上传到心影的虚拟人像。</p><div className="modal-actions"><button type="button" className="button ghost" onClick={() => setReferenceDeleteTarget(null)}>取消</button><button type="button" className="button danger" onClick={() => void run(async () => { const id = referenceDeleteTarget.id; await window.xinying.references.remove(id); const nextReferences = await window.xinying.references.list(project.id); setReferences(nextReferences); setDraft((current) => ({ ...current, materialOrder: reconcileMaterialOrder(current.materialOrder?.filter((key) => key !== referenceMaterialKey(id)), current.portraitIds ?? [], nextReferences.map((reference) => reference.id)) })); setReferenceDeleteTarget(null); }, "素材已删除，同类型后续编号已前移")}><Trash2 size={16} />确认删除</button></div></section></div>}
   </div>;
 }
