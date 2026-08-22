@@ -62,6 +62,9 @@ const IPC = {
   updateDownload: "update:download",
   updateInstall: "update:install",
   updateStateChanged: "update:state-changed",
+  codexExtensionStatus: "codex-extension:status",
+  codexExtensionInstall: "codex-extension:install",
+  codexExtensionOpenFolder: "codex-extension:open-folder",
 } as const;
 
 const api: XinyingApi = {
@@ -150,6 +153,11 @@ const api: XinyingApi = {
       ipcRenderer.on(IPC.updateStateChanged, handler);
       return () => ipcRenderer.removeListener(IPC.updateStateChanged, handler);
     },
+  },
+  codexExtension: {
+    status: () => ipcRenderer.invoke(IPC.codexExtensionStatus),
+    install: (replaceExisting = false) => ipcRenderer.invoke(IPC.codexExtensionInstall, replaceExisting),
+    openFolder: () => ipcRenderer.invoke(IPC.codexExtensionOpenFolder),
   },
 };
 

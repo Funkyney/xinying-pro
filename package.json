@@ -41,6 +41,8 @@
     "verify:concurrent-sync": "node scripts/verify-concurrent-sync.mjs",
     "verify:update-ui": "node scripts/verify-update-ui.mjs",
     "verify:update-port": "node scripts/verify-automation-port-recovery.mjs",
+    "verify:codex-ui": "node scripts/verify-codex-extension-ui.mjs",
+    "verify:codex-e2e": "node scripts/verify-codex-extension-e2e.mjs",
     "cli": "node dist-electron/cli/index.js",
     "pack:win": "npm run build && electron-builder --win nsis",
     "pack:mac": "npm run build && electron-builder --mac dmg zip --universal",
@@ -89,6 +91,15 @@
       "dist-electron/**/*",
       "config/**/*",
       "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "codex-skills",
+        "to": "codex-skills",
+        "filter": [
+          "**/*"
+        ]
+      }
     ],
     "directories": {
       "output": "release"

@@ -12,6 +12,7 @@ import { registerIpcHandlers } from "./ipc-handlers";
 import { registerAppUpdater } from "./app-updater";
 import { IPC } from "../shared/ipc";
 import { reserveAutomationPort } from "../shared/automation-port";
+import { CodexExtensionManager } from "./codex-extension";
 
 app.setName("xinying-director");
 
@@ -77,7 +78,19 @@ function createWindow(): void {
     },
   );
   worker = new JobWorker(service, adapter, (operation) => platformManager!.withAutomationViewport(operation));
-  registerIpcHandlers(mainWindow, service, platformManager, adapter);
+  const bundledSkillPath = app.isPackaged
+    ? path.join(process.resourcesPath, "codex-skills", "xinying-pro-generate")
+    : path.join(app.getAppPath(), "codex-skills", "xinying-pro-generate");
+  const cliEntry = app.isPackaged
+    ? path.join(process.resourcesPath, "app.asar", "dist-electron", "cli", "index.js")
+    : path.join(app.getAppPath(), "dist-electron", "cli", "index.js");
+  const codexExtension = new CodexExtensionManager({
+    appVersion: app.getVersion(),
+    appExecutable: process.execPath,
+    cliEntry,
+    bundledSkillPath,
+  });
+  registerIpcHandlers(mainWindow, service, platformManager, adapter, codexExtension);
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     try {

@@ -35,6 +35,7 @@ import {
 } from "lucide-react";
 import type {
   AppUpdateState,
+  CodexExtensionStatus,
   DashboardSnapshot,
   Job,
   JobEvent,
@@ -65,7 +66,7 @@ import { SharedMaterialLibrary } from "./components/SharedMaterialLibrary";
 import { PlatformPanel } from "./components/PlatformPanel";
 import xinyingLogo from "./assets/xinying-logo.svg";
 
-type PageKey = "dashboard" | "projects" | "studio" | "portraits" | "jobs" | "results" | "platform";
+type PageKey = "dashboard" | "projects" | "studio" | "portraits" | "jobs" | "results" | "codex" | "platform";
 
 const navigation: Array<{ key: PageKey; label: string; icon: typeof LayoutDashboard }> = [
   { key: "dashboard", label: "总览", icon: LayoutDashboard },
@@ -74,6 +75,7 @@ const navigation: Array<{ key: PageKey; label: string; icon: typeof LayoutDashbo
   { key: "portraits", label: "虚拟人像", icon: CircleUserRound },
   { key: "jobs", label: "任务队列", icon: Activity },
   { key: "results", label: "结果库", icon: Film },
+  { key: "codex", label: "Codex扩展", icon: Bot },
   { key: "platform", label: "原网页模式", icon: ExternalLink },
 ];
 
@@ -244,6 +246,7 @@ export function App() {
               {page === "portraits" && <PortraitsPage portraits={snapshot.portraits} platformPortraits={snapshot.platformPortraits} projects={snapshot.projects} selectedProject={selectedProject} workspaceName={selectedPlatformWorkspace?.name ?? "当前心影空间"} onSelectProject={setSelectedProjectId} run={run} onNavigate={setPage} />}
               {page === "jobs" && <JobsPage jobs={snapshot.jobs} projects={snapshot.projects} portraits={snapshot.portraits} run={run} />}
               {page === "results" && <ResultsPage results={snapshot.results} projects={snapshot.projects} selectedProject={selectedProject} onSelectProject={setSelectedProjectId} run={run} />}
+              {page === "codex" && <CodexExtensionPage />}
               {page === "platform" && <PlatformPanel />}
             </>
           )}
@@ -252,6 +255,89 @@ export function App() {
       {busy && <div className="busy-overlay"><div className="loader" /></div>}
     </div>
   );
+}
+
+function CodexExtensionPage() {
+  const [status, setStatus] = useState<CodexExtensionStatus | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [working, setWorking] = useState(false);
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+
+  const refreshStatus = useCallback(async () => {
+    setLoading(true);
+    try {
+      setStatus(await window.xinying.codexExtension.status());
+      setError("");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { void refreshStatus(); }, [refreshStatus]);
+
+  const install = async () => {
+    if (!status) return;
+    const replaceExisting = status.conflict;
+    if (replaceExisting && !confirm("检测到同名的现有 Skill。心影Pro会先完整备份它，再安装受管版本。继续吗？")) return;
+    setWorking(true);
+    setError("");
+    setMessage("");
+    try {
+      const result = await window.xinying.codexExtension.install(replaceExisting);
+      setStatus(result);
+      setMessage(result.backupPath
+        ? `安装完成；原 Skill 已备份到 ${result.backupPath}。请新建 Codex 任务或重启 Codex 后使用。`
+        : "安装完成。请新建 Codex 任务或重启 Codex 后使用。");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setWorking(false);
+    }
+  };
+
+  const actionLabel = status?.state === "conflict" ? "备份现有 Skill 并安装"
+    : status?.state === "update-available" ? "更新 Codex 扩展"
+      : status?.state === "installed" ? "重新安装"
+        : "安装到 Codex";
+  const stateLabel = status?.state === "installed" ? "已就绪"
+    : status?.state === "update-available" ? "可更新"
+      : status?.state === "conflict" ? "需要确认"
+        : status?.state === "source-missing" ? "资源缺失"
+          : "未安装";
+
+  return <div className="codex-extension-page">
+    <div className="page-heading">
+      <div><span className="eyebrow">CODEX EXTENSION</span><h1>让 Codex 直接指挥心影Pro</h1><p>一次安装后，Codex 能把定稿提示词、参考素材、人物授权与生成数量交给本机心影Pro执行。</p></div>
+      <button className="button ghost" disabled={loading} onClick={() => void refreshStatus()}><RefreshCw size={15} className={loading ? "spinning" : ""} />刷新状态</button>
+    </div>
+
+    <section className="codex-extension-hero panel">
+      <div className="codex-extension-icon"><Bot size={38} /></div>
+      <div className="codex-extension-summary">
+        <div><span className={`extension-state extension-${status?.state ?? "loading"}`}><span />{loading ? "检测中" : stateLabel}</span><small>心影Pro × Codex</small></div>
+        <h2>心影Pro 自动生成 Skill</h2>
+        <p>{status?.message ?? "正在检测本机 Codex 扩展目录…"}</p>
+      </div>
+      <div className="codex-extension-actions">
+        <button className="button primary" disabled={!status?.available || working || loading} onClick={() => void install()}>{working ? <RefreshCw size={16} className="spinning" /> : <Download size={16} />}{working ? "安装中…" : actionLabel}</button>
+        <button className="button ghost" disabled={!status || working} onClick={() => void window.xinying.codexExtension.openFolder()}><FolderKanban size={15} />打开扩展目录</button>
+      </div>
+    </section>
+
+    {message && <div className="extension-notice success"><CheckCircle2 size={17} /><span>{message}</span></div>}
+    {error && <div className="extension-notice error"><ShieldAlert size={17} /><span>{error}</span></div>}
+
+    <div className="codex-extension-grid">
+      <section className="panel extension-detail-card"><span className="eyebrow">INSTALLATION</span><h3>安装状态</h3><dl><div><dt>APP内置版本</dt><dd>{status?.currentVersion ?? "—"}</dd></div><div><dt>已安装版本</dt><dd>{status?.installedVersion ?? "未安装"}</dd></div><div><dt>更新联动</dt><dd>APP更新后此页会提示扩展更新</dd></div></dl></section>
+      <section className="panel extension-detail-card"><span className="eyebrow">LOCAL PATH</span><h3>本机位置</h3><dl><div><dt>Codex目录</dt><dd title={status?.codexHome}>{status?.codexHome ?? "检测中…"}</dd></div><div><dt>Skill目录</dt><dd title={status?.skillPath}>{status?.skillPath ?? "检测中…"}</dd></div><div><dt>CLI启动器</dt><dd title={status?.launcherPath ?? undefined}>{status?.launcherPath ?? "安装时自动生成"}</dd></div></dl></section>
+      <section className="panel extension-detail-card extension-workflow-card"><span className="eyebrow">WORKFLOW</span><h3>同事怎么使用</h3><ol><li><b>1</b><span>安装心影Pro并用飞书登录自己的心影账号</span></li><li><b>2</b><span>在此页点击“安装到 Codex”</span></li><li><b>3</b><span>在 Codex 中完成 Seedance 提示词后说“用心影Pro生成 N 条”</span></li></ol></section>
+    </div>
+
+    <section className="extension-safety panel"><ShieldAlert size={18} /><div><strong>授权与费用仍由每位使用者控制</strong><span>Skill只在用户明确要求生成时才提交并可能扣费；不会读取 Cookie、Token、二维码，也不会绕过登录、审核、额度或付费确认。</span></div></section>
+  </div>;
 }
 
 function DashboardPage({ snapshot, onNavigate }: { snapshot: DashboardSnapshot; onNavigate: (page: PageKey) => void }) {

@@ -360,6 +360,26 @@ export interface AppUpdateState {
   message?: string;
 }
 
+export type CodexExtensionInstallState = "not-installed" | "installed" | "update-available" | "conflict" | "source-missing";
+
+export interface CodexExtensionStatus {
+  state: CodexExtensionInstallState;
+  available: boolean;
+  installed: boolean;
+  needsUpdate: boolean;
+  conflict: boolean;
+  currentVersion: string;
+  installedVersion: string | null;
+  codexHome: string;
+  skillPath: string;
+  launcherPath: string | null;
+  message: string;
+}
+
+export interface CodexExtensionInstallResult extends CodexExtensionStatus {
+  backupPath: string | null;
+}
+
 export interface XinyingApi {
   dashboard(): Promise<DashboardSnapshot>;
   projects: {
@@ -438,6 +458,11 @@ export interface XinyingApi {
     download(): Promise<AppUpdateState>;
     install(): Promise<AppUpdateState>;
     onStateChange(listener: (state: AppUpdateState) => void): () => void;
+  };
+  codexExtension: {
+    status(): Promise<CodexExtensionStatus>;
+    install(replaceExisting?: boolean): Promise<CodexExtensionInstallResult>;
+    openFolder(): Promise<string>;
   };
 }
 

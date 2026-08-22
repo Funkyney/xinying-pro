@@ -56,6 +56,7 @@ jobs:
         run: npm version $env:RELEASE_VERSION --no-git-tag-version
       - run: npm run build
       - run: npx electron-builder --win nsis --x64 --publish never
+      - run: npm run verify:codex-e2e
       - uses: actions/upload-artifact@v4
         with:
           name: windows-${{ needs.prepare.outputs.version }}
@@ -94,6 +95,7 @@ jobs:
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: npx electron-builder --mac dmg zip --universal --publish never
+      - run: npm run verify:codex-e2e
       - uses: actions/upload-artifact@v4
         with:
           name: macos-${{ needs.prepare.outputs.version }}

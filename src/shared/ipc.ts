@@ -56,4 +56,7 @@ export const IPC = {
   updateDownload: "update:download",
   updateInstall: "update:install",
   updateStateChanged: "update:state-changed",
+  codexExtensionStatus: "codex-extension:status",
+  codexExtensionInstall: "codex-extension:install",
+  codexExtensionOpenFolder: "codex-extension:open-folder",
 } as const;

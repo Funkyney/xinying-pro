@@ -1,16 +1,19 @@
+import fs from "node:fs";
 import path from "node:path";
-import { BrowserWindow, dialog, ipcMain } from "electron";
+import { BrowserWindow, dialog, ipcMain, shell } from "electron";
 import { IPC } from "../shared/ipc";
 import type { PlatformProjectCreateInput, PlatformViewBounds, PortraitMetadataInput, ProjectInput, ReferenceRole } from "../shared/contracts";
 import type { XinyingService } from "../core/service";
 import type { PlatformViewManager } from "./platform-view";
 import type { PlaywrightXinyingAdapter } from "./playwright-adapter";
+import type { CodexExtensionManager } from "./codex-extension";
 
 export function registerIpcHandlers(
   window: BrowserWindow,
   service: XinyingService,
   platform: PlatformViewManager,
   adapter: PlaywrightXinyingAdapter,
+  codexExtension: CodexExtensionManager,
 ): void {
   const handle = (channel: string, listener: (...args: any[]) => unknown) => {
     ipcMain.removeHandler(channel);
@@ -235,4 +238,14 @@ export function registerIpcHandlers(
   });
   handle(IPC.platformVisibleState, () => platform.isVisible());
   handle(IPC.platformBounds, (_event, bounds: PlatformViewBounds) => platform.setBounds(bounds));
+  handle(IPC.codexExtensionStatus, () => codexExtension.status());
+  handle(IPC.codexExtensionInstall, (_event, replaceExisting: boolean) => codexExtension.install(Boolean(replaceExisting)));
+  handle(IPC.codexExtensionOpenFolder, async () => {
+    const status = await codexExtension.status();
+    const target = status.installed || status.conflict ? status.skillPath : path.dirname(status.skillPath);
+    await fs.promises.mkdir(target, { recursive: true });
+    const error = await shell.openPath(target);
+    if (error) throw new Error(error);
+    return target;
+  });
 }

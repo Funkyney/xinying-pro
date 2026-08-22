@@ -1,6 +1,6 @@
 # 心影Pro：Codex 操作约定
 
-优先通过构建后的 `xinying` CLI 操作本地项目和队列，不要通过坐标点击桌面界面。
+优先通过 `xinying` CLI 操作本地项目和队列，不要通过坐标点击桌面界面。安装版由“Codex扩展”页面在 `$CODEX_HOME/skills/xinying-pro-generate/scripts/` 生成启动器；源码开发环境才使用仓库根目录的 `xinying.cmd`。
 
 ## 安全边界
 
