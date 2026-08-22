@@ -3,6 +3,12 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
+  DirectorAuthorizationState,
+  DirectorManifest,
+  DirectorPreparedMaterial,
+  DirectorRunPreparation,
+  DirectorRunValidation,
+  GenerationBatch,
   Job,
   JobEvent,
   PlatformCatalogSnapshot,
@@ -113,6 +119,12 @@ function samePath(left: string, right: string): boolean {
 function safeOutputName(value: string): string {
   const sanitized = path.basename(value).replace(/[<>:"/\\|?*]+/g, "-").trim();
   return sanitized || "result.mp4";
+}
+
+function automaticPortraitDisplayName(reference: ReferenceAsset): string {
+  const suffix = reference.id.slice(0, 6);
+  const base = path.parse(reference.name).name.trim().replace(/\s+/g, " ") || "自动角色";
+  return `${base.slice(0, Math.max(1, 49 - suffix.length))}-${suffix}`;
 }
 
 function normalizePlatformUrl(rawUrl: string | undefined): string {
@@ -392,6 +404,219 @@ export class XinyingService {
       WHERE id = @id`).run({ ...next, audioEnabled: next.audioEnabled ? 1 : 0, portraitIdsJson: JSON.stringify(next.portraitIds), materialOrderJson: JSON.stringify(next.materialOrder) });
     if (input.materialOrder !== undefined) this.persistReferencePositions(id, next.materialOrder);
     return next;
+  }
+
+  validateDirectorRun(manifest: DirectorManifest): DirectorRunValidation {
+    const project = this.getProject(manifest.projectId);
+    if (manifest.version !== 1) throw new AppError("DIRECTOR_MANIFEST_VERSION_UNSUPPORTED", `不支持的导演任务清单版本：${manifest.version}`);
+    if (!manifest.prompt.trim()) throw new AppError("DIRECTOR_PROMPT_EMPTY", "导演任务提示词不能为空");
+    if (!Number.isInteger(manifest.count) || manifest.count < 1 || manifest.count > 20) {
+      throw new AppError("INVALID_GENERATION_COUNT", "单次导演任务生成数量必须是 1 到 20 的整数");
+    }
+    if (manifest.materials.length > 9) throw new AppError("DIRECTOR_MATERIAL_LIMIT", "导演任务最多包含 9 项参考素材");
+
+    const seenFiles = new Set<string>();
+    const seenPortraits = new Set<string>();
+    for (const material of manifest.materials) {
+      if (material.kind === "platform-portrait") {
+        if (seenPortraits.has(material.portraitId)) throw new AppError("DUPLICATE_PLATFORM_PORTRAIT", "导演任务不能重复使用同一个心影虚拟人像");
+        seenPortraits.add(material.portraitId);
+        const portrait = this.listPlatformPortraits().find((item) => item.id === material.portraitId);
+        if (!portrait?.available) throw new AppError("PLATFORM_PORTRAIT_NOT_AVAILABLE", `心影虚拟人像不可用：${material.portraitId}`);
+        if (project.platformWorkspaceId && portrait.workspaceId !== project.platformWorkspaceId) {
+          throw new AppError("PLATFORM_PORTRAIT_WORKSPACE_MISMATCH", `虚拟人像不属于当前心影空间：${portrait.displayName}`);
+        }
+        continue;
+      }
+      ensureFile(material.path, REFERENCE_EXTENSIONS);
+      const fingerprint = hashFile(material.path);
+      if (seenFiles.has(fingerprint)) throw new AppError("DUPLICATE_DIRECTOR_MATERIAL", `导演任务不能重复使用同一份本地素材：${material.path}`);
+      seenFiles.add(fingerprint);
+      if (material.authorizeAsPortrait && mediaKindFromMime(mimeFromExtension(material.path)) === "audio") {
+        throw new AppError("AUDIO_PORTRAIT_UNSUPPORTED", `音频不能授权为虚拟人像：${material.path}`);
+      }
+    }
+
+    const settings = manifest.settings ?? {};
+    validateProjectSettings({
+      modelName: settings.modelName ?? project.modelName,
+      mode: settings.mode ?? project.mode,
+      aspectRatio: settings.aspectRatio ?? project.aspectRatio,
+      duration: settings.duration ?? project.duration,
+      resolution: settings.resolution ?? project.resolution,
+    });
+    return {
+      manifest,
+      project,
+      materialCount: manifest.materials.length,
+      authorizationCount: manifest.materials.filter((item) => item.kind === "file" && item.authorizeAsPortrait).length,
+      estimatedGenerationTasks: manifest.count,
+    };
+  }
+
+  private reusablePlatformPortrait(filePath: string, workspaceId: string): PlatformPortrait | null {
+    const sourceHash = hashFile(filePath);
+    const localPortraits = this.listPortraits().filter((portrait) =>
+      portrait.platformStatus === "approved" && fs.existsSync(portrait.filePath) && hashFile(portrait.filePath) === sourceHash);
+    const available = this.listPlatformPortraits(workspaceId).filter((portrait) => portrait.available);
+    for (const local of localPortraits) {
+      let match = local.platformAssetId
+        ? available.find((portrait) => portrait.platformAssetId === local.platformAssetId)
+        : undefined;
+      if (!match) {
+        const named = available.filter((portrait) => portrait.displayName === local.displayName);
+        if (named.length === 1) match = named[0];
+      }
+      if (match) {
+        if (local.platformAssetId !== match.platformAssetId) {
+          this.database.db.prepare("UPDATE portrait_assets SET platform_asset_id = ?, updated_at = ? WHERE id = ?")
+            .run(match.platformAssetId, now(), local.id);
+        }
+        return match;
+      }
+    }
+    return null;
+  }
+
+  private directorAuthorization(referenceId: string): {
+    state: DirectorAuthorizationState;
+    jobId: string | null;
+  } {
+    const portraits = this.listPortraits().filter((portrait) => portrait.sourceReferenceId === referenceId);
+    const portraitIds = new Set(portraits.map((portrait) => portrait.id));
+    const jobs = this.listJobs().filter((job) => job.kind === "portrait-review" && Boolean(job.portraitId && portraitIds.has(job.portraitId)));
+    const latestJob = [...jobs].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0];
+    const portrait = latestJob?.portraitId
+      ? portraits.find((item) => item.id === latestJob.portraitId)
+      : portraits[0];
+    if (!portrait) return { state: "required", jobId: null };
+    const state: DirectorAuthorizationState = portrait.platformStatus === "local" ? "required"
+      : portrait.platformStatus === "queued" ? "queued"
+        : portrait.platformStatus === "reviewing" ? "reviewing"
+          : portrait.platformStatus === "approved" ? "approved"
+            : portrait.platformStatus === "needs-human" ? "needs-human"
+              : "rejected";
+    return { state, jobId: latestJob?.id ?? null };
+  }
+
+  prepareDirectorRun(manifest: DirectorManifest): DirectorRunPreparation {
+    const validation = this.validateDirectorRun(manifest);
+    const project = validation.project;
+    const existingReferences = this.listReferences(project.id);
+    const selectedFiles = manifest.materials
+      .filter((material): material is Extract<DirectorManifest["materials"][number], { kind: "file" }> => material.kind === "file")
+      .map((material) => ({ material, shared: this.ensureSharedMediaAsset(material.path) }));
+    const existingBySharedId = new Map(existingReferences
+      .filter((reference) => reference.sourceSharedMediaId)
+      .map((reference) => [reference.sourceSharedMediaId!, reference]));
+
+    const reusableByPath = new Map<string, PlatformPortrait>();
+    for (const { material } of selectedFiles) {
+      if (!material.authorizeAsPortrait) continue;
+      const reusable = this.reusablePlatformPortrait(material.path, project.platformWorkspaceId);
+      if (reusable) reusableByPath.set(material.path, reusable);
+    }
+    const missingPaths = selectedFiles
+      .filter(({ material, shared }) => !reusableByPath.has(material.path) && !existingBySharedId.has(shared.id))
+      .map(({ material }) => material.path);
+    if (missingPaths.length) this.addReferences(project.id, missingPaths);
+
+    const referencesBySharedId = new Map(this.listReferences(project.id)
+      .filter((reference) => reference.sourceSharedMediaId)
+      .map((reference) => [reference.sourceSharedMediaId!, reference]));
+    const selectedReferenceIds = new Set<string>();
+    const selectedPortraitIds: string[] = [];
+    const desiredOrder: string[] = [];
+    const preparedMaterials: DirectorPreparedMaterial[] = [];
+
+    manifest.materials.forEach((material, index) => {
+      if (material.kind === "platform-portrait") {
+        selectedPortraitIds.push(material.portraitId);
+        desiredOrder.push(portraitMaterialKey(material.portraitId));
+        preparedMaterials.push({
+          index,
+          kind: material.kind,
+          sourcePath: null,
+          referenceId: null,
+          platformPortraitId: material.portraitId,
+          role: null,
+          authorizationState: "not-needed",
+          authorizationJobId: null,
+        });
+        return;
+      }
+      const reusable = reusableByPath.get(material.path);
+      if (reusable) {
+        selectedPortraitIds.push(reusable.id);
+        desiredOrder.push(portraitMaterialKey(reusable.id));
+        preparedMaterials.push({
+          index,
+          kind: material.kind,
+          sourcePath: material.path,
+          referenceId: null,
+          platformPortraitId: reusable.id,
+          role: material.role ?? null,
+          authorizationState: "approved",
+          authorizationJobId: null,
+        });
+        return;
+      }
+      const shared = selectedFiles.find((entry) => entry.material === material)!.shared;
+      const reference = referencesBySharedId.get(shared.id);
+      if (!reference) throw new AppError("DIRECTOR_REFERENCE_IMPORT_FAILED", `未能把素材加入当前项目：${material.path}`);
+      if (material.role && reference.role !== material.role) this.updateReferenceRole(reference.id, material.role);
+      selectedReferenceIds.add(reference.id);
+      desiredOrder.push(referenceMaterialKey(reference.id));
+      const authorization = material.authorizeAsPortrait
+        ? this.directorAuthorization(reference.id)
+        : { state: "not-needed" as const, jobId: null };
+      preparedMaterials.push({
+        index,
+        kind: material.kind,
+        sourcePath: material.path,
+        referenceId: reference.id,
+        platformPortraitId: null,
+        role: material.role ?? reference.role,
+        authorizationState: authorization.state,
+        authorizationJobId: authorization.jobId,
+      });
+    });
+
+    if (manifest.replaceMaterials) {
+      for (const reference of this.listReferences(project.id)) {
+        if (!selectedReferenceIds.has(reference.id)) this.removeReference(reference.id);
+      }
+    }
+    const currentAfterRemoval = this.getProject(project.id);
+    const finalPortraitIds = manifest.replaceMaterials
+      ? [...new Set(selectedPortraitIds)]
+      : [...new Set([...currentAfterRemoval.portraitIds, ...selectedPortraitIds])];
+    const remainingReferenceIds = this.listReferences(project.id).map((reference) => reference.id);
+    const finalOrder = manifest.replaceMaterials
+      ? desiredOrder
+      : reconcileMaterialOrder([...currentAfterRemoval.materialOrder, ...desiredOrder], finalPortraitIds, remainingReferenceIds);
+    const settings = manifest.settings ?? {};
+    this.updateProject(project.id, {
+      ...settings,
+      prompt: manifest.prompt,
+      portraitIds: finalPortraitIds,
+      materialOrder: finalOrder,
+    });
+    const refreshedMaterials = preparedMaterials.map((material) => material.referenceId && material.authorizationState !== "not-needed"
+      ? { ...material, ...(() => {
+        const authorization = this.directorAuthorization(material.referenceId!);
+        return { authorizationState: authorization.state, authorizationJobId: authorization.jobId };
+      })() }
+      : material);
+    return {
+      ...validation,
+      project: this.getProject(project.id),
+      materials: refreshedMaterials,
+      authorizationReferenceIds: refreshedMaterials
+        .filter((material) => material.referenceId && material.authorizationState !== "not-needed" && material.authorizationState !== "approved")
+        .map((material) => material.referenceId!),
+      preview: this.previewSubmission(project.id),
+    };
   }
 
   private persistReferencePositions(projectId: string, materialOrder: readonly string[]): void {
@@ -769,6 +994,20 @@ export class XinyingService {
           sort_order = excluded.sort_order, delete_sort_order = excluded.delete_sort_order, can_delete = excluded.can_delete,
           available = 1, last_seen_at = excluded.last_seen_at`);
       for (const portrait of normalized) upsert.run({ ...portrait, canDelete: portrait.canDelete ? 1 : 0 });
+
+      const availableByName = new Map<string, PlatformPortrait[]>();
+      for (const portrait of normalized) {
+        const matches = availableByName.get(portrait.displayName) ?? [];
+        matches.push(portrait);
+        availableByName.set(portrait.displayName, matches);
+      }
+      const linkLocal = this.database.db.prepare(
+        "UPDATE portrait_assets SET platform_asset_id = ?, updated_at = ? WHERE id = ?",
+      );
+      for (const local of this.listPortraits().filter((portrait) => portrait.platformStatus === "approved")) {
+        const matches = availableByName.get(local.displayName) ?? [];
+        if (matches.length === 1) linkLocal.run(matches[0].platformAssetId, now(), local.id);
+      }
     });
     return this.listPlatformPortraits(workspaceId);
   }
@@ -983,7 +1222,7 @@ export class XinyingService {
     if (!imported) throw new AppError("PORTRAIT_IMPORT_FAILED", "未能把参考图加入虚拟人像授权队列");
     this.database.db.prepare("UPDATE portrait_assets SET source_reference_id = ?, updated_at = ? WHERE id = ?")
       .run(referenceId, now(), imported.id);
-    this.updatePortraitMetadata(imported.id, { displayName: path.parse(reference.name).name });
+    this.updatePortraitMetadata(imported.id, { displayName: automaticPortraitDisplayName(reference) });
     return this.submitPortraitReview(imported.id, projectId);
   }
 
@@ -1086,33 +1325,47 @@ export class XinyingService {
   }
 
   submitGeneration(projectId: string): Job {
+    return this.submitGenerationBatch(projectId, 1).jobs[0];
+  }
+
+  submitGenerationBatch(projectId: string, count: number): GenerationBatch {
+    if (!Number.isInteger(count) || count < 1 || count > 20) {
+      throw new AppError("INVALID_GENERATION_COUNT", "单次批量生成数量必须是 1 到 20 的整数");
+    }
     const preview = this.previewSubmission(projectId);
     if (!preview.ready) {
       throw new AppError("PROJECT_NOT_READY", "项目尚未达到提交条件", preview.warnings);
     }
-    const timestamp = now();
-    const id = crypto.randomUUID();
-    const snapshotDir = path.join(this.paths.jobSnapshotsDir, id);
-    let snapshotReferences: ReferenceAsset[] = [];
+    const batchId = crypto.randomUUID();
+    const prepared: Array<{ id: string; timestamp: string; snapshotDir: string; references: ReferenceAsset[] }> = [];
+    const snapshotDirs: string[] = [];
     try {
-      if (preview.references.length) fs.mkdirSync(snapshotDir, { recursive: true });
-      snapshotReferences = preview.references.map((reference, index) => {
-        const extension = path.extname(reference.filePath).toLowerCase();
-        const snapshotPath = path.join(snapshotDir, `${String(index + 1).padStart(3, "0")}-${reference.id}${extension}`);
-        fs.copyFileSync(reference.filePath, snapshotPath);
-        const snapshotHash = hashFile(snapshotPath);
-        if (snapshotHash !== reference.sha256) {
-          throw new AppError("REFERENCE_CHANGED", `素材在提交快照期间发生变化：${reference.name}`);
-        }
-        return { ...reference, filePath: snapshotPath, sha256: snapshotHash };
-      });
-      this.database.db.prepare(`INSERT INTO jobs
-        (id, kind, project_id, portrait_id, status, platform_task_id, prompt_snapshot,
-         parameters_json, references_json, output_path, output_url, error_code, error_message,
-         requires_human_reason, retry_count, created_at, submitted_at, completed_at, updated_at)
-        VALUES (?, 'generation', ?, NULL, 'queued', NULL, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, 0, ?, NULL, NULL, ?)`)
-        .run(
-          id,
+      for (let takeIndex = 0; takeIndex < count; takeIndex += 1) {
+        const id = crypto.randomUUID();
+        const timestamp = now();
+        const snapshotDir = path.join(this.paths.jobSnapshotsDir, id);
+        snapshotDirs.push(snapshotDir);
+        if (preview.references.length) fs.mkdirSync(snapshotDir, { recursive: true });
+        const references = preview.references.map((reference, index) => {
+          const extension = path.extname(reference.filePath).toLowerCase();
+          const snapshotPath = path.join(snapshotDir, `${String(index + 1).padStart(3, "0")}-${reference.id}${extension}`);
+          fs.copyFileSync(reference.filePath, snapshotPath);
+          const snapshotHash = hashFile(snapshotPath);
+          if (snapshotHash !== reference.sha256) {
+            throw new AppError("REFERENCE_CHANGED", `素材在提交快照期间发生变化：${reference.name}`);
+          }
+          return { ...reference, filePath: snapshotPath, sha256: snapshotHash };
+        });
+        prepared.push({ id, timestamp, snapshotDir, references });
+      }
+      this.database.transaction(() => {
+        const insert = this.database.db.prepare(`INSERT INTO jobs
+          (id, kind, project_id, portrait_id, status, platform_task_id, prompt_snapshot,
+           parameters_json, references_json, output_path, output_url, error_code, error_message,
+           requires_human_reason, retry_count, created_at, submitted_at, completed_at, updated_at)
+          VALUES (?, 'generation', ?, NULL, 'queued', NULL, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, 0, ?, NULL, NULL, ?)`);
+        prepared.forEach((item, takeIndex) => insert.run(
+          item.id,
           projectId,
           preview.project.prompt,
           JSON.stringify({
@@ -1128,19 +1381,29 @@ export class XinyingService {
             portraitIds: preview.project.portraitIds,
             materialOrder: preview.project.materialOrder,
             platformPortraits: preview.selectedPortraits,
+            batchId,
+            takeNumber: takeIndex + 1,
+            takeCount: count,
           }),
-          JSON.stringify(snapshotReferences),
-          timestamp,
-          timestamp,
-        );
+          JSON.stringify(item.references),
+          item.timestamp,
+          item.timestamp,
+        ));
+      });
     } catch (error) {
-      if (snapshotDir.startsWith(`${this.paths.jobSnapshotsDir}${path.sep}`)) {
-        fs.rmSync(snapshotDir, { recursive: true, force: true });
+      for (const snapshotDir of snapshotDirs) {
+        if (snapshotDir.startsWith(`${this.paths.jobSnapshotsDir}${path.sep}`)) {
+          fs.rmSync(snapshotDir, { recursive: true, force: true });
+        }
       }
       throw error;
     }
-    this.addJobEvent(id, "info", "JOB_QUEUED", "生成任务已加入本地队列");
-    return this.getJob(id);
+    for (const [index, item] of prepared.entries()) {
+      this.addJobEvent(item.id, "info", "JOB_QUEUED", count === 1
+        ? "生成任务已加入本地队列"
+        : `批次 ${batchId.slice(0, 8)} 的第 ${index + 1}/${count} 条生成任务已加入本地队列`, { batchId, takeNumber: index + 1, takeCount: count });
+    }
+    return { batchId, count, jobs: prepared.map((item) => this.getJob(item.id)) };
   }
 
   submitPortraitReview(portraitId: string, projectId?: string): Job {

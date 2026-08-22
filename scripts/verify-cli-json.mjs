@@ -24,7 +24,7 @@ function run(name, args, expectedExitCode, expectedOk) {
   if (result.status !== expectedExitCode || envelope.ok !== expectedOk || typeof envelope.command !== "string") {
     throw new Error(`${name} JSON 包装不符合约定：${JSON.stringify({ status: result.status, envelope })}`);
   }
-  return { name, exitCode: result.status, ok: envelope.ok, command: envelope.command };
+  return { name, exitCode: result.status, ok: envelope.ok, command: envelope.command, data: envelope.data };
 }
 
 try {
@@ -40,6 +40,21 @@ try {
     run("shared-library-list", ["library", "list"], 0, true),
     run("shared-library-delete-confirmation", ["library", "remove", "missing-library-id"], 1, false),
   ];
+  const project = run("director-project", ["project", "create", "--name", "director-cli", "--mode", "text-to-video"], 0, true);
+  const manifestPath = path.join(dataDir, "director-run.json");
+  fs.writeFileSync(manifestPath, JSON.stringify({
+    version: 1,
+    projectId: project.data.id,
+    prompt: "固定机位，人物缓慢转身。",
+    count: 2,
+    materials: [],
+  }));
+  cases.push(
+    project,
+    run("director-validate", ["director", "validate", "--manifest", manifestPath], 0, true),
+    run("director-prepare", ["director", "prepare", "--manifest", manifestPath], 0, true),
+    run("director-submit-confirmation", ["director", "submit", "--manifest", manifestPath], 1, false),
+  );
   process.stdout.write(`${JSON.stringify({ ok: true, cases }, null, 2)}\n`);
 } finally {
   fs.rmSync(dataDir, { recursive: true, force: true });

@@ -107,6 +107,72 @@ export interface ProjectInput {
   materialOrder?: string[];
 }
 
+export interface DirectorFileMaterialInput {
+  kind: "file";
+  path: string;
+  role?: ReferenceRole;
+  authorizeAsPortrait?: boolean;
+}
+
+export interface DirectorPlatformPortraitMaterialInput {
+  kind: "platform-portrait";
+  portraitId: string;
+}
+
+export type DirectorMaterialInput = DirectorFileMaterialInput | DirectorPlatformPortraitMaterialInput;
+
+export interface DirectorManifest {
+  version: 1;
+  projectId: string;
+  prompt: string;
+  count: number;
+  replaceMaterials: boolean;
+  settings?: {
+    name?: string;
+    description?: string;
+    modelName?: string;
+    mode?: ProjectMode;
+    aspectRatio?: string;
+    duration?: number;
+    resolution?: string;
+    audioEnabled?: boolean;
+  };
+  materials: DirectorMaterialInput[];
+}
+
+export type DirectorAuthorizationState = "not-needed" | "required" | "queued" | "reviewing" | "approved" | "needs-human" | "rejected";
+
+export interface DirectorPreparedMaterial {
+  index: number;
+  kind: DirectorMaterialInput["kind"];
+  sourcePath: string | null;
+  referenceId: string | null;
+  platformPortraitId: string | null;
+  role: ReferenceRole | null;
+  authorizationState: DirectorAuthorizationState;
+  authorizationJobId: string | null;
+}
+
+export interface DirectorRunValidation {
+  manifest: DirectorManifest;
+  project: Project;
+  materialCount: number;
+  authorizationCount: number;
+  estimatedGenerationTasks: number;
+}
+
+export interface DirectorRunPreparation extends DirectorRunValidation {
+  materials: DirectorPreparedMaterial[];
+  authorizationReferenceIds: string[];
+  preview: SubmissionPreview;
+}
+
+export interface GenerationBatch {
+  batchId: string;
+  count: number;
+  jobs: Job[];
+}
+
 export interface ReferenceAsset {
   id: string;
   projectId: string;

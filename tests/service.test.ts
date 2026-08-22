@@ -7,6 +7,7 @@ import { createAppPaths } from "../src/core/paths";
 import { XinyingDatabase } from "../src/core/database";
 import { XinyingService } from "../src/core/service";
 import { referenceMaterialKey } from "../src/shared/material-order";
+import type { DirectorManifest } from "../src/shared/contracts";
 
 describe("XinyingService", () => {
   let tempDir: string;
@@ -637,6 +638,73 @@ describe("XinyingService", () => {
     const repeated = service.authorizeReference(reference.id, project.id, true);
     expect(repeated.id).toBe(job.id);
     expect(service.listPortraits().filter((portrait) => portrait.sourceReferenceId === reference.id)).toHaveLength(1);
+  });
+
+  it("prepares an ordered director manifest and replaces an approved face in place", () => {
+    const face = fixture("director-face.png", "director-face");
+    const audio = fixture("director-voice.mp3", "director-audio");
+    const scene = fixture("director-scene.png", "director-scene");
+    const stale = fixture("stale.png", "stale");
+    const project = service.createProject({ name: "导演自动化" });
+    service.addReferences(project.id, [stale]);
+    const manifest: DirectorManifest = {
+      version: 1,
+      projectId: project.id,
+      prompt: "@图1 说话，参考 @音频1；场景参考 @图2。",
+      count: 3,
+      replaceMaterials: true,
+      settings: { mode: "reference-to-video", duration: 8, aspectRatio: "16:9", audioEnabled: true },
+      materials: [
+        { kind: "file", path: face, role: "character", authorizeAsPortrait: true },
+        { kind: "file", path: audio, role: "other" },
+        { kind: "file", path: scene, role: "scene" },
+      ],
+    };
+
+    const prepared = service.prepareDirectorRun(manifest);
+    expect(prepared.authorizationReferenceIds).toHaveLength(1);
+    expect(prepared.materials.map((material) => material.authorizationState)).toEqual(["required", "not-needed", "not-needed"]);
+    expect(prepared.preview.orderedLabels.map((label) => label.split(" / ")[0])).toEqual(["@图1", "@音频1", "@图2"]);
+    expect(service.listReferences(project.id).some((reference) => reference.name === "stale.png")).toBe(false);
+
+    const review = service.authorizeReference(prepared.authorizationReferenceIds[0], project.id, true);
+    service.updateJob(review.id, { status: "completed", completedAt: new Date().toISOString() });
+    const localPortrait = service.updatePortraitReviewState(review.portraitId!, "approved", "审核通过");
+    service.syncPlatformPortraits([{
+      id: "director-platform-face",
+      displayName: localPortrait.displayName,
+      previewUrl: "https://blueaivideo.com/director-face.png",
+      platformAssetId: "director-face-asset",
+      workspaceId: "workspace-team",
+      mediaKind: "image",
+      sortOrder: 0,
+      deleteSortOrder: 0,
+      canDelete: true,
+      available: true,
+      lastSeenAt: new Date().toISOString(),
+    }], "workspace-team", false);
+
+    const resolved = service.prepareDirectorRun(manifest);
+    expect(resolved.authorizationReferenceIds).toEqual([]);
+    expect(resolved.materials[0]).toMatchObject({
+      referenceId: null,
+      platformPortraitId: "director-platform-face",
+      authorizationState: "approved",
+    });
+    expect(resolved.project.materialOrder[0]).toBe("portrait:director-platform-face");
+    expect(resolved.preview.orderedLabels.map((label) => label.split(" / ")[0])).toEqual(["@图1", "@音频1", "@图2"]);
+    expect(service.getPortrait(localPortrait.id).platformAssetId).toBe("director-face-asset");
+  });
+
+  it("creates an atomic multi-take generation batch", () => {
+    const project = service.createProject({ name: "三条成片", prompt: "固定机位", mode: "text-to-video" });
+    const batch = service.submitGenerationBatch(project.id, 3);
+    expect(batch.count).toBe(3);
+    expect(batch.jobs).toHaveLength(3);
+    expect(new Set(batch.jobs.map((job) => job.id)).size).toBe(3);
+    expect(batch.jobs.map((job) => job.parameters.takeNumber)).toEqual([1, 2, 3]);
+    expect(batch.jobs.every((job) => job.parameters.batchId === batch.batchId && job.status === "queued")).toBe(true);
+    expect(() => service.submitGenerationBatch(project.id, 0)).toThrow(/1 到 20/);
   });
 
   it("prevents duplicate portrait reviews and deletion while work is active", () => {

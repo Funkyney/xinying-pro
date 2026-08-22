@@ -13,6 +13,7 @@ import type {
   ProjectInput,
   ReferenceRole,
 } from "../shared/contracts";
+import { loadDirectorManifest } from "../core/director-manifest";
 import { createAppPaths } from "../core/paths";
 import { XinyingDatabase } from "../core/database";
 import { XinyingService } from "../core/service";
@@ -102,7 +103,7 @@ const program = new Command();
 program
   .name("xinying")
   .description("心影Pro Codex 友好命令行；所有输出均为 JSON")
-  .version("0.4.0")
+  .version("0.5.0")
   .exitOverride()
   .configureOutput({
     writeOut: (value) => commanderMessages.push(value),
@@ -340,10 +341,13 @@ job.command("list").action(() => output(runtime().service.listJobs()));
 job.command("preview").argument("<project-id>").action((projectId: string) => output(runtime().service.previewSubmission(projectId)));
 job.command("submit")
   .argument("<project-id>")
+  .option("--count <number>", "一次排队生成的条数（1-20）", "1")
   .option("--confirm", "确认提交生成任务")
   .action((projectId: string, options) => {
     requireConfirm(options.confirm, "提交生成任务");
-    output(runtime().service.submitGeneration(projectId));
+    const count = Number(options.count);
+    const { service } = runtime();
+    output(count === 1 ? service.submitGeneration(projectId) : service.submitGenerationBatch(projectId, count));
   });
 job.command("status").argument("<id>").action((id: string) => output(runtime().service.getJob(id)));
 job.command("events").argument("<id>").action((id: string) => output(runtime().service.listJobEvents(id)));
@@ -401,6 +405,62 @@ results.command("batch-download")
       downloaded.push(await service.exportResult(id, path.join(destination, `${String(index + 1).padStart(3, "0")}-${id}.mp4`)));
     }
     output(downloaded.map(compactResult));
+  });
+
+const director = program.command("director").description("执行 Seedance 导演任务清单：素材、授权、参数与批量生成");
+director.command("validate")
+  .requiredOption("--manifest <path>", "导演任务 JSON 清单")
+  .action((options) => {
+    const manifest = loadDirectorManifest(options.manifest);
+    output(runtime().service.validateDirectorRun(manifest));
+  });
+director.command("prepare")
+  .requiredOption("--manifest <path>", "导演任务 JSON 清单")
+  .description("按清单配置本地项目并给出人像授权与最终编号预检；不会提交心影")
+  .action((options) => {
+    const manifest = loadDirectorManifest(options.manifest);
+    output(runtime().service.prepareDirectorRun(manifest));
+  });
+director.command("authorize")
+  .requiredOption("--manifest <path>", "导演任务 JSON 清单")
+  .option("--confirm", "确认合规承诺并把清单中标记的人物素材提交心影审核")
+  .action((options) => {
+    requireConfirm(options.confirm, "自动勾选合规承诺并提交清单中的人物素材授权");
+    const manifest = loadDirectorManifest(options.manifest);
+    const { service } = runtime();
+    const preparation = service.prepareDirectorRun(manifest);
+    const jobs = preparation.authorizationReferenceIds.map((referenceId) =>
+      service.authorizeReference(referenceId, manifest.projectId, true));
+    output({ preparation, jobs });
+  });
+director.command("resolve")
+  .requiredOption("--manifest <path>", "导演任务 JSON 清单")
+  .description("同步心影角色库，并把审核通过的人物素材原位替换为已授权虚拟人像")
+  .action(async (options) => {
+    const manifest = loadDirectorManifest(options.manifest);
+    await invokeRunningApp("portrait-sync", [manifest.projectId]);
+    output(runtime().service.prepareDirectorRun(manifest));
+  });
+director.command("submit")
+  .requiredOption("--manifest <path>", "导演任务 JSON 清单")
+  .option("--count <number>", "覆盖清单中的生成条数（1-20）")
+  .option("--confirm", "确认按指定数量创建可能扣费的心影生成任务")
+  .action((options) => {
+    requireConfirm(options.confirm, "按导演任务清单提交可能扣费的心影生成任务");
+    const manifest = loadDirectorManifest(options.manifest);
+    const { service } = runtime();
+    const preparation = service.prepareDirectorRun(manifest);
+    const unresolved = preparation.materials.filter((material) =>
+      material.referenceId && material.authorizationState !== "not-needed");
+    if (unresolved.length) {
+      throw new AppError(
+        "PORTRAIT_AUTHORIZATION_PENDING",
+        "人物素材尚未全部替换为心影已授权虚拟人像；请先完成 director authorize，再执行 director resolve",
+        unresolved,
+      );
+    }
+    const count = options.count === undefined ? manifest.count : Number(options.count);
+    output({ preparation, batch: service.submitGenerationBatch(manifest.projectId, count) });
   });
 
 program.command("doctor").description("检查本地数据和 APP 队列状态").action(() => {

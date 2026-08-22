@@ -18,6 +18,7 @@
 - 结果库可同步当前心影项目所有会话中的已生成视频，支持多选、全选、批量下载、批量标记/取消标记。播放器提供当前视频下载和左右切换；关闭后会自动滚回并高亮最后查看的卡片。
 - Playwright 通过 Electron 本地 CDP 通道操作心影的可见页面元素。
 - 主界面启用 Electron 渲染沙箱；`xinying.cmd` 为 Codex 提供无 npm 日志前缀的稳定 JSON 输出。
+- Seedance 导演任务清单把定稿提示词、电脑素材路径、最终顺序、人像授权标记和生成条数放在同一份 JSON 中。Codex 可先无扣费预检，再自动提交人物审核；审核通过后，APP 会在原位置换成心影虚拟人像，并按清单一次排队 1–20 条生成任务。
 
 ## 本地开发
 
@@ -72,6 +73,7 @@ npm run build
 .\xinying.cmd library project-remove <shared-media-id> --project-id <project-id>
 .\xinying.cmd job preview <project-id>
 .\xinying.cmd job submit <project-id> --confirm
+.\xinying.cmd job submit <project-id> --count 3 --confirm
 .\xinying.cmd job status <job-id>
 .\xinying.cmd job events <job-id>
 .\xinying.cmd job resume <job-id> --confirm
@@ -87,7 +89,14 @@ npm run build
 .\xinying.cmd results list --project-id <project-id> --compact
 .\xinying.cmd results mark --ids <result-id-1>,<result-id-2> --value true
 .\xinying.cmd results batch-download --ids <result-id-1>,<result-id-2> --output-dir "C:\outputs"
+.\xinying.cmd director validate --manifest "C:\shots\07\.xinying-run.json"
+.\xinying.cmd director prepare --manifest "C:\shots\07\.xinying-run.json"
+.\xinying.cmd director authorize --manifest "C:\shots\07\.xinying-run.json" --confirm
+.\xinying.cmd director resolve --manifest "C:\shots\07\.xinying-run.json"
+.\xinying.cmd director submit --manifest "C:\shots\07\.xinying-run.json" --confirm
 ```
+
+`director prepare` 只配置本地项目并输出最终编号预检，不会提交或扣费。清单中 `authorizeAsPortrait: true` 的图片/视频必须先通过 `director authorize` 完成人像审核，再由 `director resolve` 同步角色库并原位替换；`director submit` 会拒绝跳过这道门禁。`count` 默认为 1、上限为 20，清单数组顺序就是 APP 的最终素材顺序。
 
 新项目的分辨率默认是 `auto`：提交时沿用心影当前模型页面已经选中的分辨率。当前实机能力为：Seedance 2.5 支持 `480p / 720p / 1080p`、时长 4–30 秒；Seedance 2.0 支持 `480p / 720p / 1080p / 4k`、时长 4–15 秒。4K 只会在 Seedance 2.0 下显示和通过校验。
 
