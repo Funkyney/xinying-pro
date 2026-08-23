@@ -5,6 +5,16 @@ import type { PlaywrightXinyingAdapter, AdapterOutcome } from "./playwright-adap
 
 type AutomationViewRunner = <T>(operation: () => Promise<T>) => Promise<T>;
 
+function stringJobParameter(job: Job, key: string): string {
+  const value = job.parameters[key];
+  return typeof value === "string" ? value : "";
+}
+
+function integerJobParameter(job: Job, key: string): number | null {
+  const value = job.parameters[key];
+  return Number.isInteger(value) ? Number(value) : null;
+}
+
 export class JobWorker {
   private queueTimer: NodeJS.Timeout | null = null;
   private monitorTimer: NodeJS.Timeout | null = null;
@@ -36,10 +46,35 @@ export class JobWorker {
     if (!job) return;
     this.processing = true;
     try {
+      let reuseFromPlatformTaskId: string | undefined;
+      if (job.kind === "generation") {
+        const batchId = stringJobParameter(job, "batchId");
+        const takeNumber = integerJobParameter(job, "takeNumber");
+        if (batchId && takeNumber && takeNumber > 1) {
+          const predecessor = this.service.listJobs().find((candidate) =>
+            candidate.kind === "generation"
+            && stringJobParameter(candidate, "batchId") === batchId
+            && integerJobParameter(candidate, "takeNumber") === takeNumber - 1,
+          );
+          if (!predecessor || !["running", "completed"].includes(predecessor.status) || !predecessor.platformTaskId?.startsWith("chat:")) {
+            const message = `批次第 ${takeNumber - 1} 条尚未在心影确认提交，无法安全复用生成第 ${takeNumber} 条`;
+            this.service.updateJob(job.id, { status: "needs-human", requiresHumanReason: message });
+            this.service.addJobEvent(job.id, "warning", "REUSE_SOURCE_UNAVAILABLE", message, { batchId, takeNumber });
+            return;
+          }
+          reuseFromPlatformTaskId = predecessor.platformTaskId;
+        }
+      }
       this.service.updateJob(job.id, { status: "submitting", submittedAt: new Date().toISOString() });
-      this.service.addJobEvent(job.id, "info", "SUBMITTING", "正在通过心影可见页面提交任务");
+      this.service.addJobEvent(
+        job.id,
+        "info",
+        reuseFromPlatformTaskId ? "REUSING_PREVIOUS_TAKE" : "SUBMITTING",
+        reuseFromPlatformTaskId ? "正在通过心影“重新编辑”复用上一条并再次提交" : "正在通过心影可见页面提交任务",
+        reuseFromPlatformTaskId ? { sourcePlatformTaskId: reuseFromPlatformTaskId } : {},
+      );
       const outcome = await this.runWithAutomationView(() => job.kind === "generation"
-        ? this.adapter.submitGeneration(job)
+        ? this.adapter.submitGeneration(job, reuseFromPlatformTaskId)
         : this.adapter.submitPortraitReview(job, this.service.getPortrait(job.portraitId!)));
       this.applyOutcome(job, outcome);
     } catch (error) {

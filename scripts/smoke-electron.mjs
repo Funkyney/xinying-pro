@@ -45,10 +45,15 @@ try {
   await window.waitForTimeout(4_500);
   await window.getByRole("button", { name: "生成工作台", exact: true }).click();
   await window.getByRole("heading", { name: "Playwright 桌面验收" }).waitFor({ timeout: 10_000 });
+  await window.getByRole("button", { name: "预览提交", exact: true }).click();
+  const generationCount = window.locator(".generation-count-control input");
+  await generationCount.waitFor({ state: "visible", timeout: 10_000 });
+  await generationCount.fill("3");
+  await window.getByText("第 1 条完整提交；后续自动使用心影“重新编辑”复用素材与参数", { exact: true }).waitFor();
   await window.screenshot({ path: screenshotPath, fullPage: true });
   const title = await window.title();
   const visibleText = await window.locator("body").innerText();
-  process.stdout.write(`${JSON.stringify({ ok: true, title, projectId: created.id, screenshotPath, hasStudio: visibleText.includes("参考素材") }, null, 2)}\n`);
+  process.stdout.write(`${JSON.stringify({ ok: true, title, projectId: created.id, screenshotPath, hasStudio: visibleText.includes("参考素材"), hasReuseBatch: visibleText.includes("确认提交 3 条") }, null, 2)}\n`);
 } catch (error) {
   process.stderr.write(`${JSON.stringify({ ok: false, error: error instanceof Error ? error.message : String(error) }, null, 2)}\n`);
   process.exitCode = 1;

@@ -78,6 +78,51 @@ describe("JobWorker", () => {
     expect(service.listJobEvents(queued.id).at(-1)?.code).toBe("NEEDS_PAYMENT");
   });
 
+  it("submits the first take normally and chains later takes through Heart reuse editing", async () => {
+    const project = service.createProject({ name: "连续三条", prompt: "固定机位，角色转身", mode: "text-to-video" });
+    const batch = service.submitGenerationBatch(project.id, 3);
+    const adapter = {
+      submitGeneration: vi.fn().mockImplementation(async (job: { parameters: Record<string, unknown> }, reuseFrom?: string) => ({
+        status: "running",
+        platformTaskId: `chat:p:s:${Number(job.parameters.takeNumber) - 1}`,
+        message: reuseFrom ? "已复用上一条提交" : "已完整提交",
+      })),
+      submitPortraitReview: vi.fn(),
+    } as unknown as PlaywrightXinyingAdapter;
+    const worker = new JobWorker(service, adapter);
+
+    await (worker as unknown as { processQueue(): Promise<void> }).processQueue();
+    await (worker as unknown as { processQueue(): Promise<void> }).processQueue();
+    await (worker as unknown as { processQueue(): Promise<void> }).processQueue();
+
+    expect(adapter.submitGeneration).toHaveBeenNthCalledWith(1, expect.objectContaining({ id: batch.jobs[0].id }), undefined);
+    expect(adapter.submitGeneration).toHaveBeenNthCalledWith(2, expect.objectContaining({ id: batch.jobs[1].id }), "chat:p:s:0");
+    expect(adapter.submitGeneration).toHaveBeenNthCalledWith(3, expect.objectContaining({ id: batch.jobs[2].id }), "chat:p:s:1");
+    expect(batch.jobs.map((job) => service.getJob(job.id).status)).toEqual(["running", "running", "running"]);
+    expect(service.listJobEvents(batch.jobs[1].id).some((event) => event.code === "REUSING_PREVIOUS_TAKE")).toBe(true);
+  });
+
+  it("stops a later take when the previous take was not confirmed as submitted", async () => {
+    const project = service.createProject({ name: "复用前置失败", prompt: "固定机位", mode: "text-to-video" });
+    const batch = service.submitGenerationBatch(project.id, 2);
+    const adapter = {
+      submitGeneration: vi.fn().mockResolvedValue({
+        status: "needs-human",
+        checkpoint: { reason: "page-changed", message: "第一条未提交" },
+      }),
+      submitPortraitReview: vi.fn(),
+    } as unknown as PlaywrightXinyingAdapter;
+    const worker = new JobWorker(service, adapter);
+
+    await (worker as unknown as { processQueue(): Promise<void> }).processQueue();
+    await (worker as unknown as { processQueue(): Promise<void> }).processQueue();
+
+    expect(adapter.submitGeneration).toHaveBeenCalledOnce();
+    expect(service.getJob(batch.jobs[1].id).status).toBe("needs-human");
+    expect(service.getJob(batch.jobs[1].id).requiresHumanReason).toContain("无法安全复用");
+    expect(service.listJobEvents(batch.jobs[1].id).at(-1)?.code).toBe("REUSE_SOURCE_UNAVAILABLE");
+  });
+
   it("serializes overlapping monitor ticks for the shared heart page", async () => {
     const project = service.createProject({ name: "轮询串行化", prompt: "固定机位", mode: "text-to-video" });
     const job = service.submitGeneration(project.id);

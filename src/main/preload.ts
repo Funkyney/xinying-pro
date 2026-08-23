@@ -112,7 +112,7 @@ const api: XinyingApi = {
   jobs: {
     list: () => ipcRenderer.invoke(IPC.jobsList),
     preview: (projectId: string) => ipcRenderer.invoke(IPC.jobsPreview, projectId),
-    submit: (projectId: string) => ipcRenderer.invoke(IPC.jobsSubmit, projectId),
+    submit: (projectId: string, count = 1) => ipcRenderer.invoke(IPC.jobsSubmit, projectId, count),
     status: (id: string) => ipcRenderer.invoke(IPC.jobsStatus, id),
     events: (id: string) => ipcRenderer.invoke(IPC.jobsEvents, id),
     resume: (id: string) => ipcRenderer.invoke(IPC.jobsResume, id),

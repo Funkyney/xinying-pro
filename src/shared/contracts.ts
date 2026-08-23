@@ -425,7 +425,7 @@ export interface XinyingApi {
   jobs: {
     list(): Promise<Job[]>;
     preview(projectId: string): Promise<SubmissionPreview>;
-    submit(projectId: string): Promise<Job>;
+    submit(projectId: string, count?: number): Promise<Job | GenerationBatch>;
     status(id: string): Promise<Job>;
     events(id: string): Promise<JobEvent[]>;
     resume(id: string): Promise<Job>;

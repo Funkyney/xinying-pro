@@ -157,7 +157,8 @@ export function registerIpcHandlers(
 
   handle(IPC.jobsList, () => service.listJobs());
   handle(IPC.jobsPreview, (_event, projectId: string) => service.previewSubmission(projectId));
-  handle(IPC.jobsSubmit, (_event, projectId: string) => service.submitGeneration(projectId));
+  handle(IPC.jobsSubmit, (_event, projectId: string, count = 1) =>
+    count === 1 ? service.submitGeneration(projectId) : service.submitGenerationBatch(projectId, count));
   handle(IPC.jobsStatus, (_event, id: string) => service.getJob(id));
   handle(IPC.jobsEvents, (_event, id: string) => service.listJobEvents(id));
   handle(IPC.jobsResume, (_event, id: string) => service.resumeJob(id));

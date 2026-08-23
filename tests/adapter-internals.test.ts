@@ -38,6 +38,8 @@ describe("Playwright adapter task references", () => {
       .toBe("让@图1的女人和@图2的男人对话，女人参考@图3。男人参考@图4。");
     expect(adapterInternals.normalizePromptLabels("＠图十先看参考视频二，再听@音频三"))
       .toBe("@图#先看参考@视频#，再听@音频#");
+    expect(adapterInternals.normalizeReusablePrompt("让 @图1 转身\n\n固定机位"))
+      .toBe(adapterInternals.normalizeReusablePrompt("让 @图3 转身 固定机位"));
   });
 
   it("classifies only the matched portrait card status", () => {

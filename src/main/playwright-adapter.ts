@@ -136,6 +136,10 @@ function normalizePromptLabels(prompt: string): string {
   return canonicalizePromptMaterialReferences(prompt).replace(/@(图|视频|音频)\d+/g, "@$1#");
 }
 
+function normalizeReusablePrompt(prompt: string): string {
+  return normalizePromptLabels(prompt).replace(/\s+/g, " ").trim();
+}
+
 function platformPortraitsParameter(job: Job): PlatformPortrait[] {
   const value = job.parameters.platformPortraits;
   if (!Array.isArray(value)) return [];
@@ -1072,6 +1076,81 @@ export class PlaywrightXinyingAdapter {
     if ((await this.uploadedMaterialCount(page)) !== 0) throw new AppError("DRAFT_CLEAR_FAILED", "APP 未能清空心影素材草稿");
   }
 
+  private async reuseGenerationDraft(
+    page: Page,
+    job: Job,
+    sourcePlatformTaskId: string,
+    expectedMaterialCount: number,
+    firstLastMode: boolean,
+  ): Promise<{ promptForPlatform: string } | HumanCheckpoint> {
+    const sourceRef = decodeChatTaskRef(sourcePlatformTaskId);
+    const target = safeGenerationUrl(stringParameter(job, "platformUrl"));
+    if (!sourceRef || !target || sourceRef.projectId !== target.searchParams.get("projectId")) {
+      return { reason: "page-changed", message: "批次上一条任务缺少可复用的心影会话定位，已安全停止后续提交" };
+    }
+
+    const current = safeGenerationUrl(page.url());
+    if (sourceRef.sessionId !== "uninitialized" && current?.searchParams.get("sessionId") !== sourceRef.sessionId) {
+      target.searchParams.set("sessionId", sourceRef.sessionId);
+      await page.goto(target.toString(), { waitUntil: "domcontentloaded", timeout: 30_000 });
+      await page.waitForTimeout(600);
+      const composer = await this.waitForVisible(page, this.selectors.generation.composer, 20_000);
+      if (!composer) return { reason: "page-changed", message: "上一条心影会话未能加载，无法使用“重新编辑”复用提交" };
+    }
+
+    await this.clearUploadedMaterials(page).catch(() => undefined);
+    const prompt = await firstVisible(page, this.selectors.generation.prompt);
+    if (!prompt) return { reason: "page-changed", message: "找不到心影提示词输入框，无法复用上一条生成" };
+    await prompt.fill("");
+
+    let source: Awaited<ReturnType<PlaywrightXinyingAdapter["userForTask"]>> = null;
+    const sourceDeadline = Date.now() + 12_000;
+    while (Date.now() < sourceDeadline && !source) {
+      source = await this.userForTask(page, sourceRef, job.promptSnapshot);
+      if (!source) await page.waitForTimeout(250);
+    }
+    if (!source) return { reason: "page-changed", message: "找不到批次上一条心影消息，无法使用“重新编辑”复用提交" };
+
+    const edit = source.user.locator("a.edit-btn").filter({ visible: true }).first();
+    if ((await edit.count()) === 0) {
+      return { reason: "page-changed", message: "心影没有显示“重新编辑”入口，已停止后续批次以避免重复上传或错单" };
+    }
+    await clickDom(edit);
+
+    let promptForPlatform = "";
+    const hydrateDeadline = Date.now() + 15_000;
+    while (Date.now() < hydrateDeadline) {
+      promptForPlatform = (await prompt.innerText().catch(() => "")).trim();
+      const materialCount = await this.uploadedMaterialCount(page);
+      const promptReady = normalizeReusablePrompt(promptForPlatform) === normalizeReusablePrompt(job.promptSnapshot);
+      const materialsReady = firstLastMode || materialCount === expectedMaterialCount;
+      if (promptReady && materialsReady) break;
+      await page.waitForTimeout(250);
+    }
+    if (normalizeReusablePrompt(promptForPlatform) !== normalizeReusablePrompt(job.promptSnapshot)) {
+      await this.clearUploadedMaterials(page).catch(() => undefined);
+      await prompt.fill("").catch(() => undefined);
+      return { reason: "page-changed", message: "心影“重新编辑”还原的提示词与本批次快照不一致，已安全停止" };
+    }
+
+    if (!firstLastMode) {
+      const materials = await this.uploadedMaterialSnapshots(page);
+      if (materials.length !== expectedMaterialCount || new Set(materials.map((material) => material.label)).size !== expectedMaterialCount) {
+        await this.clearUploadedMaterials(page).catch(() => undefined);
+        await prompt.fill("").catch(() => undefined);
+        return { reason: "page-changed", message: `心影“重新编辑”只还原了 ${materials.length}/${expectedMaterialCount} 项素材，已安全停止` };
+      }
+      const actualLabels = new Set(materials.map((material) => `@${material.label}`));
+      const invalidLabels = [...new Set(promptMaterialLabels(promptForPlatform).filter((label) => !actualLabels.has(label)))];
+      if (invalidLabels.length) {
+        await this.clearUploadedMaterials(page).catch(() => undefined);
+        await prompt.fill("").catch(() => undefined);
+        return { reason: "page-changed", message: `心影“重新编辑”后的提示词引用了未还原素材：${invalidLabels.join("、")}` };
+      }
+    }
+    return { promptForPlatform };
+  }
+
   private async referenceUploadInput(page: Page, mimeType: string): Promise<Locator | null> {
     const kind = mediaKindFromMime(mimeType);
     const extension = kind === "audio" ? ".wav" : kind === "video" ? ".mp4" : ".png";
@@ -1267,7 +1346,7 @@ export class PlaywrightXinyingAdapter {
     return null;
   }
 
-  async submitGeneration(job: Job): Promise<AdapterOutcome> {
+  async submitGeneration(job: Job, reuseFromPlatformTaskId?: string): Promise<AdapterOutcome> {
     const ensured = await this.ensureGenerationPage(job);
     if (!(ensured instanceof Object) || !("locator" in ensured)) return ensured as AdapterOutcome;
     const page = ensured as Page;
@@ -1284,16 +1363,6 @@ export class PlaywrightXinyingAdapter {
     if (!prompt) {
       return { status: "needs-human", checkpoint: { reason: "page-changed", message: "找不到心影提示词输入框，请在兼容模式中确认页面" } };
     }
-
-    const existingMaterialCount = await this.uploadedMaterialCount(page);
-    if (existingMaterialCount > 0) {
-      await this.clearUploadedMaterials(page);
-    }
-
-    const modelCheckpoint = await this.configureModel(page, stringParameter(job, "modelName"));
-    if (modelCheckpoint) return { status: "needs-human", checkpoint: modelCheckpoint };
-    const parameterCheckpoint = await this.configureParameters(page, job);
-    if (parameterCheckpoint) return { status: "needs-human", checkpoint: parameterCheckpoint };
 
     const selectedPortraits = platformPortraitsParameter(job);
     const portraitsById = new Map(selectedPortraits.map((portrait) => [portrait.id, portrait]));
@@ -1315,7 +1384,23 @@ export class PlaywrightXinyingAdapter {
     }
     const firstLastMode = stringParameter(job, "mode") === "first-last-frame";
     let promptForPlatform = job.promptSnapshot;
-    if (firstLastMode) {
+    let reusedDraft = false;
+    if (reuseFromPlatformTaskId) {
+      const reused = await this.reuseGenerationDraft(page, job, reuseFromPlatformTaskId, materialOrder.length, firstLastMode);
+      if ("reason" in reused) return { status: "needs-human", checkpoint: reused };
+      promptForPlatform = reused.promptForPlatform;
+      reusedDraft = true;
+    } else {
+      const existingMaterialCount = await this.uploadedMaterialCount(page);
+      if (existingMaterialCount > 0) await this.clearUploadedMaterials(page);
+    }
+
+    const modelCheckpoint = await this.configureModel(page, stringParameter(job, "modelName"));
+    if (modelCheckpoint) return { status: "needs-human", checkpoint: modelCheckpoint };
+    const parameterCheckpoint = await this.configureParameters(page, job);
+    if (parameterCheckpoint) return { status: "needs-human", checkpoint: parameterCheckpoint };
+
+    if (!reusedDraft && firstLastMode) {
       for (let index = 0; index < orderedReferences.length; index += 1) {
         const inputs = await firstCollection(page, this.selectors.generation.imageInput);
         const input = inputs && (await inputs.count()) > index ? inputs.nth(index) : inputs?.first();
@@ -1329,7 +1414,7 @@ export class PlaywrightXinyingAdapter {
           return { status: "needs-human", checkpoint: { reason: "approval", message: `@图${index + 1} 未能进入${index === 0 ? "首帧" : "尾帧"}槽位，请人工检查` } };
         }
       }
-    } else {
+    } else if (!reusedDraft) {
       let materialCount = 0;
       let portraitsAdded = false;
       const actualLabelByKey = new Map<string, string>();
@@ -1476,7 +1561,13 @@ export class PlaywrightXinyingAdapter {
       ...taskRef,
       sessionId: submittedUrl?.searchParams.get("sessionId") ?? taskRef.sessionId,
     });
-    return { status: "running", platformTaskId, message: "已核验虚拟人像并按 APP 顺序映射心影实际编号后提交生成" };
+    return {
+      status: "running",
+      platformTaskId,
+      message: reusedDraft
+        ? "已通过心影“重新编辑”复用上一条的提示词、素材与参数并再次提交生成"
+        : "已核验虚拟人像并按 APP 顺序映射心影实际编号后提交生成",
+    };
   }
 
   async submitPortraitReview(job: Job, portrait: PortraitAsset): Promise<AdapterOutcome> {
@@ -1986,6 +2077,7 @@ export const adapterInternals = {
   parseSelectedPortraitCount,
   remapPromptLabels,
   normalizePromptLabels,
+  normalizeReusablePrompt,
   classifyPortraitCardText,
   classifyGenerationCard,
   platformPortraitIdentity,

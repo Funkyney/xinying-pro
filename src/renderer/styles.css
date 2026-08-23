@@ -176,6 +176,11 @@ p { color: var(--muted); line-height: 1.6; }
 .reference-delete-summary span { color: var(--muted); font-size: 9px; line-height: 1.5; }
 .preview-list { display: flex; flex-direction: column; gap: 6px; max-height: 180px; padding: 11px; overflow: auto; border: 1px solid var(--line); border-radius: 10px; background: #0e1118; }
 .preview-list span { color: #b8becc; font-size: 10px; }
+.generation-count-control { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-top: 10px; padding: 11px 12px; border: 1px solid rgba(151,119,239,.24); border-radius: 10px; background: rgba(139,92,246,.06); }
+.generation-count-control > span { display: flex; min-width: 0; flex-direction: column; gap: 4px; }
+.generation-count-control strong { color: #e7e0fb; font-size: 11px; }
+.generation-count-control small { color: var(--muted); font-size: 9px; line-height: 1.45; }
+.generation-count-control input { width: 72px; flex: 0 0 auto; padding: 9px 10px; border: 1px solid rgba(151,119,239,.3); border-radius: 8px; color: #f2effa; background: #0d1017; text-align: center; }
 .warning-box { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; padding: 10px; border: 1px solid rgba(255,189,102,.2); border-radius: 9px; color: #ffc77e; background: rgba(255,189,102,.05); }
 .warning-box span { display: flex; gap: 6px; font-size: 10px; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
