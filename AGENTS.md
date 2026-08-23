@@ -20,7 +20,7 @@
 6. Seedance 自动执行优先写导演任务 JSON，再执行 `director validate` 与 `director prepare`；两者不提交心影。
 7. 清单中有人物素材时，用户确认后执行 `director authorize --manifest <path> --confirm`，等待全部审核完成，再执行 `director resolve --manifest <path>`。
 8. 提交前检查 `preview.ready`、`warnings` 和实际 `orderedLabels`；用户明确要求生成后执行 `director submit --manifest <path> --confirm`。数量来自清单 `count`，未指定时只能生成 1 条。
-9. 使用 `job status <job-id>` 和 `job events <job-id>` 查询进度。
+9. 生成任务只用 `job status <job-id>` 等待全部任务进入 `running` 或 `completed`；此时提交流程成功并立即结束。除非用户另行要求，不继续监控结果，不运行 `results sync/list`，也不下载。
 10. 人工步骤处理完成后，先复查原网页，再执行 `job resume <job-id> --confirm`。
 
 CLI 始终输出 JSON。不要依赖界面文案解析本地项目状态。

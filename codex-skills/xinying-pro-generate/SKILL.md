@@ -1,6 +1,6 @@
 ---
 name: xinying-pro-generate
-description: Use 心影Pro to execute a finished Seedance 2.0/2.5 prompt with ordered local image, video, and audio references; automatically queue required portrait authorization for clearly identified people; preserve the intended @图/@视频/@音频 mapping; submit an explicitly requested number of takes; and monitor or retrieve results. Trigger when the user says “用心影生成”, “用心影Pro生成”, “把这条提示词跑一下”, “生成 N 条”, or asks Codex to upload references and operate 心影Pro. Do not use for prompt writing alone or for non-心影 providers.
+description: Use 心影Pro to execute a finished Seedance 2.0/2.5 prompt with ordered local image, video, and audio references; automatically queue required portrait authorization for clearly identified people; preserve the intended @图/@视频/@音频 mapping; submit an explicitly requested number of takes; and stop once every take is confirmed as generating. Trigger when the user says “用心影生成”, “用心影Pro生成”, “把这条提示词跑一下”, “生成 N 条”, or asks Codex to upload references and operate 心影Pro. Only monitor, retrieve, or download results when the user separately asks. Do not use for prompt writing alone or for non-心影 providers.
 ---
 
 # 心影Pro 自动生成
@@ -99,16 +99,18 @@ director submit --manifest "<absolute-manifest-path>" --confirm
 
 清单中的 `count` 就是生成条数；仅在用户本次指令明确改变数量时使用 `--count N` 覆盖。命令返回统一 `batchId` 和每条任务的 `job id`。APP 会依次上传素材、核验心影实际编号、重写提示词编号并提交。
 
-### 6. 监控与交付
+### 6. 确认进入生成中，然后结束
 
-使用 `job status` 与 `job events` 监控每条任务。完成后使用：
+`director submit` 只代表任务已进入本地队列。对返回的每个生成任务运行 `job status <job-id>`，直到每条任务分别满足以下一种状态：
 
-```text
-results sync --project-id <project-id>
-results list --project-id <project-id> --compact
-```
+- `running`：心影已接受提交并显示生成中，视为本自动流程成功。
+- `completed`：任务在检查前已快速完成，同样视为提交成功。
+- `queued/submitting`：尚未确认心影接单，继续以合理间隔检查。
+- `failed/needs-login/needs-human/cancelled`：停止并报告原始原因，不能声称成功。
 
-只有用户要求保存到指定目录时才下载。汇报批次编号、提交数量、各任务状态以及需要人工处理的项目；不要声称尚未返回的结果已经完成。
+当本批次全部任务均为 `running` 或 `completed` 时，立即结束 Codex 流程。只汇报批次编号、成功提交数量、任务 ID，并明确说明“心影已进入生成中，自动流程已完成；结果由用户稍后人工查看”。不要继续等待视频完成，不要默认运行 `job events`、`results sync`、`results list` 或下载命令。
+
+只有用户在生成提交之后另行明确要求“继续监控 / 查结果 / 下载”时，才恢复相应查询；这属于新的后续任务，不属于默认生成流程。
 
 ## 失败恢复
 

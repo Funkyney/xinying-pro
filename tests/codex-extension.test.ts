@@ -69,7 +69,19 @@ describe("CodexExtensionManager", () => {
     const result = await manager.install(true);
     expect(result.state).toBe("installed");
     expect(result.backupPath).toMatch(/xinying-pro-generate\.backup-/);
+    expect(path.dirname(result.backupPath!)).toBe(manager.backupsRoot);
     expect(await fs.promises.readFile(path.join(result.backupPath!, "personal-note.txt"), "utf8")).toBe("keep me");
+  });
+
+  it("moves legacy backups outside the scanned Codex skills directory", async () => {
+    const { manager } = await fixture();
+    const legacy = path.join(manager.skillsRoot, "xinying-pro-generate.backup-legacy");
+    await fs.promises.mkdir(legacy, { recursive: true });
+    await fs.promises.writeFile(path.join(legacy, "SKILL.md"), "legacy", "utf8");
+
+    await manager.install();
+    expect(await fs.promises.readdir(manager.skillsRoot)).not.toContain("xinying-pro-generate.backup-legacy");
+    expect(await fs.promises.readFile(path.join(manager.backupsRoot, "xinying-pro-generate.backup-legacy", "SKILL.md"), "utf8")).toBe("legacy");
   });
 
   it("creates an executable macOS launcher", async () => {

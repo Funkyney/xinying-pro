@@ -101,6 +101,10 @@ export class CodexExtensionManager {
     return path.join(this.skillsRoot, SKILL_NAME);
   }
 
+  get backupsRoot(): string {
+    return path.join(this.runtime.codexHome, "skill-backups");
+  }
+
   get launcherName(): string {
     return this.runtime.platform === "win32" ? "xinying.cmd" : "xinying";
   }
@@ -154,6 +158,7 @@ export class CodexExtensionManager {
     }
 
     await fs.promises.mkdir(this.skillsRoot, { recursive: true });
+    await this.migrateLegacyBackups();
     requireInside(this.skillsRoot, this.skillPath);
     const nonce = randomUUID();
     const staging = path.join(this.skillsRoot, `.${SKILL_NAME}.install-${nonce}`);
@@ -203,13 +208,15 @@ export class CodexExtensionManager {
         if (managed) {
           displacedPath = previous;
         } else {
-          const base = path.join(this.skillsRoot, `${SKILL_NAME}.backup-${backupTimestamp(new Date())}`);
+          await fs.promises.mkdir(this.backupsRoot, { recursive: true });
+          const base = path.join(this.backupsRoot, `${SKILL_NAME}.backup-${backupTimestamp(new Date())}`);
           backupPath = base;
           let suffix = 1;
           while (await pathExists(backupPath)) backupPath = `${base}-${suffix++}`;
           displacedPath = backupPath;
         }
-        requireInside(this.skillsRoot, displacedPath);
+        if (displacedPath === previous) requireInside(this.skillsRoot, displacedPath);
+        else requireInside(this.backupsRoot, displacedPath);
         await fs.promises.rename(this.skillPath, displacedPath);
       }
 
@@ -222,6 +229,24 @@ export class CodexExtensionManager {
       }
       await fs.promises.rm(staging, { recursive: true, force: true }).catch(() => undefined);
       throw error;
+    }
+  }
+
+  private async migrateLegacyBackups(): Promise<void> {
+    if (!(await pathExists(this.skillsRoot))) return;
+    const entries = await fs.promises.readdir(this.skillsRoot, { withFileTypes: true });
+    const legacy = entries.filter((entry) => entry.name.startsWith(`${SKILL_NAME}.backup-`));
+    if (!legacy.length) return;
+    await fs.promises.mkdir(this.backupsRoot, { recursive: true });
+    for (const entry of legacy) {
+      const source = path.join(this.skillsRoot, entry.name);
+      requireInside(this.skillsRoot, source);
+      const base = path.join(this.backupsRoot, entry.name);
+      let destination = base;
+      let suffix = 1;
+      while (await pathExists(destination)) destination = `${base}-${suffix++}`;
+      requireInside(this.backupsRoot, destination);
+      await fs.promises.rename(source, destination);
     }
   }
 }

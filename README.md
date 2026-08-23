@@ -19,7 +19,8 @@
 - Playwright 通过 Electron 本地 CDP 通道操作心影的可见页面元素。
 - 主界面启用 Electron 渲染沙箱；`xinying.cmd` 为 Codex 提供无 npm 日志前缀的稳定 JSON 输出。
 - Seedance 导演任务清单把定稿提示词、电脑素材路径、最终顺序、人像授权标记和生成条数放在同一份 JSON 中。Codex 可先无扣费预检，再自动提交人物审核；审核通过后，APP 会在原位置换成心影虚拟人像，并按清单一次排队 1–20 条生成任务。
-- APP 内置“Codex扩展”页面：把 `xinying-pro-generate` Skill 和指向当前安装版APP的本机 CLI 启动器安装到 Codex。无需源码或 Node.js；APP升级后可在同一页面更新 Skill。若已存在同名个人 Skill，确认后会先保留时间戳备份，不会静默覆盖。
+- APP 内置“Codex扩展”页面：把 `xinying-pro-generate` Skill 和指向当前安装版APP的本机 CLI 启动器安装到 Codex。无需源码或 Node.js；APP升级后可在同一页面更新 Skill。若已存在同名个人 Skill，确认后会先保留到 Codex 专用备份目录，不会静默覆盖，也不会让备份被 Codex 重复识别。
+- Codex 默认只监控到本批次全部任务被心影接受并进入“生成中”，随即把自动提交视为完整成功并结束；结果完成、同步和下载由用户另行要求，不会让原生成对话长期卡在检查中。
 
 ## 本地开发
 
@@ -52,7 +53,7 @@ npm run dev
 
 普通使用者不需要克隆源码：安装并启动心影Pro，在“Codex扩展”页面点击“安装到 Codex”，然后新建 Codex 任务或重启 Codex。之后完成 Seedance 提示词后可直接说“用心影Pro生成 3 条”；Skill 会使用当前电脑的素材、心影Pro登录会话和项目目录执行。每位同事仍需使用自己的飞书账号登录心影。
 
-心影Pro更新后，如果内置 Skill 有新版，“Codex扩展”页面会显示“可更新”。点击更新即可原子替换受管版本；未受管的同名 Skill 会先备份到相邻目录。
+心影Pro更新后，如果内置 Skill 有新版，“Codex扩展”页面会显示“可更新”。点击更新即可原子替换受管版本；未受管的同名 Skill 会先备份到 `$CODEX_HOME/skill-backups`。
 
 以下命令主要供源码开发与诊断使用。源码环境先构建：
 
