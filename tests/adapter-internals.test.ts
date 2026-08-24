@@ -71,6 +71,35 @@ describe("Playwright adapter task references", () => {
     expect(adapterInternals.platformProjectIdentity(personal, "项目A", "000001")).not.toBe(adapterInternals.platformProjectIdentity(team, "项目A", "000001"));
   });
 
+  it("builds a complete directly-openable catalog from Heart's read-only directory responses", () => {
+    const catalog = adapterInternals.platformCatalogFromApi({
+      currentRemoteId: "remote-team",
+      currentWorkspaceKey: "team:team-1",
+      workspaces: [
+        { key: "personal:group-1", kind: "personal", name: "个人空间" },
+        { key: "team:team-1", kind: "team", name: "设计团队" },
+      ],
+      projects: [
+        { workspaceKey: "personal:group-1", remoteId: "remote-personal", name: "个人项目", shortId: "000001" },
+        { workspaceKey: "team:team-1", remoteId: "remote-team", name: "团队项目", shortId: "000002" },
+      ],
+      customerOptions: ["客户A", "客户A", "客户B"],
+      creationTypeOptions: ["其他", "汽车"],
+    }, "2026-08-24T00:00:00.000Z", "https://blueaivideo.com/", "/home");
+
+    expect(catalog.workspaces).toHaveLength(2);
+    expect(catalog.projects).toHaveLength(2);
+    expect(catalog.customerOptions).toEqual(["客户A", "客户B"]);
+    expect(catalog.currentProjectId).toBe(catalog.projects[1].id);
+    expect(catalog.currentWorkspaceId).toBe(catalog.workspaces[1].id);
+    expect(catalog.workspaces[1].isCurrent).toBe(true);
+    expect(catalog.projects[1]).toMatchObject({
+      remoteId: "remote-team",
+      homeUrl: "https://blueaivideo.com/home?projectId=remote-team",
+      isCurrent: true,
+    });
+  });
+
   it("selects the default other portrait metadata without asking the user", () => {
     const defaults = {
       gender: "其他",

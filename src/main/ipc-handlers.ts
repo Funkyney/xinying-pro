@@ -37,7 +37,10 @@ export function registerIpcHandlers(
   handle(IPC.projectsRemove, (_event, id: string) => service.removeProject(id));
   handle(IPC.platformProjectsCatalog, () => service.getPlatformCatalog());
   handle(IPC.platformProjectsSync, async () => {
-    const catalog = await platform.withAutomationViewport(() => adapter.syncPlatformCatalog(), "正在同步心影空间与项目");
+    const catalog = await platform.withAutomationViewport(
+      () => adapter.syncPlatformCatalog(service.getPlatformCatalog()),
+      "正在同步心影空间与项目",
+    );
     return service.syncPlatformCatalog(catalog);
   });
   handle(IPC.platformProjectsOpen, async (_event, projectId: string) => {

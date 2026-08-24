@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { chromium, type Browser, type Locator, type Page } from "playwright-core";
+import { chromium, type Browser, type Locator, type Page, type Response } from "playwright-core";
 import type {
   HumanCheckpoint,
   Job,
@@ -53,6 +53,24 @@ interface MatchedChatResponse {
 interface UploadedMaterialSnapshot {
   label: string;
   previewText: string;
+}
+
+interface PlatformCatalogApiData {
+  currentRemoteId: string;
+  currentWorkspaceKey: string;
+  workspaces: Array<{
+    key: string;
+    kind: PlatformWorkspace["kind"];
+    name: string;
+  }>;
+  projects: Array<{
+    workspaceKey: string;
+    remoteId: string;
+    name: string;
+    shortId: string;
+  }>;
+  customerOptions: string[];
+  creationTypeOptions: string[];
 }
 
 async function firstVisible(page: Page, selectors: string[]): Promise<Locator | null> {
@@ -181,6 +199,70 @@ function platformWorkspaceIdentity(kind: PlatformWorkspace["kind"], name: string
 
 function platformProjectIdentity(workspaceId: string, name: string, shortId: string): string {
   return crypto.createHash("sha256").update(`project\n${workspaceId}\n${shortId.trim()}\n${name.trim()}`).digest("hex");
+}
+
+function platformCatalogFromApi(
+  data: PlatformCatalogApiData,
+  syncedAt: string,
+  baseUrl: string,
+  homePath: string,
+): PlatformCatalogSnapshot {
+  const seenWorkspaceKeys = new Set<string>();
+  const workspaces = data.workspaces.filter((workspace) => {
+    if (!workspace.key.trim() || !workspace.name.trim() || seenWorkspaceKeys.has(workspace.key)) return false;
+    seenWorkspaceKeys.add(workspace.key);
+    return true;
+  }).map((workspace, sortOrder): PlatformWorkspace => ({
+    id: platformWorkspaceIdentity(workspace.kind, workspace.name),
+    name: workspace.name.trim(),
+    kind: workspace.kind,
+    description: workspace.kind === "personal" ? "数据仅自己可见" : "项目与虚拟人像对团队成员共享",
+    available: true,
+    isCurrent: false,
+    sortOrder,
+    lastSeenAt: syncedAt,
+  }));
+  const workspaceByKey = new Map<string, PlatformWorkspace>();
+  for (const workspace of data.workspaces) {
+    const matched = workspaces.find((item) => item.id === platformWorkspaceIdentity(workspace.kind, workspace.name));
+    if (matched && !workspaceByKey.has(workspace.key)) workspaceByKey.set(workspace.key, matched);
+  }
+
+  const origin = baseUrl.replace(/\/$/, "");
+  const projects = data.projects.flatMap((project, sortOrder): PlatformProject[] => {
+    const workspace = workspaceByKey.get(project.workspaceKey);
+    const name = project.name.trim();
+    const shortId = project.shortId.trim();
+    const remoteId = project.remoteId.trim();
+    if (!workspace || !name || !shortId || !remoteId) return [];
+    return [{
+      id: platformProjectIdentity(workspace.id, name, shortId),
+      workspaceId: workspace.id,
+      name,
+      shortId,
+      remoteId,
+      homeUrl: `${origin}${homePath}?projectId=${encodeURIComponent(remoteId)}`,
+      available: true,
+      isCurrent: remoteId === data.currentRemoteId,
+      sortOrder,
+      lastSeenAt: syncedAt,
+    }];
+  });
+  const currentProject = projects.find((project) => project.isCurrent);
+  const currentWorkspace = currentProject
+    ? workspaces.find((workspace) => workspace.id === currentProject.workspaceId)
+    : workspaceByKey.get(data.currentWorkspaceKey);
+  for (const workspace of workspaces) workspace.isCurrent = workspace.id === currentWorkspace?.id;
+
+  return {
+    workspaces,
+    projects,
+    currentWorkspaceId: currentWorkspace?.id ?? "",
+    currentProjectId: currentProject?.id ?? "",
+    customerOptions: [...new Set(data.customerOptions.map((item) => item.trim()).filter(Boolean))],
+    creationTypeOptions: [...new Set(data.creationTypeOptions.map((item) => item.trim()).filter(Boolean))],
+    syncedAt,
+  };
 }
 
 function classifyPortraitCardText(text: string): "failed" | "running" | "completed" {
@@ -402,7 +484,6 @@ export class PlaywrightXinyingAdapter {
       const back = panel.getByText("返回", { exact: true }).filter({ visible: true }).first();
       if ((await back.count()) > 0) {
         await clickDom(back);
-        await page.waitForTimeout(500);
       }
     }
     const workspaces = await waitForCollectionWithin(panel, this.selectors.projects.workspaceItems, 8_000);
@@ -570,6 +651,231 @@ export class PlaywrightXinyingAdapter {
     throw new AppError("GENERATION_SESSION_CREATE_FAILED", "已选择心影项目，但未能建立内容生成会话");
   }
 
+  private async readPlatformCatalogApi(
+    page: Page,
+    syncedAt: string,
+    previous?: PlatformCatalogSnapshot,
+  ): Promise<PlatformCatalogSnapshot> {
+    this.requireAuthenticatedPage(page);
+    const currentRemoteId = new URL(page.url()).searchParams.get("projectId") ?? "";
+    let currentContext: Record<string, unknown> = {};
+    let teamRows: Array<Record<string, unknown>> = [];
+    let skuRows: Array<Record<string, unknown>> = [];
+    let clientRows: Array<Record<string, unknown>> = [];
+    const selectorCaption = await firstVisible(page, this.selectors.projects.selectorTrigger);
+    const currentWorkspaceName = ((await selectorCaption?.innerText().catch(() => "")) ?? "")
+      .split(/[｜|]/)[0]?.trim() ?? "";
+    const projectLists = new Map<string, Array<Record<string, unknown>>>();
+    const pending = new Set<Promise<void>>();
+    const rowsFromEnvelope = (value: unknown): Array<Record<string, unknown>> => {
+      if (!value || typeof value !== "object") return [];
+      const envelope = value as { code?: unknown; data?: unknown };
+      if (Number(envelope.code) !== 0 || !Array.isArray(envelope.data)) return [];
+      return envelope.data.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object"));
+    };
+    const onResponse = (response: Response): void => {
+      let url: URL;
+      try {
+        url = new URL(response.url());
+      } catch {
+        return;
+      }
+      if (!hostMatches(url.hostname, "blueaivideo.com") || response.request().method() !== "GET") return;
+      if (!["/api/user/info/", "/api/team/list/", "/api/project/list", "/api/project/sku_type", "/api/client/list"].includes(url.pathname)) return;
+      const task = response.json().then((body: unknown) => {
+        if (url.pathname === "/api/user/info/") {
+          const envelope = body && typeof body === "object" ? body as { code?: unknown; data?: unknown } : {};
+          const data = Number(envelope.code) === 0 && envelope.data && typeof envelope.data === "object"
+            ? envelope.data as Record<string, unknown>
+            : {};
+          currentContext = data.cur_group_team_info && typeof data.cur_group_team_info === "object"
+            ? data.cur_group_team_info as Record<string, unknown>
+            : {};
+          return;
+        }
+        const rows = rowsFromEnvelope(body);
+        if (url.pathname === "/api/team/list/") teamRows = rows;
+        else if (url.pathname === "/api/project/sku_type") skuRows = rows;
+        else if (url.pathname === "/api/client/list") clientRows = rows;
+        else {
+          const projectType = url.searchParams.get("project_type") ?? "";
+          const teamId = url.searchParams.get("team_id") ?? "";
+          projectLists.set(projectType === "PERSONAL_PROJECT" ? "personal" : `team:${teamId}`, rows);
+        }
+      }).catch(() => undefined).finally(() => pending.delete(task));
+      pending.add(task);
+    };
+
+    page.on("response", onResponse);
+    try {
+      const homeUrl = platformHomeUrl(page.url(), this.selectors.baseUrl, this.selectors.projects.homePath);
+      await page.goto(homeUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
+      const panel = await this.openProjectSelector(page);
+      await this.showWorkspaceLayer(page, panel);
+      const metadataDeadline = Date.now() + 3_000;
+      while (Date.now() < metadataDeadline && !teamRows.length) {
+        if (pending.size) await Promise.allSettled([...pending]);
+        await page.waitForTimeout(50);
+      }
+      if (!teamRows.length) throw new Error("心影页面没有返回空间目录响应");
+      const currentTeamId = typeof currentContext.team_id === "string" ? currentContext.team_id.trim() : "";
+      const targets = teamRows.flatMap((row, sortOrder): Array<PlatformWorkspace & { listKey: string; teamId: string }> => {
+        const personal = row.space_type === "PRIVATE";
+        const teamId = typeof row.team_id === "string" ? row.team_id.trim() : "";
+        const name = personal ? "个人空间" : typeof row.team_name === "string" ? row.team_name.trim() : "";
+        if (!personal && (!teamId || !name)) return [];
+        const kind: PlatformWorkspace["kind"] = personal ? "personal" : "team";
+        return [{
+          id: platformWorkspaceIdentity(kind, name),
+          name,
+          kind,
+          description: personal ? "数据仅自己可见" : "项目与虚拟人像对团队成员共享",
+          available: true,
+          isCurrent: currentTeamId ? teamId === currentTeamId : name === currentWorkspaceName,
+          sortOrder,
+          lastSeenAt: syncedAt,
+          listKey: personal ? "personal" : `team:${teamId}`,
+          teamId,
+        }];
+      }).sort((left, right) => Number(left.isCurrent) - Number(right.isCurrent));
+      let changedWorkspace = false;
+      for (const target of targets) {
+        if (target.isCurrent && !changedWorkspace && projectLists.has(target.listKey)) continue;
+        const panel = await this.openProjectSelector(page);
+        const items = await this.showWorkspaceLayer(page, panel);
+        const responsePromise = page.waitForResponse((response) => {
+          try {
+            const url = new URL(response.url());
+            if (url.pathname !== "/api/project/list" || response.request().method() !== "GET") return false;
+            const personal = url.searchParams.get("project_type") === "PERSONAL_PROJECT";
+            const teamId = url.searchParams.get("team_id") ?? "";
+            return target.kind === "personal" ? personal : !personal && teamId === target.teamId;
+          } catch {
+            return false;
+          }
+        }, { timeout: 5_000 });
+        let clicked = false;
+        try {
+          clicked = await items.evaluateAll((elements, requested) => {
+            const match = elements.find((element) => {
+              const text = ((element as HTMLElement).innerText ?? "").replace(/\s+/g, " ").trim();
+              return requested.kind === "personal" ? text.includes("个人空间") : text === requested.name;
+            });
+            if (!(match instanceof HTMLElement)) return false;
+            match.click();
+            return true;
+          }, { name: target.name, kind: target.kind });
+        } catch (error) {
+          void responsePromise.catch(() => undefined);
+          throw error;
+        }
+        if (!clicked) {
+          void responsePromise.catch(() => undefined);
+          throw new Error(`心影找不到空间“${target.name}”`);
+        }
+        await responsePromise;
+        if (!target.isCurrent) changedWorkspace = true;
+        if (pending.size) await Promise.allSettled([...pending]);
+        if (!projectLists.has(target.listKey)) throw new Error(`心影没有返回“${target.name}”的项目目录响应`);
+      }
+      if (pending.size) await Promise.allSettled([...pending]);
+      await page.keyboard.press("Escape").catch(() => undefined);
+    } finally {
+      page.off("response", onResponse);
+    }
+    const expectedProjectLists = teamRows.filter((row) => row.space_type === "PRIVATE"
+      || (typeof row.team_id === "string" && row.team_id.trim())).length;
+    if (!teamRows.length || !expectedProjectLists || projectLists.size < expectedProjectLists) {
+      throw new Error(`心影页面没有返回完整的空间或项目目录响应（应有 ${expectedProjectLists}，实际 ${projectLists.size}）`);
+    }
+
+    const groupId = typeof currentContext.group_id === "string" && currentContext.group_id
+      ? currentContext.group_id
+      : teamRows.find((row) => typeof row.group_id === "string" && row.group_id)?.group_id as string | undefined ?? "current";
+    const workspaces = teamRows.flatMap((row) => {
+      const personal = row.space_type === "PRIVATE";
+      const teamId = typeof row.team_id === "string" ? row.team_id.trim() : "";
+      const name = personal ? "个人空间" : typeof row.team_name === "string" ? row.team_name.trim() : "";
+      if (!personal && (!teamId || !name)) return [];
+      return [{
+        key: personal ? `personal:${groupId}` : `team:${teamId}`,
+        kind: personal ? "personal" as const : "team" as const,
+        name,
+        projectListKey: personal ? "personal" : `team:${teamId}`,
+      }];
+    });
+    const projects = workspaces.flatMap((workspace) => (projectLists.get(workspace.projectListKey) ?? []).flatMap((row) => {
+      const remoteId = typeof row.project_id === "string" ? row.project_id.trim() : "";
+      const name = typeof row.project_name === "string" ? row.project_name.trim() : "";
+      const shortId = typeof row.project_short_id === "string" ? row.project_short_id.trim() : "";
+      return remoteId && name && shortId ? [{ workspaceKey: workspace.key, remoteId, name, shortId }] : [];
+    }));
+    const currentTeamId = typeof currentContext.team_id === "string" ? currentContext.team_id.trim() : "";
+    const currentWorkspaceKey = currentTeamId
+      ? `team:${currentTeamId}`
+      : workspaces.find((workspace) => workspace.name === currentWorkspaceName)?.key ?? `personal:${groupId}`;
+    let customerOptions = clientRows.flatMap((row) => typeof row.client_name === "string" ? [row.client_name] : []);
+    let creationTypeOptions = skuRows.flatMap((row) => typeof row.merchant_name === "string" ? [row.merchant_name] : []);
+    if (!customerOptions.length) customerOptions = previous?.customerOptions ?? [];
+    if (!creationTypeOptions.length) creationTypeOptions = previous?.creationTypeOptions ?? [];
+    if (!customerOptions.length && workspaces.some((workspace) => workspace.kind === "team")) {
+      customerOptions = await this.readProjectCustomerOptions(page).catch(() => []);
+    }
+    if (!creationTypeOptions.length) {
+      const options = await this.readProjectFormOptions(page);
+      if (!customerOptions.length) customerOptions = options.customerOptions;
+      creationTypeOptions = options.creationTypeOptions;
+    }
+    return platformCatalogFromApi({
+      currentRemoteId,
+      currentWorkspaceKey,
+      workspaces: workspaces.map(({ key, kind, name }) => ({ key, kind, name })),
+      projects,
+      customerOptions,
+      creationTypeOptions,
+    }, syncedAt, this.selectors.baseUrl, this.selectors.projects.homePath);
+  }
+
+  private async readProjectCustomerOptions(page: Page): Promise<string[]> {
+    let dialog = await firstVisible(page, this.selectors.projects.newProjectDialog);
+    if (dialog) {
+      const existingCancel = dialog.getByText("取消", { exact: true }).filter({ visible: true }).first();
+      if ((await existingCancel.count()) > 0) await clickDom(existingCancel).catch(() => undefined);
+    }
+    await page.keyboard.press("Escape").catch(() => undefined);
+    const button = await firstVisible(page, this.selectors.projects.newProjectButtons);
+    if (!button) return [];
+    const responsePromise = page.waitForResponse((response) => {
+      try {
+        const url = new URL(response.url());
+        return hostMatches(url.hostname, "blueaivideo.com")
+          && url.pathname === "/api/client/list" && response.request().method() === "GET";
+      } catch {
+        return false;
+      }
+    }, { timeout: 5_000 });
+    try {
+      await clickDom(button);
+      dialog = await this.waitForVisible(page, this.selectors.projects.newProjectDialog, 5_000);
+      if (!dialog) return [];
+      const customerInput = await firstVisibleWithin(dialog, this.selectors.projects.customerInputs);
+      if (customerInput) await clickDom(customerInput);
+      const response = await responsePromise;
+      const body = await response.json() as { code?: unknown; data?: unknown };
+      if (Number(body.code) !== 0 || !Array.isArray(body.data)) return [];
+      return [...new Set(body.data.flatMap((item) => item && typeof item === "object"
+        && typeof (item as { client_name?: unknown }).client_name === "string"
+        ? [(item as { client_name: string }).client_name.trim()]
+        : []).filter(Boolean))];
+    } finally {
+      void responsePromise.catch(() => undefined);
+      if (dialog) {
+        const cancel = dialog.getByText("取消", { exact: true }).filter({ visible: true }).first();
+        if ((await cancel.count()) > 0) await clickDom(cancel).catch(() => undefined);
+      }
+    }
+  }
+
   private async readProjectFormOptions(page: Page): Promise<{ customerOptions: string[]; creationTypeOptions: string[] }> {
     const existingDialog = await firstVisible(page, this.selectors.projects.newProjectDialog);
     if (existingDialog) {
@@ -609,12 +915,22 @@ export class PlaywrightXinyingAdapter {
     }
   }
 
-  async syncPlatformCatalog(): Promise<PlatformCatalogSnapshot> {
+  async syncPlatformCatalog(previous?: PlatformCatalogSnapshot): Promise<PlatformCatalogSnapshot> {
     const page = await this.page();
     const originalUrl = page.url();
+    const syncedAt = new Date().toISOString();
+    try {
+      // Capture the read-only JSON responses that Heart's own selector issues.
+      // This keeps the official workspace switch behavior while avoiding slow
+      // card-by-card DOM reconstruction and returns every full projectId in one
+      // sync. Keep the DOM route as a compatibility fallback if the response
+      // schema changes.
+      return await this.readPlatformCatalogApi(page, syncedAt, previous);
+    } catch {
+      // Fall through to the selector-driven compatibility path below.
+    }
     const currentUrl = new URL(originalUrl);
     const currentRemoteId = currentUrl.searchParams.get("projectId") ?? "";
-    const syncedAt = new Date().toISOString();
     const readCatalog = async (): Promise<PlatformCatalogSnapshot> => {
       await this.ensureHomePage(page);
       const trigger = await this.waitForVisible(page, this.selectors.projects.selectorTrigger, 20_000);
@@ -2167,5 +2483,6 @@ export const adapterInternals = {
   platformPortraitIdentity,
   platformWorkspaceIdentity,
   platformProjectIdentity,
+  platformCatalogFromApi,
   configurablePortraitOptions,
 };
