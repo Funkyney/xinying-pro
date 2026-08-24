@@ -287,6 +287,27 @@ export class PlatformViewManager {
     });
   }
 
+  async withBackgroundAutomation<T>(operation: () => Promise<T>): Promise<T | undefined> {
+    // Review polling is opportunistic. Never make a user-requested platform
+    // operation wait behind a newly scheduled background check, and do not
+    // take over the page while the user is viewing the original site.
+    if (this.visible || this.automationState.phase !== "idle" || this.pendingAutomationCount > 0) return undefined;
+    return this.automationQueue.run(async () => {
+      // A foreground operation may have been queued while this callback was
+      // waiting for the shared page. Yield to it instead of starting the poll.
+      if (this.visible || this.automationState.phase !== "idle" || this.pendingAutomationCount > 0) return undefined;
+      this.automationDepth += 1;
+      this.syncVisibility();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      try {
+        return await operation();
+      } finally {
+        this.automationDepth = Math.max(0, this.automationDepth - 1);
+        this.syncVisibility();
+      }
+    });
+  }
+
   private syncVisibility(): void {
     if (this.visible) {
       this.view.setBounds(this.bounds);

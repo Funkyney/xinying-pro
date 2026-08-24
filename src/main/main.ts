@@ -79,7 +79,12 @@ function createWindow(): void {
       service.updatePlatformPortraitMediaKind(portraitId, mediaKind);
     },
   );
-  worker = new JobWorker(service, adapter, (operation, label) => platformManager!.withAutomationViewport(operation, label));
+  worker = new JobWorker(
+    service,
+    adapter,
+    (operation, label) => platformManager!.withAutomationViewport(operation, label),
+    (operation) => platformManager!.withBackgroundAutomation(operation),
+  );
   const bundledSkillPath = app.isPackaged
     ? path.join(process.resourcesPath, "codex-skills", "xinying-pro-generate")
     : path.join(app.getAppPath(), "codex-skills", "xinying-pro-generate");

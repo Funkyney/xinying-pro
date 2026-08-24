@@ -2234,7 +2234,9 @@ export class PlaywrightXinyingAdapter {
     return { status: "running", platformTaskId: `portrait:${job.id}`, message: `虚拟人像“${portrait.displayName}”已自动勾选合规承诺并提交心影审核` };
   }
 
-  async inspectPortraitReview(job: Job, portrait: PortraitAsset): Promise<AdapterOutcome> {
+  async inspectPortraitReview(job: Job, portrait: PortraitAsset, options: { timeoutMs?: number } = {}): Promise<AdapterOutcome> {
+    const timeoutMs = Math.max(1_000, options.timeoutMs ?? 15_000);
+    const inspectionDeadline = Date.now() + timeoutMs;
     const page = await this.page();
     let current = new URL(page.url());
     if (current.pathname !== this.selectors.portrait.pagePath) {
@@ -2248,7 +2250,7 @@ export class PlaywrightXinyingAdapter {
       }
       await page.goto(`${this.selectors.baseUrl.replace(/\/$/, "")}${this.selectors.portrait.pagePath}?projectId=${encodeURIComponent(projectId)}`, {
         waitUntil: "domcontentloaded",
-        timeout: 30_000,
+        timeout: Math.max(1_000, Math.min(30_000, inspectionDeadline - Date.now())),
       });
       current = new URL(page.url());
       if (current.pathname !== this.selectors.portrait.pagePath) {
@@ -2258,7 +2260,8 @@ export class PlaywrightXinyingAdapter {
           checkpoint: { reason: "page-changed", message: "心影没有进入角色库页面，请在原网页模式中检查" },
         };
       }
-      await this.waitForTextEntry(page, this.selectors.portrait.createTexts, 20_000);
+      const readyTimeout = Math.max(250, inspectionDeadline - Date.now());
+      if (readyTimeout > 250) await this.waitForTextEntry(page, this.selectors.portrait.createTexts, readyTimeout);
     }
     const checkpoint = await this.checkpoint(page);
     if (checkpoint) return checkpoint.reason === "login" ? { status: "needs-login", message: checkpoint.message } : { status: "needs-human", platformTaskId: job.platformTaskId ?? undefined, checkpoint };
@@ -2270,8 +2273,7 @@ export class PlaywrightXinyingAdapter {
         checkpoint: { reason: "approval", message: "未能验证虚拟人像合规承诺的自动勾选或最终提交，请人工检查页面" },
       };
     }
-    const deadline = Date.now() + 15_000;
-    while (Date.now() < deadline) {
+    while (Date.now() < inspectionDeadline) {
       const namedAssets = page.locator(".faceCard .face-name-text").filter({ visible: true });
       const matchingIndex = await namedAssets.evaluateAll((elements, displayName) =>
         elements.findIndex((element) => (element.textContent ?? "").trim() === displayName), portrait.displayName);

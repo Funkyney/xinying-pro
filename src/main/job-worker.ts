@@ -4,6 +4,19 @@ import { asAppError } from "../core/errors";
 import type { PlaywrightXinyingAdapter, AdapterOutcome } from "./playwright-adapter";
 
 type AutomationViewRunner = <T>(operation: () => Promise<T>, label?: string) => Promise<T>;
+type BackgroundAutomationRunner = <T>(operation: () => Promise<T>) => Promise<T | undefined>;
+
+const PORTRAIT_MONITOR_INTERVAL_MS = 30_000;
+const PORTRAIT_INSPECTION_TIMEOUT_MS = 5_000;
+const PORTRAIT_RETRY_AFTER_SKIP_MS = 15_000;
+
+function portraitMonitorDelay(job: Job, attempt: number, now = Date.now()): number {
+  const submittedAt = Date.parse(job.submittedAt ?? job.createdAt);
+  const reviewAge = Number.isFinite(submittedAt) ? Math.max(0, now - submittedAt) : 0;
+  if (reviewAge >= 30 * 60_000) return 5 * 60_000;
+  if (reviewAge >= 10 * 60_000 || attempt >= 5) return 2 * 60_000;
+  return 60_000;
+}
 
 function stringJobParameter(job: Job, key: string): string {
   const value = job.parameters[key];
@@ -19,17 +32,20 @@ export class JobWorker {
   private queueTimer: NodeJS.Timeout | null = null;
   private monitorTimer: NodeJS.Timeout | null = null;
   private processing = false;
+  private readonly portraitCheckNotBefore = new Map<string, number>();
+  private readonly portraitCheckAttempts = new Map<string, number>();
 
   constructor(
     private readonly service: XinyingService,
     private readonly adapter: PlaywrightXinyingAdapter,
     private readonly runWithAutomationView: AutomationViewRunner = async (operation) => operation(),
+    private readonly runWithBackgroundAutomation: BackgroundAutomationRunner = async (operation) => operation(),
   ) {}
 
   start(): void {
     if (this.queueTimer) return;
     this.queueTimer = setInterval(() => void this.processQueue(), 2_000);
-    this.monitorTimer = setInterval(() => void this.monitorRunning(), 12_000);
+    this.monitorTimer = setInterval(() => void this.monitorRunning(), PORTRAIT_MONITOR_INTERVAL_MS);
     void this.processQueue();
   }
 
@@ -102,16 +118,42 @@ export class JobWorker {
       // poll or download it; the user can inspect/sync results when desired.
       // Portrait authorization still needs monitoring because later reference
       // submission depends on its approved/rejected state.
-      const running = this.service.listJobs().filter((job) => job.status === "running" && job.kind === "portrait-review");
-      for (const job of running.slice(0, 3)) {
-        try {
-          const outcome = await this.runWithAutomationView(() =>
-            this.adapter.inspectPortraitReview(job, this.service.getPortrait(job.portraitId!)), "正在检查虚拟人像审核结果");
-          this.applyOutcome(job, outcome, false);
-        } catch (error) {
-          const appError = asAppError(error);
-          this.service.addJobEvent(job.id, "warning", "MONITOR_RETRY", appError.message);
+      const now = Date.now();
+      const running = this.service.listJobs()
+        .filter((job) => job.status === "running" && job.kind === "portrait-review")
+        .filter((job) => (this.portraitCheckNotBefore.get(job.id) ?? 0) <= now)
+        .sort((left, right) => {
+          const scheduled = (this.portraitCheckNotBefore.get(left.id) ?? 0) - (this.portraitCheckNotBefore.get(right.id) ?? 0);
+          return scheduled || left.createdAt.localeCompare(right.createdAt);
+        });
+      const job = running[0];
+      if (!job) return;
+      try {
+        const outcome = await this.runWithBackgroundAutomation(() =>
+          this.adapter.inspectPortraitReview(
+            job,
+            this.service.getPortrait(job.portraitId!),
+            { timeoutMs: PORTRAIT_INSPECTION_TIMEOUT_MS },
+          ));
+        if (!outcome) {
+          this.portraitCheckNotBefore.set(job.id, now + PORTRAIT_RETRY_AFTER_SKIP_MS);
+          return;
         }
+        this.applyOutcome(job, outcome, false);
+        if (outcome.status === "running") {
+          const attempt = (this.portraitCheckAttempts.get(job.id) ?? 0) + 1;
+          this.portraitCheckAttempts.set(job.id, attempt);
+          this.portraitCheckNotBefore.set(job.id, Date.now() + portraitMonitorDelay(job, attempt));
+        } else {
+          this.portraitCheckAttempts.delete(job.id);
+          this.portraitCheckNotBefore.delete(job.id);
+        }
+      } catch (error) {
+        const appError = asAppError(error);
+        const attempt = (this.portraitCheckAttempts.get(job.id) ?? 0) + 1;
+        this.portraitCheckAttempts.set(job.id, attempt);
+        this.portraitCheckNotBefore.set(job.id, Date.now() + portraitMonitorDelay(job, attempt));
+        this.service.addJobEvent(job.id, "warning", "MONITOR_RETRY", appError.message);
       }
     } finally {
       this.processing = false;

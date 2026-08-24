@@ -139,4 +139,67 @@ describe("JobWorker", () => {
     release({ status: "running", platformTaskId: `portrait:${job.id}`, message: "仍在审核" });
     await first;
   });
+
+  it("checks one portrait at a time through silent background automation", async () => {
+    const project = service.createProject({ name: "后台审核轮询", prompt: "固定机位", mode: "text-to-video" });
+    const portraitPaths = [path.join(tempDir, "portrait-a.png"), path.join(tempDir, "portrait-b.png")];
+    portraitPaths.forEach((portraitPath) => fs.writeFileSync(portraitPath, "image"));
+    const portraits = service.addPortraits(portraitPaths, true);
+    const jobs = portraits.map((portrait) => service.submitPortraitReview(portrait.id, project.id));
+    jobs.forEach((job) => service.updateJob(job.id, { status: "running", platformTaskId: `portrait:${job.id}` }));
+    const adapter = {
+      inspectRunningJob: vi.fn(),
+      inspectPortraitReview: vi.fn().mockImplementation(async (job: { id: string }) => ({
+        status: "running",
+        platformTaskId: `portrait:${job.id}`,
+        message: "仍在审核",
+      })),
+    } as unknown as PlaywrightXinyingAdapter;
+    const foreground = vi.fn(async <T>(operation: () => Promise<T>) => operation());
+    const background = vi.fn(async <T>(operation: () => Promise<T>) => operation());
+    const worker = new JobWorker(service, adapter, foreground, background);
+
+    await (worker as unknown as { monitorRunning(): Promise<void> }).monitorRunning();
+    expect(background).toHaveBeenCalledOnce();
+    expect(foreground).not.toHaveBeenCalled();
+    expect(adapter.inspectPortraitReview).toHaveBeenCalledOnce();
+    expect(adapter.inspectPortraitReview).toHaveBeenCalledWith(
+      expect.objectContaining({ id: jobs[0].id }),
+      expect.objectContaining({ id: portraits[0].id }),
+      { timeoutMs: 5_000 },
+    );
+
+    await (worker as unknown as { monitorRunning(): Promise<void> }).monitorRunning();
+    expect(adapter.inspectPortraitReview).toHaveBeenCalledTimes(2);
+    expect(adapter.inspectPortraitReview).toHaveBeenLastCalledWith(
+      expect.objectContaining({ id: jobs[1].id }),
+      expect.objectContaining({ id: portraits[1].id }),
+      { timeoutMs: 5_000 },
+    );
+
+    await (worker as unknown as { monitorRunning(): Promise<void> }).monitorRunning();
+    expect(adapter.inspectPortraitReview).toHaveBeenCalledTimes(2);
+  });
+
+  it("defers portrait polling when foreground platform work is active", async () => {
+    const project = service.createProject({ name: "审核让路", prompt: "固定机位", mode: "text-to-video" });
+    const portraitPath = path.join(tempDir, "portrait.png");
+    fs.writeFileSync(portraitPath, "image");
+    const portrait = service.addPortraits([portraitPath], true)[0];
+    const job = service.submitPortraitReview(portrait.id, project.id);
+    service.updateJob(job.id, { status: "running", platformTaskId: `portrait:${job.id}` });
+    const adapter = {
+      inspectRunningJob: vi.fn(),
+      inspectPortraitReview: vi.fn(),
+    } as unknown as PlaywrightXinyingAdapter;
+    const background = vi.fn(async () => undefined);
+    const worker = new JobWorker(service, adapter, undefined, background);
+
+    await (worker as unknown as { monitorRunning(): Promise<void> }).monitorRunning();
+    await (worker as unknown as { monitorRunning(): Promise<void> }).monitorRunning();
+
+    expect(background).toHaveBeenCalledOnce();
+    expect(adapter.inspectPortraitReview).not.toHaveBeenCalled();
+    expect(service.getJob(job.id).status).toBe("running");
+  });
 });
