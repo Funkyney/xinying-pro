@@ -15,4 +15,11 @@ describe("xinying-pro-generate completion policy", () => {
     expect(source).toContain("不要默认运行 `job events`、`results sync`、`results list` 或下载命令");
     expect(source).toContain("另行明确要求“继续监控 / 查结果 / 下载”");
   });
+
+  it("never submits a recognizable person as an ordinary local reference", () => {
+    expect(source).toContain("人物硬门禁");
+    expect(source).toContain('`role: "character"` 且 `authorizeAsPortrait: true`');
+    expect(source).toContain("人物源文件仍出现在最终 `preview.references`：停止提交");
+    expect(source).toContain("绝不按普通图片兜底");
+  });
 });

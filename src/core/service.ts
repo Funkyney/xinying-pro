@@ -75,6 +75,12 @@ interface PreparedReferenceReplacement {
   sourceSharedMediaId: string;
 }
 
+type DirectorFileMaterial = Extract<DirectorManifest["materials"][number], { kind: "file" }>;
+
+function requiresDirectorPortraitAuthorization(material: DirectorFileMaterial): boolean {
+  return material.authorizeAsPortrait === true || material.role === "character";
+}
+
 function now(): string {
   return new Date().toISOString();
 }
@@ -432,7 +438,7 @@ export class XinyingService {
       const fingerprint = hashFile(material.path);
       if (seenFiles.has(fingerprint)) throw new AppError("DUPLICATE_DIRECTOR_MATERIAL", `导演任务不能重复使用同一份本地素材：${material.path}`);
       seenFiles.add(fingerprint);
-      if (material.authorizeAsPortrait && mediaKindFromMime(mimeFromExtension(material.path)) === "audio") {
+      if (requiresDirectorPortraitAuthorization(material) && mediaKindFromMime(mimeFromExtension(material.path)) === "audio") {
         throw new AppError("AUDIO_PORTRAIT_UNSUPPORTED", `音频不能授权为虚拟人像：${material.path}`);
       }
     }
@@ -449,7 +455,8 @@ export class XinyingService {
       manifest,
       project,
       materialCount: manifest.materials.length,
-      authorizationCount: manifest.materials.filter((item) => item.kind === "file" && item.authorizeAsPortrait).length,
+      authorizationCount: manifest.materials.filter((item): item is DirectorFileMaterial => item.kind === "file")
+        .filter(requiresDirectorPortraitAuthorization).length,
       estimatedGenerationTasks: manifest.count,
     };
   }
@@ -512,7 +519,7 @@ export class XinyingService {
 
     const reusableByPath = new Map<string, PlatformPortrait>();
     for (const { material } of selectedFiles) {
-      if (!material.authorizeAsPortrait) continue;
+      if (!requiresDirectorPortraitAuthorization(material)) continue;
       const reusable = this.reusablePlatformPortrait(material.path, project.platformWorkspaceId);
       if (reusable) reusableByPath.set(material.path, reusable);
     }
@@ -567,7 +574,7 @@ export class XinyingService {
       if (material.role && reference.role !== material.role) this.updateReferenceRole(reference.id, material.role);
       selectedReferenceIds.add(reference.id);
       desiredOrder.push(referenceMaterialKey(reference.id));
-      const authorization = material.authorizeAsPortrait
+      const authorization = requiresDirectorPortraitAuthorization(material)
         ? this.directorAuthorization(reference.id)
         : { state: "not-needed" as const, jobId: null };
       preparedMaterials.push({

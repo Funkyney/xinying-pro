@@ -1,4 +1,4 @@
 interface:
   display_name: "心影Pro 自动生成"
-  short_description: "把 Seedance 提示词、素材与参数自动提交到心影Pro"
-  default_prompt: "Use $xinying-pro-generate to execute the finalized Seedance prompt with its local references in 心影Pro, including ordered uploads, portrait authorization, and the explicitly requested take count."
+  short_description: "按顺序提交 Seedance 素材，清晰人物必须先完成心影审核"
+  default_prompt: "Use $xinying-pro-generate to submit the finalized Seedance prompt in 心影Pro, forcing every recognizable person reference through virtual-portrait authorization before generation."

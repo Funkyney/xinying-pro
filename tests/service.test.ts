@@ -682,7 +682,9 @@ describe("XinyingService", () => {
       replaceMaterials: true,
       settings: { mode: "reference-to-video", duration: 8, aspectRatio: "16:9", audioEnabled: true },
       materials: [
-        { kind: "file", path: face, role: "character", authorizeAsPortrait: true },
+        // The APP must enforce portrait authorization for character-role media
+        // even if a caller forgets the explicit flag.
+        { kind: "file", path: face, role: "character" },
         { kind: "file", path: audio, role: "other" },
         { kind: "file", path: scene, role: "scene" },
       ],

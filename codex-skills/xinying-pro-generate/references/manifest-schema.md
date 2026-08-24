@@ -49,7 +49,7 @@
 - `settings`：可选。`mode` 为 `text-to-video`、`image-to-video`、`reference-to-video` 或 `first-last-frame`；其余值须符合当前心影模型能力。
 - `materials`：最多 9 项，数组顺序就是 APP 的最终创作顺序。
 - `kind: file`：本地图片、视频或音频。`role` 可为 `first-frame`、`last-frame`、`character`、`scene`、`product`、`style`、`motion`、`other`。
-- `authorizeAsPortrait`：只用于图片或视频；true 表示必须先完成虚拟人像授权，再允许生成。
+- `authorizeAsPortrait`：只用于图片或视频；清晰、可识别且会出现在成片中的人物必须为 true，先完成虚拟人像授权才允许生成。`role: character` 在 APP 中也会被强制视为需要授权，不能按普通本地参考提交。
 - `kind: platform-portrait`：直接复用已同步到当前心影空间的虚拟人像。
 
-同一内容不能重复加入；提示词引用必须能在最终 `preview.orderedLabels` 中找到。图片、视频、音频分别独立编号，材料数组中的不同媒体类型可以穿插。
+同一内容不能重复加入；提示词引用必须能在最终 `preview.orderedLabels` 中找到。图片、视频、音频分别独立编号，材料数组中的不同媒体类型可以穿插。人物审核完成并执行 `director resolve` 后，该项必须显示 `referenceId: null` 和非空 `platformPortraitId`；否则不得提交生成。
