@@ -16,6 +16,7 @@ import {
   Film,
   FolderKanban,
   FolderPlus,
+  Image as ImageIcon,
   LayoutDashboard,
   ListTree,
   LogIn,
@@ -47,6 +48,7 @@ import type {
   PlatformProject,
   PlatformProjectCreateInput,
   PlatformResult,
+  PlatformResultSource,
   PlatformWorkspace,
   Project,
   ProjectInput,
@@ -740,11 +742,19 @@ function JobsPage({ jobs, projects, portraits, run }: { jobs: Job[]; projects: P
 }
 
 function ResultsPage({ results, projects, selectedProject, onSelectProject, run }: { results: PlatformResult[]; projects: Project[]; selectedProject: Project | null; onSelectProject: (id: string) => void; run: (action: () => Promise<unknown>, success?: string) => Promise<void> }) {
+  const [source, setSource] = useState<PlatformResultSource>("personal");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
   const [viewerId, setViewerId] = useState<string | null>(null);
   const [lastViewedId, setLastViewedId] = useState<string | null>(null);
+  const [visibleLimit, setVisibleLimit] = useState(120);
   const cardRefs = useRef(new Map<string, HTMLElement>());
-  const currentResults = results.filter((result) => !selectedProject || result.projectId === selectedProject.id);
+  const projectResults = results.filter((result) => !selectedProject || result.projectId === selectedProject.id);
+  const currentResults = projectResults.filter((result) => result.source === source);
+  const visibleResults = currentResults.slice(0, visibleLimit);
+  const sourceCounts = {
+    personal: projectResults.filter((result) => result.source === "personal").length,
+    project: projectResults.filter((result) => result.source === "project").length,
+  };
   const viewerIndex = currentResults.findIndex((result) => result.id === viewerId);
   const viewer = viewerIndex >= 0 ? currentResults[viewerIndex] : null;
   const selected = currentResults.filter((result) => selectedIds.has(result.id));
@@ -754,7 +764,8 @@ function ResultsPage({ results, projects, selectedProject, onSelectProject, run 
     setSelectedIds(new Set());
     setViewerId(null);
     setLastViewedId(null);
-  }, [selectedProject?.id]);
+    setVisibleLimit(120);
+  }, [selectedProject?.id, source]);
 
   const moveViewer = useCallback((offset: number) => {
     if (!currentResults.length || viewerIndex < 0) return;
@@ -789,20 +800,43 @@ function ResultsPage({ results, projects, selectedProject, onSelectProject, run 
   const mediaUrl = (result: PlatformResult) => result.outputPath ? window.xinying.references.mediaUrl(result.outputPath) : result.outputUrl;
   const posterUrl = (result: PlatformResult) => result.previewUrl ?? undefined;
 
+  const tabText = source === "personal" ? "我的生成" : "项目素材库（全员）";
+  const syncSuccess = source === "personal" ? "我的生成已同步" : "项目全员图片与视频已同步";
+
   return <div className="results-page">
-    <div className="page-heading"><div><span className="eyebrow">OUTPUT LIBRARY</span><h1>结果库</h1><p>同步当前心影项目的全部已生成视频；支持批量选择、下载和标记。</p></div><div className="heading-actions">{projects.length > 0 && <select value={selectedProject?.id ?? ""} onChange={(event) => onSelectProject(event.target.value)}>{projects.filter((project) => project.platformProjectId).map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select>}<button className="button primary" disabled={!selectedProject} onClick={() => selectedProject && run(() => window.xinying.results.sync(selectedProject.id), "当前心影项目结果已同步")}><RefreshCw size={16} />同步当前项目全部视频</button></div></div>
-    {currentResults.length > 0 && <section className="result-batch-bar panel"><div><button className="button ghost" onClick={() => setSelectedIds(allSelected ? new Set() : new Set(currentResults.map((result) => result.id)))}>{allSelected ? <CheckSquare2 size={16} /> : <Square size={16} />}{allSelected ? "取消全选" : "全选"}</button><strong>已选择 {selected.length} / {currentResults.length}</strong></div><div><button className="button ghost" disabled={!selected.length} onClick={() => run(() => window.xinying.results.mark(selected.map((result) => result.id), true), `已标记 ${selected.length} 个视频`)}><CheckCircle2 size={16} />标记</button><button className="button ghost" disabled={!selected.length} onClick={() => run(() => window.xinying.results.mark(selected.map((result) => result.id), false), `已取消 ${selected.length} 个标记`)}>取消标记</button><button className="button secondary" disabled={!selected.length} onClick={() => run(() => window.xinying.results.batchDownload(selected.map((result) => result.id)), `已保存 ${selected.length} 个视频`)}><Download size={16} />批量下载</button></div></section>}
-    <div className="result-grid">{currentResults.map((result) => {
+    <div className="page-heading">
+      <div><span className="eyebrow">OUTPUT LIBRARY</span><h1>结果库</h1><p>分别查看个人账号生成记录与心影项目素材库；横屏、竖屏图片和视频均完整显示。</p></div>
+      <div className="heading-actions">
+        {projects.length > 0 && <select value={selectedProject?.id ?? ""} onChange={(event) => onSelectProject(event.target.value)}>{projects.filter((project) => project.platformProjectId).map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select>}
+        <button className="button primary" disabled={!selectedProject} onClick={() => selectedProject && run(() => window.xinying.results.sync(selectedProject.id, source), syncSuccess)}><RefreshCw size={16} />同步{tabText}</button>
+      </div>
+    </div>
+    <div className="result-source-tabs" role="tablist" aria-label="结果来源">
+      <button role="tab" aria-selected={source === "personal"} className={source === "personal" ? "active" : ""} onClick={() => setSource("personal")}><CircleUserRound size={17} /><span>我的生成</span><strong>{sourceCounts.personal}</strong></button>
+      <button role="tab" aria-selected={source === "project"} className={source === "project" ? "active" : ""} onClick={() => setSource("project")}><UsersRound size={17} /><span>项目素材库（全员）</span><strong>{sourceCounts.project}</strong></button>
+    </div>
+    <p className="result-source-note">{source === "personal" ? "读取当前登录账号在这个项目中的生成会话。" : "读取心影网页“素材库”中当前项目所有成员可见的图片与视频。"}</p>
+    {currentResults.length > 0 && <section className="result-batch-bar panel">
+      <div><button className="button ghost" onClick={() => setSelectedIds(allSelected ? new Set() : new Set(currentResults.map((result) => result.id)))}>{allSelected ? <CheckSquare2 size={16} /> : <Square size={16} />}{allSelected ? "取消全选" : "全选"}</button><strong>已选择 {selected.length} / {currentResults.length}</strong></div>
+      <div><button className="button ghost" disabled={!selected.length} onClick={() => run(() => window.xinying.results.mark(selected.map((result) => result.id), true), `已标记 ${selected.length} 个素材`)}><CheckCircle2 size={16} />标记</button><button className="button ghost" disabled={!selected.length} onClick={() => run(() => window.xinying.results.mark(selected.map((result) => result.id), false), `已取消 ${selected.length} 个标记`)}>取消标记</button><button className="button secondary" disabled={!selected.length} onClick={() => run(() => window.xinying.results.batchDownload(selected.map((result) => result.id)), `已保存 ${selected.length} 个素材`)}><Download size={16} />批量下载</button></div>
+    </section>}
+    <div className="result-grid">{visibleResults.map((result) => {
       const preview = mediaUrl(result);
       const projectName = projects.find((project) => project.id === result.projectId)?.name ?? "心影项目";
       const checked = selectedIds.has(result.id);
       return <article ref={(node) => { if (node) cardRefs.current.set(result.id, node); else cardRefs.current.delete(result.id); }} className={`result-card ${lastViewedId === result.id ? "last-viewed" : ""} ${checked ? "selected-result" : ""}`} key={result.id} onClick={() => setViewerId(result.id)}>
-        <button className={`result-select ${checked ? "checked" : ""}`} onClick={(event) => { event.stopPropagation(); toggleSelected(result.id); }} aria-label={checked ? "取消选择" : "选择视频"}>{checked ? <CheckSquare2 size={19} /> : <Square size={19} />}</button>
+        <button className={`result-select ${checked ? "checked" : ""}`} onClick={(event) => { event.stopPropagation(); toggleSelected(result.id); }} aria-label={checked ? "取消选择" : "选择素材"}>{checked ? <CheckSquare2 size={19} /> : <Square size={19} />}</button>
         {result.marked && <span className="result-mark">已标记</span>}
-        <div className="result-preview">{preview ? <video src={preview} poster={posterUrl(result)} muted preload="metadata" /> : result.previewUrl ? <img src={result.previewUrl} alt="视频预览" /> : <div><Film size={32} /><span>视频结果</span></div>}<span className="result-play">▶</span></div>
-        <div className="result-body"><div><strong>{projectName}</strong><span>{formatDate(result.createdAt)}</span></div><p>{result.prompt || "心影历史生成结果"}</p><button className="button secondary full" onClick={(event) => { event.stopPropagation(); void run(() => window.xinying.results.download(result.id), "结果已保存"); }}><Download size={16} />下载</button></div>
+        <span className={`result-kind result-kind-${result.mediaKind}`}>{result.mediaKind === "image" ? <ImageIcon size={12} /> : <Video size={12} />}{result.mediaKind === "image" ? "图片" : "视频"}</span>
+        <div className="result-preview">{result.mediaKind === "image" && preview ? <img src={preview} alt={result.name || "心影图片素材"} /> : result.mediaKind === "video" && result.previewUrl ? <img src={result.previewUrl} alt={result.name || "心影视频封面"} /> : result.mediaKind === "video" && preview ? <video src={preview} muted preload="metadata" /> : <div>{result.mediaKind === "image" ? <ImageIcon size={32} /> : <Film size={32} />}<span>暂无预览</span></div>}{result.mediaKind === "video" && <span className="result-play">▶</span>}</div>
+        <div className="result-body"><div><strong>{projectName}</strong><span>{formatDate(result.createdAt)}</span></div><p title={result.name}>{result.name || result.prompt || "心影历史素材"}</p><button className="button secondary full" onClick={(event) => { event.stopPropagation(); void run(() => window.xinying.results.download(result.id), "素材已保存"); }}><Download size={16} />下载</button></div>
       </article>;
-    })}{!currentResults.length && <EmptyState title={selectedProject ? "当前项目还没有同步结果" : "请先选择项目"} description={selectedProject ? "点击“同步当前项目全部视频”，APP 会读取心影历史生成结果。" : "选择一个已绑定的心影项目后同步。"} />}</div>
-    {viewer && <div className="modal-backdrop result-viewer-backdrop" onMouseDown={(event) => { if (event.currentTarget === event.target) closeViewer(); }}><section className="result-viewer"><header><div><strong>{projects.find((project) => project.id === viewer.projectId)?.name ?? "心影视频"}</strong><span>{viewerIndex + 1} / {currentResults.length} · {formatDate(viewer.createdAt)}</span></div><div><button className="button secondary" onClick={() => run(() => window.xinying.results.download(viewer.id), "结果已保存")}><Download size={16} />下载当前视频</button><button className="icon-button" onClick={closeViewer} title="关闭"><X size={19} /></button></div></header><div className="result-viewer-stage"><button className="viewer-nav previous" onClick={() => moveViewer(-1)} title="上一个"><ChevronLeft size={30} /></button>{mediaUrl(viewer) ? <video key={viewer.id} src={mediaUrl(viewer)!} poster={posterUrl(viewer)} controls autoPlay /> : <div className="viewer-missing"><Film size={42} /><span>请重新同步后播放</span></div>}<button className="viewer-nav next" onClick={() => moveViewer(1)} title="下一个"><ChevronRightIcon size={30} /></button></div><footer><p>{viewer.prompt || "无提示词记录"}</p><span>{viewer.marked ? "已标记" : "未标记"}</span></footer></section></div>}
+    })}{!currentResults.length && <EmptyState title={selectedProject ? `${tabText}还没有同步素材` : "请先选择项目"} description={selectedProject ? `点击“同步${tabText}”，APP 会读取对应的心影素材。` : "选择一个已绑定的心影项目后同步。"} />}</div>
+    {visibleResults.length < currentResults.length && <div className="result-load-more"><span>已显示 {visibleResults.length} / {currentResults.length}</span><button className="button secondary" onClick={() => setVisibleLimit((current) => current + 120)}>继续加载 120 个</button></div>}
+    {viewer && <div className="modal-backdrop result-viewer-backdrop" onMouseDown={(event) => { if (event.currentTarget === event.target) closeViewer(); }}><section className="result-viewer">
+      <header><div><strong>{viewer.name || projects.find((project) => project.id === viewer.projectId)?.name || "心影素材"}</strong><span>{viewerIndex + 1} / {currentResults.length} · {formatDate(viewer.createdAt)}</span></div><div><button className="button secondary" onClick={() => run(() => window.xinying.results.download(viewer.id), "素材已保存")}><Download size={16} />下载当前{viewer.mediaKind === "image" ? "图片" : "视频"}</button><button className="icon-button" onClick={closeViewer} title="关闭"><X size={19} /></button></div></header>
+      <div className="result-viewer-stage"><button className="viewer-nav previous" onClick={() => moveViewer(-1)} title="上一个"><ChevronLeft size={30} /></button>{mediaUrl(viewer) ? viewer.mediaKind === "image" ? <img key={viewer.id} src={mediaUrl(viewer)!} alt={viewer.name || "心影图片素材"} /> : <video key={viewer.id} src={mediaUrl(viewer)!} poster={posterUrl(viewer)} controls autoPlay /> : <div className="viewer-missing"><Film size={42} /><span>请重新同步后查看</span></div>}<button className="viewer-nav next" onClick={() => moveViewer(1)} title="下一个"><ChevronRightIcon size={30} /></button></div>
+      <footer><p>{viewer.prompt || viewer.name || "无提示词记录"}</p><span>{viewer.marked ? "已标记" : "未标记"}</span></footer>
+    </section></div>}
   </div>;
 }

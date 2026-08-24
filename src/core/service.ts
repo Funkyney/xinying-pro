@@ -15,6 +15,7 @@ import type {
   PlatformProjectBinding,
   PlatformPortrait,
   PlatformResult,
+  PlatformResultSource,
   PortraitAsset,
   PortraitMetadataInput,
   Project,
@@ -125,6 +126,21 @@ function samePath(left: string, right: string): boolean {
 function safeOutputName(value: string): string {
   const sanitized = path.basename(value).replace(/[<>:"/\\|?*]+/g, "-").trim();
   return sanitized || "result.mp4";
+}
+
+function platformResultExtension(result: Pick<PlatformResult, "mediaKind" | "name" | "outputUrl" | "previewUrl">): string {
+  const candidates = [result.name, result.outputUrl, result.previewUrl];
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    try {
+      const pathname = /^https?:\/\//i.test(candidate) ? new URL(candidate).pathname : candidate;
+      const extension = path.extname(pathname).toLowerCase();
+      if ([".mp4", ".mov", ".webm", ".png", ".jpg", ".jpeg", ".webp"].includes(extension)) return extension;
+    } catch {
+      // Try the next available name or URL.
+    }
+  }
+  return result.mediaKind === "image" ? ".jpg" : ".mp4";
 }
 
 function automaticPortraitDisplayName(reference: ReferenceAsset): string {
@@ -1082,10 +1098,11 @@ export class XinyingService {
 
   private upsertCompletedJobResults(): void {
     const upsert = this.database.db.prepare(`INSERT INTO platform_results
-      (id, project_id, platform_project_id, platform_task_id, job_id, prompt, output_url, preview_url, output_path, marked, available, created_at, last_seen_at)
-      VALUES (@id, @projectId, @platformProjectId, @platformTaskId, @jobId, @prompt, @outputUrl, @previewUrl, @outputPath, 0, 1, @createdAt, @lastSeenAt)
+      (id, project_id, platform_project_id, platform_task_id, job_id, source, media_kind, name, prompt, output_url, preview_url, output_path, marked, available, created_at, last_seen_at)
+      VALUES (@id, @projectId, @platformProjectId, @platformTaskId, @jobId, 'personal', 'video', @name, @prompt, @outputUrl, @previewUrl, @outputPath, 0, 1, @createdAt, @lastSeenAt)
       ON CONFLICT(id) DO UPDATE SET output_url = COALESCE(excluded.output_url, platform_results.output_url),
-        output_path = COALESCE(excluded.output_path, platform_results.output_path), available = 1, last_seen_at = excluded.last_seen_at`);
+        output_path = COALESCE(excluded.output_path, platform_results.output_path), source = 'personal', media_kind = 'video',
+        name = excluded.name, available = 1, last_seen_at = excluded.last_seen_at`);
     for (const job of this.listJobs().filter((item) => item.kind === "generation" && item.status === "completed" && item.projectId)) {
       const project = this.getProject(job.projectId!);
       upsert.run({
@@ -1094,6 +1111,7 @@ export class XinyingService {
         platformProjectId: project.platformProjectId,
         platformTaskId: job.platformTaskId ?? "",
         jobId: job.id,
+        name: `${project.name}-${job.id.slice(0, 8)}.mp4`,
         prompt: job.promptSnapshot,
         outputUrl: job.outputUrl,
         previewUrl: job.outputUrl,
@@ -1118,16 +1136,16 @@ export class XinyingService {
     return this.database.mapPlatformResult(row);
   }
 
-  syncPlatformResults(projectId: string, results: PlatformResult[]): PlatformResult[] {
+  syncPlatformResults(projectId: string, results: PlatformResult[], source: PlatformResultSource = "personal"): PlatformResult[] {
     const project = this.getProject(projectId);
     this.upsertCompletedJobResults();
-    const localJobsByTask = new Map(this.listJobs()
+    const localJobsByTask = new Map((source === "personal" ? this.listJobs() : [])
       .filter((job) => job.kind === "generation" && ["running", "completed"].includes(job.status) && job.projectId === projectId && job.platformTaskId)
       .map((job) => [job.platformTaskId!, job]));
     const seen = new Set<string>();
     const syncedAt = now();
     const normalized = results.map((result) => {
-      if (result.projectId !== projectId || result.platformProjectId !== project.platformProjectId) {
+      if (result.projectId !== projectId || result.platformProjectId !== project.platformProjectId || result.source !== source) {
         throw new AppError("RESULT_PROJECT_MISMATCH", "心影结果不属于当前项目");
       }
       const localJob = localJobsByTask.get(result.platformTaskId);
@@ -1150,11 +1168,12 @@ export class XinyingService {
       this.addJobEvent(job.id, "info", "COMPLETED_ON_RESULT_SYNC", "同步结果库时检测到对应心影视频，本地任务已标记完成");
     }
     this.database.transaction(() => {
-      this.database.db.prepare("UPDATE platform_results SET available = 0 WHERE project_id = ? AND job_id IS NULL").run(projectId);
+      this.database.db.prepare("UPDATE platform_results SET available = 0 WHERE project_id = ? AND source = ? AND job_id IS NULL").run(projectId, source);
       const upsert = this.database.db.prepare(`INSERT INTO platform_results
-        (id, project_id, platform_project_id, platform_task_id, job_id, prompt, output_url, preview_url, output_path, marked, available, created_at, last_seen_at)
-        VALUES (@id, @projectId, @platformProjectId, @platformTaskId, @jobId, @prompt, @outputUrl, @previewUrl, @outputPath, @marked, 1, @createdAt, @lastSeenAt)
-        ON CONFLICT(id) DO UPDATE SET platform_task_id = excluded.platform_task_id, prompt = excluded.prompt,
+        (id, project_id, platform_project_id, platform_task_id, job_id, source, media_kind, name, prompt, output_url, preview_url, output_path, marked, available, created_at, last_seen_at)
+        VALUES (@id, @projectId, @platformProjectId, @platformTaskId, @jobId, @source, @mediaKind, @name, @prompt, @outputUrl, @previewUrl, @outputPath, @marked, 1, @createdAt, @lastSeenAt)
+        ON CONFLICT(id) DO UPDATE SET platform_task_id = excluded.platform_task_id, source = excluded.source,
+          media_kind = excluded.media_kind, name = excluded.name, prompt = excluded.prompt,
           output_url = COALESCE(excluded.output_url, platform_results.output_url), preview_url = COALESCE(excluded.preview_url, platform_results.preview_url),
           output_path = COALESCE(platform_results.output_path, excluded.output_path), available = 1, last_seen_at = excluded.last_seen_at`);
       for (const result of normalized) upsert.run({ ...result, marked: result.marked ? 1 : 0 });
@@ -1189,7 +1208,7 @@ export class XinyingService {
       if (remote.protocol !== "https:") throw new AppError("DOWNLOAD_FAILED", "结果地址必须使用 HTTPS");
       const response = await fetch(remote);
       if (!response.ok) throw new AppError("DOWNLOAD_FAILED", `下载失败：HTTP ${response.status}`);
-      sourcePath = path.join(this.paths.outputsDir, `${result.id.replace(/[^a-zA-Z0-9_-]/g, "-")}.mp4`);
+      sourcePath = path.join(this.paths.outputsDir, `${result.id.replace(/[^a-zA-Z0-9_-]/g, "-")}${platformResultExtension(result)}`);
       fs.writeFileSync(sourcePath, Buffer.from(await response.arrayBuffer()));
       this.database.db.prepare("UPDATE platform_results SET output_path = ?, last_seen_at = ? WHERE id = ?")
         .run(sourcePath, now(), id);

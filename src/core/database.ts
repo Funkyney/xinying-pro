@@ -98,6 +98,9 @@ interface PlatformResultRow {
   platform_project_id: string;
   platform_task_id: string;
   job_id: string | null;
+  source: PlatformResult["source"];
+  media_kind: PlatformResult["mediaKind"];
+  name: string;
   prompt: string;
   output_url: string | null;
   preview_url: string | null;
@@ -262,6 +265,9 @@ export class XinyingDatabase {
         platform_project_id TEXT NOT NULL DEFAULT '',
         platform_task_id TEXT NOT NULL DEFAULT '',
         job_id TEXT REFERENCES jobs(id) ON DELETE SET NULL,
+        source TEXT NOT NULL DEFAULT 'personal',
+        media_kind TEXT NOT NULL DEFAULT 'video',
+        name TEXT NOT NULL DEFAULT '',
         prompt TEXT NOT NULL DEFAULT '',
         output_url TEXT,
         preview_url TEXT,
@@ -377,6 +383,20 @@ export class XinyingDatabase {
     this.db.exec("UPDATE portrait_assets SET gender = '其他' WHERE gender = ''");
     this.db.exec("UPDATE portrait_assets SET age_group = '其他' WHERE age_group = ''");
     this.db.exec("UPDATE portrait_assets SET ethnicity = '其他' WHERE ethnicity = ''");
+
+    const platformResultColumns = new Set(
+      (this.db.prepare("PRAGMA table_info(platform_results)").all() as Array<{ name: string }>).map((column) => column.name),
+    );
+    if (!platformResultColumns.has("source")) {
+      this.db.exec("ALTER TABLE platform_results ADD COLUMN source TEXT NOT NULL DEFAULT 'personal'");
+    }
+    if (!platformResultColumns.has("media_kind")) {
+      this.db.exec("ALTER TABLE platform_results ADD COLUMN media_kind TEXT NOT NULL DEFAULT 'video'");
+    }
+    if (!platformResultColumns.has("name")) {
+      this.db.exec("ALTER TABLE platform_results ADD COLUMN name TEXT NOT NULL DEFAULT ''");
+    }
+    this.db.exec("CREATE INDEX IF NOT EXISTS idx_platform_results_source ON platform_results(project_id, source, available, created_at DESC)");
   }
 
   mapProject(row: ProjectRow): Project {
@@ -477,6 +497,9 @@ export class XinyingDatabase {
       platformProjectId: row.platform_project_id,
       platformTaskId: row.platform_task_id,
       jobId: row.job_id,
+      source: row.source,
+      mediaKind: row.media_kind,
+      name: row.name,
       prompt: row.prompt,
       outputUrl: row.output_url,
       previewUrl: row.preview_url,

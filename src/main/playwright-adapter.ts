@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { chromium, type Browser, type Locator, type Page, type Response } from "playwright-core";
+import { chromium, type Browser, type Locator, type Page, type Response, type Route } from "playwright-core";
 import type {
   HumanCheckpoint,
   Job,
@@ -13,6 +13,7 @@ import type {
   PlatformPortraitDeleteResult,
   PlatformPortraitDeleteProgress,
   PlatformResult,
+  PlatformResultMediaKind,
   Project,
   PlatformWorkspace,
   PortraitAsset,
@@ -199,6 +200,70 @@ function platformWorkspaceIdentity(kind: PlatformWorkspace["kind"], name: string
 
 function platformProjectIdentity(workspaceId: string, name: string, shortId: string): string {
   return crypto.createHash("sha256").update(`project\n${workspaceId}\n${shortId.trim()}\n${name.trim()}`).digest("hex");
+}
+
+function recordValue(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function nonEmptyString(...values: unknown[]): string {
+  return values.find((value): value is string => typeof value === "string" && Boolean(value.trim()))?.trim() ?? "";
+}
+
+function safeHttpsUrl(...values: unknown[]): string | null {
+  const value = nonEmptyString(...values);
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" ? url.toString() : null;
+  } catch {
+    return null;
+  }
+}
+
+function normalizedMaterialTimestamp(value: unknown, fallback: string, order: number): string {
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Date.parse(value);
+    if (Number.isFinite(parsed)) return new Date(parsed).toISOString();
+  }
+  return new Date(Date.parse(fallback) - order).toISOString();
+}
+
+function platformMaterialResult(
+  project: Project,
+  remoteProjectId: string,
+  mediaKind: PlatformResultMediaKind,
+  raw: Record<string, unknown>,
+  syncedAt: string,
+  order: number,
+): PlatformResult | null {
+  const outputUrl = safeHttpsUrl(raw.cdn_url);
+  if (!outputUrl) return null;
+  const materialId = nonEmptyString(raw.material_id === undefined || raw.material_id === null ? "" : String(raw.material_id), raw.vlc_id, outputUrl);
+  if (!materialId) return null;
+  const parameters = recordValue(raw.task_create_parmas);
+  const name = nonEmptyString(raw.material_name, path.basename(new URL(outputUrl).pathname), `${mediaKind}-${materialId}`);
+  const prompt = nonEmptyString(parameters.prompt, parameters.text, parameters.rich_text);
+  const previewUrl = mediaKind === "image" ? safeHttpsUrl(raw.post_cdn_url, outputUrl) : safeHttpsUrl(raw.post_cdn_url);
+  const createdAt = normalizedMaterialTimestamp(raw.show_updated_time, syncedAt, order);
+  return {
+    id: crypto.createHash("sha256").update(`project-material\n${remoteProjectId}\n${mediaKind}\n${materialId}`).digest("hex"),
+    projectId: project.id,
+    platformProjectId: project.platformProjectId || remoteProjectId,
+    platformTaskId: `material:${remoteProjectId}:${materialId}`,
+    jobId: null,
+    source: "project",
+    mediaKind,
+    name,
+    prompt,
+    outputUrl,
+    previewUrl,
+    outputPath: null,
+    marked: false,
+    available: true,
+    createdAt,
+    lastSeenAt: syncedAt,
+  };
 }
 
 function platformCatalogFromApi(
@@ -2225,6 +2290,9 @@ export class PlaywrightXinyingAdapter {
           platformProjectId: project.platformProjectId,
           platformTaskId: encodeChatTaskRef({ projectId: target.searchParams.get("projectId") ?? project.platformProjectId, sessionId, userIndex: agentIndex }),
           jobId: null,
+          source: "personal",
+          mediaKind: "video",
+          name: path.basename(source.split("?")[0]) || `心影视频-${agentIndex + 1}.mp4`,
           prompt,
           outputUrl: /^https:\/\//.test(source) ? source : null,
           previewUrl: poster && /^https:\/\//.test(poster) ? poster : null,
@@ -2235,6 +2303,115 @@ export class PlaywrightXinyingAdapter {
           lastSeenAt: timestamp,
         });
     }
+  }
+
+  async syncProjectMaterials(project: Project): Promise<PlatformResult[]> {
+    const generationTarget = safeGenerationUrl(project.platformUrl);
+    const remoteProjectId = generationTarget?.searchParams.get("projectId") || project.platformProjectId || "";
+    if (!remoteProjectId) throw new AppError("GENERATION_PAGE_REQUIRED", "请先绑定心影项目，再同步项目全员素材");
+    const page = await this.page();
+    this.requireAuthenticatedPage(page);
+    const syncedAt = new Date().toISOString();
+    const materialResults = new Map<string, PlatformResult>();
+    const completedKinds = new Set<PlatformResultMediaKind>();
+    const activeRoutes = new Set<Promise<void>>();
+    let genericFailure = false;
+    const routePattern = "**/api/v2/materials/list";
+
+    const processRoute = async (route: Route): Promise<void> => {
+      const request = route.request();
+      let payload: Record<string, unknown> = {};
+      try {
+        payload = recordValue(request.postDataJSON());
+      } catch {
+        // Let Heart handle an unknown request unchanged.
+      }
+      const kind = payload.material_type === "image" || payload.material_type === "video"
+        ? payload.material_type as PlatformResultMediaKind
+        : null;
+      if (!kind || payload.project_id !== remoteProjectId) {
+        await route.continue();
+        return;
+      }
+      try {
+        const firstResponse = await route.fetch();
+        const firstBody = recordValue(await firstResponse.json());
+        const firstData = recordValue(firstBody.data);
+        if (Number(firstBody.code) !== 0 || !Array.isArray(firstData.items)) throw new Error("Heart material list rejected");
+        const firstPageInfo = recordValue(firstData.page_info);
+        const totalCount = Math.max(0, Number(firstPageInfo.total_count) || 0);
+        const requestedPageSize = totalCount > 50 ? Math.min(200, totalCount) : Number(payload.page_size) || 50;
+        let pagePayload = { ...payload, page_size: requestedPageSize };
+        let pages: Array<Array<Record<string, unknown>>>;
+        let totalPages: number;
+        if (totalCount > 50) {
+          const response = await route.fetch({
+            postData: JSON.stringify({ ...pagePayload, page_index: 1 }),
+          });
+          const body = recordValue(await response.json());
+          const data = recordValue(body.data);
+          if (Number(body.code) !== 0 || !Array.isArray(data.items)) throw new Error("Heart material batch rejected");
+          pages = [data.items.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object"))];
+          totalPages = Math.max(1, Math.min(500, Number(recordValue(data.page_info).total_page) || 1));
+        } else {
+          pages = [firstData.items.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object"))];
+          totalPages = Math.max(1, Math.min(500, Number(firstPageInfo.total_page) || 1));
+        }
+        for (let pageIndex = 2; pageIndex <= totalPages; pageIndex += 1) {
+          const response = await route.fetch({
+            postData: JSON.stringify({ ...pagePayload, page_index: pageIndex }),
+          });
+          const body = recordValue(await response.json());
+          const data = recordValue(body.data);
+          if (Number(body.code) !== 0 || !Array.isArray(data.items)) throw new Error("Heart material page rejected");
+          pages.push(data.items.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object")));
+        }
+        let order = 0;
+        for (const item of pages.flat()) {
+          const result = platformMaterialResult(project, remoteProjectId, kind, item, syncedAt, order);
+          order += 1;
+          if (result) materialResults.set(result.id, result);
+        }
+        completedKinds.add(kind);
+        await route.fulfill({ response: firstResponse });
+      } catch {
+        genericFailure = true;
+        await route.continue().catch(() => undefined);
+      }
+    };
+    const routeHandler = (route: Route): Promise<void> => {
+      const task = processRoute(route).finally(() => activeRoutes.delete(task));
+      activeRoutes.add(task);
+      return task;
+    };
+    const waitForKind = async (kind: PlatformResultMediaKind): Promise<void> => {
+      const deadline = Date.now() + 60_000;
+      while (Date.now() < deadline && !completedKinds.has(kind) && !genericFailure) await page.waitForTimeout(100);
+      if (!completedKinds.has(kind)) throw new AppError("PROJECT_MATERIAL_SYNC_FAILED", `心影没有返回项目${kind === "video" ? "视频" : "图片"}素材`);
+    };
+
+    await page.route(routePattern, routeHandler);
+    try {
+      const homeUrl = `${this.selectors.baseUrl.replace(/\/$/, "")}${this.selectors.projects.homePath}?projectId=${encodeURIComponent(remoteProjectId)}`;
+      await page.goto(homeUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
+      this.requireAuthenticatedPage(page);
+      const assetIcon = page.locator(".icon-asset").filter({ visible: true }).first();
+      await assetIcon.waitFor({ state: "visible", timeout: 20_000 });
+      await clickDom(assetIcon.locator("xpath=.."));
+      const originalTab = page.getByText("原始素材", { exact: true }).filter({ visible: true }).first();
+      if ((await originalTab.count()) > 0) await clickDom(originalTab);
+      const videoTab = page.getByText("视频素材", { exact: true }).filter({ visible: true }).first();
+      await videoTab.waitFor({ state: "visible", timeout: 15_000 });
+      await clickDom(videoTab);
+      await waitForKind("video");
+      const imageTab = page.getByText("图片素材", { exact: true }).filter({ visible: true }).first();
+      await clickDom(imageTab);
+      await waitForKind("image");
+    } finally {
+      while (activeRoutes.size) await Promise.allSettled([...activeRoutes]);
+      await page.unroute(routePattern, routeHandler).catch(() => undefined);
+    }
+    return [...materialResults.values()].sort((left, right) => right.createdAt.localeCompare(left.createdAt));
   }
 
   async syncProjectResults(project: Project): Promise<PlatformResult[]> {
@@ -2484,5 +2661,6 @@ export const adapterInternals = {
   platformWorkspaceIdentity,
   platformProjectIdentity,
   platformCatalogFromApi,
+  platformMaterialResult,
   configurablePortraitOptions,
 };

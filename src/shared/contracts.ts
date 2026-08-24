@@ -232,12 +232,18 @@ export interface PlatformPortrait {
   lastSeenAt: string;
 }
 
+export type PlatformResultSource = "personal" | "project";
+export type PlatformResultMediaKind = "video" | "image";
+
 export interface PlatformResult {
   id: string;
   projectId: string;
   platformProjectId: string;
   platformTaskId: string;
   jobId: string | null;
+  source: PlatformResultSource;
+  mediaKind: PlatformResultMediaKind;
+  name: string;
   prompt: string;
   outputUrl: string | null;
   previewUrl: string | null;
@@ -459,7 +465,7 @@ export interface XinyingApi {
   };
   results: {
     list(projectId?: string): Promise<PlatformResult[]>;
-    sync(projectId: string): Promise<PlatformResult[]>;
+    sync(projectId: string, source?: PlatformResultSource): Promise<PlatformResult[]>;
     mark(ids: string[], marked: boolean): Promise<PlatformResult[]>;
     download(id: string): Promise<PlatformResult>;
     batchDownload(ids: string[]): Promise<PlatformResult[]>;

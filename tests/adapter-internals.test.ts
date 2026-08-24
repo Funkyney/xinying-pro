@@ -100,6 +100,33 @@ describe("Playwright adapter task references", () => {
     });
   });
 
+  it("maps Heart project-library image and video rows into project-wide results", () => {
+    const project = {
+      id: "local-project",
+      platformProjectId: "remote-project",
+    } as Parameters<typeof adapterInternals.platformMaterialResult>[0];
+    const video = adapterInternals.platformMaterialResult(project, "remote-project", "video", {
+      material_id: 91,
+      material_name: "团队成片.mp4",
+      cdn_url: "https://media.example/team.mp4",
+      post_cdn_url: "https://media.example/team.jpg",
+      material_type: "ai_video",
+      task_create_parmas: { prompt: "所有成员可见的提示词" },
+      show_updated_time: "2026-08-24T12:00:00+08:00",
+    }, "2026-08-24T05:00:00.000Z", 0);
+    const image = adapterInternals.platformMaterialResult(project, "remote-project", "image", {
+      material_id: 92,
+      material_name: "竖屏图片.png",
+      cdn_url: "https://media.example/portrait.png",
+      post_cdn_url: "",
+      material_type: "image",
+    }, "2026-08-24T05:00:00.000Z", 1);
+
+    expect(video).toMatchObject({ source: "project", mediaKind: "video", name: "团队成片.mp4", prompt: "所有成员可见的提示词", previewUrl: "https://media.example/team.jpg" });
+    expect(image).toMatchObject({ source: "project", mediaKind: "image", name: "竖屏图片.png", outputUrl: "https://media.example/portrait.png", previewUrl: "https://media.example/portrait.png" });
+    expect(image?.id).not.toBe(video?.id);
+  });
+
   it("selects the default other portrait metadata without asking the user", () => {
     const defaults = {
       gender: "其他",

@@ -521,6 +521,9 @@ describe("XinyingService", () => {
       platformProjectId: project.platformProjectId,
       platformTaskId: "chat:platform-project:session-1:0",
       jobId: null,
+      source: "personal",
+      mediaKind: "video",
+      name: "remote-result.mp4",
       prompt: "远端历史提示词",
       outputUrl: null,
       previewUrl: null,
@@ -548,6 +551,9 @@ describe("XinyingService", () => {
       platformProjectId: project.platformProjectId,
       platformTaskId: "chat:platform-project:session-2:0",
       jobId: null,
+      source: "personal",
+      mediaKind: "video",
+      name: "result-2.mp4",
       prompt: "固定机位",
       outputUrl: "https://media.example/result-2.mp4",
       previewUrl: "https://media.example/result-2.jpg",
@@ -562,6 +568,49 @@ describe("XinyingService", () => {
     expect(service.getJob(job.id).status).toBe("completed");
     expect(service.getJob(job.id).outputUrl).toBe("https://media.example/result-2.mp4");
     expect(service.listJobEvents(job.id).at(-1)?.code).toBe("COMPLETED_ON_RESULT_SYNC");
+  });
+
+  it("keeps personal generation and project-wide image/video sync independent", () => {
+    const project = service.createProject({ name: "双来源结果库", prompt: "" });
+    const base = {
+      projectId: project.id,
+      platformProjectId: project.platformProjectId,
+      jobId: null,
+      outputPath: null,
+      marked: false,
+      available: true,
+      createdAt: "2026-08-24T08:00:00.000Z",
+      lastSeenAt: "2026-08-24T08:00:00.000Z",
+    };
+    service.syncPlatformResults(project.id, [{
+      ...base,
+      id: "personal-video",
+      platformTaskId: "chat:project:session:0",
+      source: "personal",
+      mediaKind: "video",
+      name: "我的生成.mp4",
+      prompt: "个人提示词",
+      outputUrl: "https://media.example/personal.mp4",
+      previewUrl: "https://media.example/personal.jpg",
+    }], "personal");
+    service.syncPlatformResults(project.id, [{
+      ...base,
+      id: "project-image",
+      platformTaskId: "material:project:1",
+      source: "project",
+      mediaKind: "image",
+      name: "团队图片.png",
+      prompt: "",
+      outputUrl: "https://media.example/project.png",
+      previewUrl: "https://media.example/project.png",
+    }], "project");
+
+    expect(service.listResults(project.id).map((result) => [result.source, result.mediaKind, result.name])).toEqual([
+      ["project", "image", "团队图片.png"],
+      ["personal", "video", "我的生成.mp4"],
+    ]);
+    service.syncPlatformResults(project.id, [], "project");
+    expect(service.listResults(project.id).map((result) => result.id)).toEqual(["personal-video"]);
   });
 
   it("keeps Heart portraits newest-first and invalidates only the synced workspace", () => {

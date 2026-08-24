@@ -53,6 +53,9 @@ function compactResult(result: PlatformResult) {
   return {
     id: result.id,
     projectId: result.projectId,
+    source: result.source,
+    mediaKind: result.mediaKind,
+    name: result.name,
     platformTaskId: result.platformTaskId,
     promptPreview: result.prompt.slice(0, 160),
     outputUrl: result.outputUrl,
@@ -91,7 +94,7 @@ async function invokeRunningApp(operation: AppOperation, args: unknown[] = []): 
         case "platform-create": return window.xinying.platformProjects.create(values[0] as PlatformProjectCreateInput);
         case "portrait-sync": return window.xinying.portraits.sync(values[0] ? String(values[0]) : undefined);
         case "portrait-delete": return window.xinying.portraits.deletePlatform(String(values[0]), values[1] as string[]);
-        case "results-sync": return window.xinying.results.sync(String(values[0]));
+        case "results-sync": return window.xinying.results.sync(String(values[0]), values[1] === "project" ? "project" : "personal");
       }
     }, { operation, args });
   } finally {
@@ -373,13 +376,15 @@ results.command("list")
     output(options.compact ? items.map(compactResult) : items);
   });
 results.command("sync")
-  .requiredOption("--project-id <id>", "要同步全部历史视频的本地已绑定项目 ID")
+  .requiredOption("--project-id <id>", "要同步素材的本地已绑定项目 ID")
+  .option("--source <source>", "personal 同步个人生成；project 同步项目全员图片与视频", "personal")
   .action(async (options) => {
-    const items = await invokeRunningApp("results-sync", [options.projectId]) as PlatformResult[];
+    if (!["personal", "project"].includes(options.source)) throw new AppError("INVALID_RESULT_SOURCE", "--source 必须是 personal 或 project");
+    const items = await invokeRunningApp("results-sync", [options.projectId, options.source]) as PlatformResult[];
     output({
-      count: items.length,
-      downloadable: items.filter((item) => item.outputUrl || item.outputPath).length,
-      results: items.map(compactResult),
+      count: items.filter((item) => item.source === options.source).length,
+      downloadable: items.filter((item) => item.source === options.source && (item.outputUrl || item.outputPath)).length,
+      results: items.filter((item) => item.source === options.source).map(compactResult),
     });
   });
 results.command("mark")

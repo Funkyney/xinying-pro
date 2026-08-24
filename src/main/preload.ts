@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron";
-import type { PlatformAutomationState, PlatformPortraitDeleteProgress, PlatformProjectCreateInput, PlatformViewBounds, PortraitMetadataInput, ProjectInput, ReferenceRole, XinyingApi } from "../shared/contracts";
+import type { PlatformAutomationState, PlatformPortraitDeleteProgress, PlatformProjectCreateInput, PlatformResultSource, PlatformViewBounds, PortraitMetadataInput, ProjectInput, ReferenceRole, XinyingApi } from "../shared/contracts";
 
 // Sandboxed Electron preload scripts cannot require arbitrary local modules.
 // Keep this runtime channel table self-contained; src/shared/ipc.ts is the
@@ -128,7 +128,7 @@ const api: XinyingApi = {
   },
   results: {
     list: (projectId?: string) => ipcRenderer.invoke(IPC.resultsList, projectId),
-    sync: (projectId: string) => ipcRenderer.invoke(IPC.resultsSync, projectId),
+    sync: (projectId: string, source: PlatformResultSource = "personal") => ipcRenderer.invoke(IPC.resultsSync, projectId, source),
     mark: (ids: string[], marked: boolean) => ipcRenderer.invoke(IPC.resultsMark, ids, marked),
     download: (id: string) => ipcRenderer.invoke(IPC.resultsDownload, id),
     batchDownload: (ids: string[]) => ipcRenderer.invoke(IPC.resultsBatchDownload, ids),
