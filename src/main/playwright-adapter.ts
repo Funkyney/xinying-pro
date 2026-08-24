@@ -33,6 +33,7 @@ import {
   portraitMediaKindFromPreviewUrl,
   promptMaterialLabels,
 } from "../shared/media";
+import { canonicalPlatformOutputUrl, originalPlatformVideoUrlFromPoster } from "../shared/platform-results";
 
 export type AdapterOutcome =
   | { status: "running"; platformTaskId?: string; generationUrl?: string; message: string }
@@ -355,7 +356,7 @@ function platformMaterialResult(
   syncedAt: string,
   order: number,
 ): PlatformResult | null {
-  const outputUrl = safeHttpsUrl(raw.cdn_url);
+  const outputUrl = canonicalPlatformOutputUrl(safeHttpsUrl(raw.cdn_url));
   if (!outputUrl) return null;
   const materialId = nonEmptyString(raw.material_id === undefined || raw.material_id === null ? "" : String(raw.material_id), raw.vlc_id, outputUrl);
   if (!materialId) return null;
@@ -2487,7 +2488,13 @@ export class PlaywrightXinyingAdapter {
     const result = response.locator(".content-item._video").first();
     if ((await result.count()) > 0) {
       const media = response.locator("video[src], source[src]").first();
-      const outputUrl = (await media.count()) > 0 ? await media.getAttribute("src") : null;
+      const discoveredUrl = (await media.count()) > 0 ? await media.getAttribute("src") : null;
+      const posterUrl = await result.evaluate((card) => {
+        const video = card.querySelector<HTMLVideoElement>("video");
+        const background = getComputedStyle(card).backgroundImage || (card as HTMLElement).style.backgroundImage;
+        return video?.poster || background.match(/url\(["']?(.*?)["']?\)/)?.[1] || "";
+      });
+      const outputUrl = originalPlatformVideoUrlFromPoster(posterUrl) ?? canonicalPlatformOutputUrl(discoveredUrl);
       let hasDownloadControl = false;
       for (const selector of this.selectors.generation.downloadButtons) {
         if ((await response.locator(selector).count()) > 0) {
@@ -2549,18 +2556,21 @@ export class PlaywrightXinyingAdapter {
           const sourceElement = card.querySelector<HTMLSourceElement>("source");
           const background = getComputedStyle(card).backgroundImage || card.style.backgroundImage;
           const poster = background.match(/url\(["']?(.*?)["']?\)/)?.[1] ?? "";
-          const inferredVideo = poster.replace(/_cover\.(?:jpg|jpeg|png)(?:\?.*)?$/i, "_720p.mp4");
+          const inferredPreviewVideo = poster.replace(/_cover\.(?:jpg|jpeg|png)(?:\?.*)?$/i, "_720p.mp4");
           return {
             agentIndex,
             videoIndex,
-            source: video?.currentSrc || video?.src || sourceElement?.src || (inferredVideo !== poster ? inferredVideo : ""),
+            source: video?.currentSrc || video?.src || sourceElement?.src || "",
+            identitySource: video?.currentSrc || video?.src || sourceElement?.src || (inferredPreviewVideo !== poster ? inferredPreviewVideo : ""),
             poster: video?.poster || poster,
             prompt: (users[agentIndex]?.innerText ?? "").split("\n重新编辑")[0].trim(),
           };
         }).filter((item) => /^https:\/\//.test(item.source) || /^https:\/\//.test(item.poster)));
     });
-    for (const { agentIndex, videoIndex, source, poster, prompt } of entries) {
-        const identity = crypto.createHash("sha256").update(`${project.platformProjectId}\n${sessionId}\n${agentIndex}\n${videoIndex}\n${source.split("?")[0]}\n${(poster ?? "").split("?")[0]}`).digest("hex");
+    for (const { agentIndex, videoIndex, source, identitySource, poster, prompt } of entries) {
+        const outputUrl = originalPlatformVideoUrlFromPoster(poster) ?? canonicalPlatformOutputUrl(source);
+        if (!outputUrl) continue;
+        const identity = crypto.createHash("sha256").update(`${project.platformProjectId}\n${sessionId}\n${agentIndex}\n${videoIndex}\n${identitySource.split("?")[0]}\n${(poster ?? "").split("?")[0]}`).digest("hex");
         const timestamp = new Date().toISOString();
         results.set(identity, {
           id: identity,
@@ -2570,9 +2580,9 @@ export class PlaywrightXinyingAdapter {
           jobId: null,
           source: "personal",
           mediaKind: "video",
-          name: path.basename(source.split("?")[0]) || `心影视频-${agentIndex + 1}.mp4`,
+          name: path.basename(new URL(outputUrl).pathname) || `心影视频-${agentIndex + 1}.mp4`,
           prompt,
-          outputUrl: /^https:\/\//.test(source) ? source : null,
+          outputUrl,
           previewUrl: poster && /^https:\/\//.test(poster) ? poster : null,
           outputPath: null,
           marked: false,

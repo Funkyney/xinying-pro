@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import Sqlite from "better-sqlite3";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createAppPaths } from "../src/core/paths";
 import { XinyingDatabase } from "../src/core/database";
 import { XinyingService } from "../src/core/service";
@@ -29,6 +29,7 @@ describe("XinyingService", () => {
   });
 
   afterEach(() => {
+    vi.unstubAllGlobals();
     database.close();
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
@@ -474,6 +475,34 @@ describe("XinyingService", () => {
     await expect(service.downloadJob(job.id, libraryPath)).resolves.toMatchObject({ outputPath: libraryPath });
   });
 
+  it("replaces a cached 720p preview with the original Heart render", async () => {
+    const project = service.createProject({ name: "原片下载", prompt: "固定机位", mode: "text-to-video" });
+    const job = service.submitGeneration(project.id);
+    const previewUrl = "https://blueai-video-global.bluemediacdn.com/vlc-toc/task/img2video/seedance_v2/render_720p.mp4";
+    const originalUrl = "https://blueai-video-global.bluemediacdn.com/vlc-toc/task/img2video/seedance_v2/render.mp4";
+    const previewPath = path.join(service.paths.outputsDir, "cached-preview.mp4");
+    const destination = path.join(tempDir, "exports", "original.mp4");
+    fs.writeFileSync(previewPath, "preview-bytes");
+    service.updateJob(job.id, {
+      status: "completed",
+      outputUrl: previewUrl,
+      outputPath: previewPath,
+      completedAt: new Date().toISOString(),
+    });
+    const fetchMock = vi.fn(async () => new Response("original-1080p-bytes", {
+      status: 200,
+      headers: { "content-type": "video/mp4" },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const downloaded = await service.downloadJob(job.id, destination);
+
+    expect(fetchMock).toHaveBeenCalledWith(new URL(originalUrl));
+    expect(fs.readFileSync(destination, "utf8")).toBe("original-1080p-bytes");
+    expect(downloaded.outputUrl).toBe(originalUrl);
+    expect(downloaded.outputPath).not.toBe(previewPath);
+  });
+
   it("requires explicit portrait authorization before review", () => {
     const portrait = service.addPortraits([fixture("portrait.png", "portrait")], false)[0];
     expect(portrait.displayName).toBe("portrait");
@@ -601,6 +630,40 @@ describe("XinyingService", () => {
     const destination = path.join(tempDir, "exports", "remote-copy.mp4");
     await service.exportResult(synced[0].id, destination);
     expect(fs.readFileSync(destination, "utf8")).toBe("remote-video");
+  });
+
+  it("invalidates a legacy cached preview when sync discovers the original result URL", () => {
+    const project = service.createProject({ name: "原片缓存修复", prompt: "固定机位" });
+    const previewPath = path.join(service.paths.outputsDir, "legacy-preview.mp4");
+    fs.writeFileSync(previewPath, "720p-preview");
+    const originalUrl = "https://blueai-video-global.bluemediacdn.com/vlc-toc/task/img2video/seedance_v2/original.mp4";
+    const previewUrl = "https://blueai-video-global.bluemediacdn.com/vlc-toc/task/img2video/seedance_v2/original_720p.mp4";
+    const input = {
+      id: "legacy-preview-result",
+      projectId: project.id,
+      platformProjectId: project.platformProjectId,
+      platformTaskId: "chat:platform-project:session-preview:0",
+      jobId: null,
+      source: "personal" as const,
+      mediaKind: "video" as const,
+      name: "original.mp4",
+      prompt: "固定机位",
+      outputUrl: originalUrl,
+      previewUrl: null,
+      outputPath: null,
+      marked: false,
+      available: true,
+      createdAt: "2026-08-25T00:00:00.000Z",
+      lastSeenAt: "2026-08-25T00:00:00.000Z",
+    };
+    service.syncPlatformResults(project.id, [input]);
+    database.db.prepare("UPDATE platform_results SET output_url = ?, output_path = ? WHERE id = ?")
+      .run(previewUrl, previewPath, input.id);
+
+    const [repaired] = service.syncPlatformResults(project.id, [input]);
+
+    expect(repaired.outputUrl).toBe(originalUrl);
+    expect(repaired.outputPath).toBeNull();
   });
 
   it("completes a submitted generation only when result sync finds its Heart video", () => {

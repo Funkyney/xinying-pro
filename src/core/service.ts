@@ -26,6 +26,7 @@ import type {
   SubmissionPreview,
 } from "../shared/contracts";
 import { assignMediaLabels, mediaKindEnglishLabel, mediaKindFromMime } from "../shared/media";
+import { canonicalPlatformOutputUrl, isPlatformPreviewOutputUrl } from "../shared/platform-results";
 import { DEFAULT_XINYING_MODEL, modelProfile } from "../shared/model-profiles";
 import {
   parseMaterialKey,
@@ -1229,7 +1230,16 @@ export class XinyingService {
       const id = localJob ? `job:${localJob.id}` : result.id;
       if (!id || seen.has(id)) throw new AppError("DUPLICATE_RESULT", "心影返回了重复结果");
       seen.add(id);
-      return { ...result, id, jobId: localJob?.id ?? result.jobId, outputPath: localJob?.outputPath ?? result.outputPath, available: true, lastSeenAt: result.lastSeenAt || syncedAt };
+      const previewBackedPath = isPlatformPreviewOutputUrl(result.outputUrl) || isPlatformPreviewOutputUrl(localJob?.outputUrl);
+      return {
+        ...result,
+        id,
+        jobId: localJob?.id ?? result.jobId,
+        outputUrl: canonicalPlatformOutputUrl(result.outputUrl),
+        outputPath: previewBackedPath ? null : localJob?.outputPath ?? result.outputPath,
+        available: true,
+        lastSeenAt: result.lastSeenAt || syncedAt,
+      };
     });
     for (const result of normalized) {
       const job = localJobsByTask.get(result.platformTaskId);
@@ -1252,7 +1262,11 @@ export class XinyingService {
         ON CONFLICT(id) DO UPDATE SET platform_task_id = excluded.platform_task_id, source = excluded.source,
           media_kind = excluded.media_kind, name = excluded.name, prompt = excluded.prompt,
           output_url = COALESCE(excluded.output_url, platform_results.output_url), preview_url = COALESCE(excluded.preview_url, platform_results.preview_url),
-          output_path = COALESCE(platform_results.output_path, excluded.output_path), available = 1, last_seen_at = excluded.last_seen_at`);
+          output_path = CASE
+            WHEN COALESCE(platform_results.output_url, '') <> COALESCE(excluded.output_url, '') THEN excluded.output_path
+            ELSE COALESCE(platform_results.output_path, excluded.output_path)
+          END,
+          available = 1, last_seen_at = excluded.last_seen_at`);
       for (const result of normalized) upsert.run({ ...result, marked: result.marked ? 1 : 0 });
     });
     return this.listResults(projectId);
@@ -1279,16 +1293,18 @@ export class XinyingService {
         .run(job.outputPath, now(), id);
       return this.getResult(id);
     }
-    let sourcePath = result.outputPath && fs.existsSync(result.outputPath) ? result.outputPath : null;
-    if (!sourcePath && result.outputUrl) {
-      const remote = new URL(result.outputUrl);
+    const originalOutputUrl = canonicalPlatformOutputUrl(result.outputUrl);
+    const cachedPreview = Boolean(result.outputPath && isPlatformPreviewOutputUrl(result.outputUrl));
+    let sourcePath = !cachedPreview && result.outputPath && fs.existsSync(result.outputPath) ? result.outputPath : null;
+    if (!sourcePath && originalOutputUrl) {
+      const remote = new URL(originalOutputUrl);
       if (remote.protocol !== "https:") throw new AppError("DOWNLOAD_FAILED", "结果地址必须使用 HTTPS");
       const response = await fetch(remote);
       if (!response.ok) throw new AppError("DOWNLOAD_FAILED", `下载失败：HTTP ${response.status}`);
       sourcePath = path.join(this.paths.outputsDir, `${result.id.replace(/[^a-zA-Z0-9_-]/g, "-")}${platformResultExtension(result)}`);
       fs.writeFileSync(sourcePath, Buffer.from(await response.arrayBuffer()));
-      this.database.db.prepare("UPDATE platform_results SET output_path = ?, last_seen_at = ? WHERE id = ?")
-        .run(sourcePath, now(), id);
+      this.database.db.prepare("UPDATE platform_results SET output_url = ?, output_path = ?, last_seen_at = ? WHERE id = ?")
+        .run(originalOutputUrl, sourcePath, now(), id);
       result = this.getResult(id);
     }
     if (!sourcePath) throw new AppError("OUTPUT_NOT_FOUND", "该心影结果暂时没有可直接下载的地址，请先重新同步");
@@ -1696,11 +1712,13 @@ export class XinyingService {
     const exportPath = path.resolve(destination);
     fs.mkdirSync(path.dirname(exportPath), { recursive: true });
     let current = job;
-    let sourcePath = job.outputPath && fs.existsSync(job.outputPath) ? job.outputPath : null;
-    if (!sourcePath && job.outputUrl) {
+    const originalOutputUrl = canonicalPlatformOutputUrl(job.outputUrl);
+    const cachedPreview = Boolean(job.outputPath && isPlatformPreviewOutputUrl(job.outputUrl));
+    let sourcePath = !cachedPreview && job.outputPath && fs.existsSync(job.outputPath) ? job.outputPath : null;
+    if (!sourcePath && originalOutputUrl) {
       let resultUrl: URL;
       try {
-        resultUrl = new URL(job.outputUrl);
+        resultUrl = new URL(originalOutputUrl);
       } catch {
         throw new AppError("DOWNLOAD_FAILED", "结果地址无效");
       }
@@ -1715,7 +1733,7 @@ export class XinyingService {
       } finally {
         fs.rmSync(stagingPath, { force: true });
       }
-      current = this.updateJob(id, { outputPath: managedPath });
+      current = this.updateJob(id, { outputUrl: originalOutputUrl, outputPath: managedPath });
       sourcePath = managedPath;
     }
     if (!sourcePath) {
