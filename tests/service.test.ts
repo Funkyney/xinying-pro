@@ -274,8 +274,8 @@ describe("XinyingService", () => {
   it("allows a 50-item Seedance 2.5 director manifest instead of the old nine-item ceiling", () => {
     const project = service.createProject({ name: "导演五十项" });
     const materials: DirectorManifest["materials"] = [
-      ...Array.from({ length: 30 }, (_, index) => ({ kind: "file" as const, path: fixture(`director-limit-image-${index}.png`, `director-image-${index}`), role: "scene" as const })),
-      ...Array.from({ length: 10 }, (_, index) => ({ kind: "file" as const, path: fixture(`director-limit-video-${index}.mp4`, `director-video-${index}`), role: "motion" as const })),
+      ...Array.from({ length: 30 }, (_, index) => ({ kind: "file" as const, path: fixture(`director-limit-image-${index}.png`, `director-image-${index}`), role: "scene" as const, containsPerson: false })),
+      ...Array.from({ length: 10 }, (_, index) => ({ kind: "file" as const, path: fixture(`director-limit-video-${index}.mp4`, `director-video-${index}`), role: "motion" as const, containsPerson: false })),
       ...Array.from({ length: 10 }, (_, index) => ({ kind: "file" as const, path: fixture(`director-limit-audio-${index}.mp3`, `director-audio-${index}`), role: "other" as const })),
     ];
     const validation = service.validateDirectorRun({
@@ -798,17 +798,18 @@ describe("XinyingService", () => {
       replaceMaterials: true,
       settings: { mode: "reference-to-video", duration: 8, aspectRatio: "16:9", audioEnabled: true },
       materials: [
-        // The APP must enforce portrait authorization for character-role media
-        // even if a caller forgets the explicit flag.
-        { kind: "file", path: face, role: "character" },
+        // A positive person check must override a wrong ordinary role and force portrait authorization.
+        { kind: "file", path: face, role: "scene", containsPerson: true },
         { kind: "file", path: audio, role: "other" },
-        { kind: "file", path: scene, role: "scene" },
+        { kind: "file", path: scene, role: "scene", containsPerson: false },
       ],
     };
 
     const prepared = service.prepareDirectorRun(manifest);
     expect(prepared.authorizationReferenceIds).toHaveLength(1);
     expect(prepared.materials.map((material) => material.authorizationState)).toEqual(["required", "not-needed", "not-needed"]);
+    expect(prepared.materials[0]).toMatchObject({ role: "character", containsPerson: true });
+    expect(prepared.preview.warnings).toContain(`人物图片/视频必须先通过虚拟人像授权并替换原素材：director-face.png`);
     expect(prepared.preview.orderedLabels.map((label) => label.split(" / ")[0])).toEqual(["@图1", "@音频1", "@图2"]);
     expect(service.listReferences(project.id).some((reference) => reference.name === "stale.png")).toBe(false);
 
@@ -839,6 +840,39 @@ describe("XinyingService", () => {
     expect(resolved.project.materialOrder[0]).toBe("portrait:director-platform-face");
     expect(resolved.preview.orderedLabels.map((label) => label.split(" / ")[0])).toEqual(["@图1", "@音频1", "@图2"]);
     expect(service.getPortrait(localPortrait.id).platformAssetId).toBe("director-face-asset");
+  });
+
+  it("requires person checks for images and videos and routes any positive video through portrait authorization", () => {
+    const project = service.createProject({ name: "视频人物硬门禁", prompt: "参考 @视频1 与 @图1" });
+    const personVideo = fixture("person-motion.mp4", "person-video");
+    const emptyScene = fixture("empty-scene.png", "empty-scene");
+    const base: Omit<DirectorManifest, "materials"> = {
+      version: 1,
+      projectId: project.id,
+      prompt: "参考 @视频1 与 @图1",
+      count: 1,
+      replaceMaterials: true,
+    };
+
+    expect(() => service.validateDirectorRun({
+      ...base,
+      materials: [{ kind: "file", path: personVideo, role: "motion" }],
+    })).toThrow(/containsPerson/);
+
+    const prepared = service.prepareDirectorRun({
+      ...base,
+      materials: [
+        { kind: "file", path: personVideo, role: "motion", containsPerson: true },
+        { kind: "file", path: emptyScene, role: "scene", containsPerson: false },
+      ],
+    });
+    expect(prepared.materials).toMatchObject([
+      { role: "character", containsPerson: true, authorizationState: "required", platformPortraitId: null },
+      { role: "scene", containsPerson: false, authorizationState: "not-needed", platformPortraitId: null },
+    ]);
+    expect(prepared.authorizationReferenceIds).toHaveLength(1);
+    expect(prepared.preview.ready).toBe(false);
+    expect(() => service.submitGeneration(project.id)).toThrow(/提交条件/);
   });
 
   it("creates an atomic multi-take generation batch", () => {

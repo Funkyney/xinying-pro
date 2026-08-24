@@ -119,6 +119,7 @@ export interface DirectorFileMaterialInput {
   kind: "file";
   path: string;
   role?: ReferenceRole;
+  containsPerson?: boolean;
   authorizeAsPortrait?: boolean;
 }
 
@@ -157,6 +158,7 @@ export interface DirectorPreparedMaterial {
   referenceId: string | null;
   platformPortraitId: string | null;
   role: ReferenceRole | null;
+  containsPerson: boolean | null;
   authorizationState: DirectorAuthorizationState;
   authorizationJobId: string | null;
 }

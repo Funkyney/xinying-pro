@@ -19,7 +19,7 @@ describe("director manifest", () => {
       version: 1,
       projectId: "project-1",
       prompt: "@图1 缓慢转身",
-      materials: [{ kind: "file", path: "assets/face.png", authorizeAsPortrait: true }],
+      materials: [{ kind: "file", path: "assets/face.png", containsPerson: true, authorizeAsPortrait: true }],
     }));
 
     const manifest = loadDirectorManifest(manifestPath);
@@ -27,6 +27,7 @@ describe("director manifest", () => {
     expect(manifest.replaceMaterials).toBe(true);
     expect(manifest.materials[0]).toMatchObject({
       path: path.join(directory, "assets", "face.png"),
+      containsPerson: true,
       authorizeAsPortrait: true,
     });
   });

@@ -23,6 +23,7 @@
     {
       "kind": "file",
       "path": "C:\\shots\\07\\actor.png",
+      "containsPerson": true,
       "role": "character",
       "authorizeAsPortrait": true
     },
@@ -30,6 +31,12 @@
       "kind": "file",
       "path": "C:\\shots\\07\\dialogue.wav",
       "role": "other"
+    },
+    {
+      "kind": "file",
+      "path": "C:\\shots\\07\\empty-room.mp4",
+      "containsPerson": false,
+      "role": "motion"
     },
     {
       "kind": "platform-portrait",
@@ -49,7 +56,8 @@
 - `settings`：可选。`mode` 为 `text-to-video`、`image-to-video`、`reference-to-video` 或 `first-last-frame`；其余值须符合当前心影模型能力。
 - `materials`：数组顺序就是 APP 的最终创作顺序。Seedance 2.5 最多 30 图 / 10 视频 / 10 音频、合计 50 项；Seedance 2.0 最多 9 图 / 3 视频 / 3 音频、合计 15 项。虚拟人像计入对应的图片或视频数量。
 - `kind: file`：本地图片、视频或音频。`role` 可为 `first-frame`、`last-frame`、`character`、`scene`、`product`、`style`、`motion`、`other`。
-- `authorizeAsPortrait`：只用于图片或视频；清晰、可识别且会出现在成片中的人物必须为 true，先完成虚拟人像授权才允许生成。`role: character` 在 APP 中也会被强制视为需要授权，不能按普通本地参考提交。
+- `containsPerson`：每个图片和视频都必须显式填写。任意画面/帧出现真人、虚拟人物或人形角色时为 `true`；确认整项素材完全无人时为 `false`。视频必须检查覆盖全片的关键帧，不能只看封面。音频不填写该字段。
+- `authorizeAsPortrait`：只用于图片或视频。`containsPerson: true`、`role: character` 或本字段为 `true`，任一条件都会被 APP 强制视为需要虚拟人像授权，不能按普通本地参考提交。
 - `kind: platform-portrait`：直接复用已同步到当前心影空间的虚拟人像。
 
-同一内容不能重复加入；提示词引用必须能在最终 `preview.orderedLabels` 中找到。图片、视频、音频分别独立编号，材料数组中的不同媒体类型可以穿插。人物审核完成并执行 `director resolve` 后，该项必须显示 `referenceId: null` 和非空 `platformPortraitId`；否则不得提交生成。
+同一内容不能重复加入；提示词引用必须能在最终 `preview.orderedLabels` 中找到。图片、视频、音频分别独立编号，材料数组中的不同媒体类型可以穿插。含人图片/视频审核完成并执行 `director resolve` 后，该项必须显示 `referenceId: null` 和非空 `platformPortraitId`；否则不得提交生成。若含人素材不符合单人审核要求，必须更换合规素材，不能把 `containsPerson` 改为 `false` 绕过。

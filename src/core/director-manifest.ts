@@ -26,6 +26,7 @@ const fileMaterialSchema = z.object({
   kind: z.literal("file"),
   path: z.string().trim().min(1),
   role: referenceRoleSchema.optional(),
+  containsPerson: z.boolean().optional(),
   authorizeAsPortrait: z.boolean().optional().default(false),
 }).strict();
 

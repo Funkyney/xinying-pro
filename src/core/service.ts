@@ -79,7 +79,7 @@ interface PreparedReferenceReplacement {
 type DirectorFileMaterial = Extract<DirectorManifest["materials"][number], { kind: "file" }>;
 
 function requiresDirectorPortraitAuthorization(material: DirectorFileMaterial): boolean {
-  return material.authorizeAsPortrait === true || material.role === "character";
+  return material.containsPerson === true || material.authorizeAsPortrait === true || material.role === "character";
 }
 
 function now(): string {
@@ -487,11 +487,18 @@ export class XinyingService {
         continue;
       }
       ensureFile(material.path, REFERENCE_EXTENSIONS);
-      materialKinds.push(mediaKindFromMime(mimeFromExtension(material.path)));
+      const mediaKind = mediaKindFromMime(mimeFromExtension(material.path));
+      materialKinds.push(mediaKind);
+      if (mediaKind !== "audio" && material.containsPerson === undefined) {
+        throw new AppError(
+          "DIRECTOR_PERSON_CHECK_REQUIRED",
+          `图片或视频必须先完成人物检查并填写 containsPerson；有人填 true、确认完全无人填 false：${material.path}`,
+        );
+      }
       const fingerprint = hashFile(material.path);
       if (seenFiles.has(fingerprint)) throw new AppError("DUPLICATE_DIRECTOR_MATERIAL", `导演任务不能重复使用同一份本地素材：${material.path}`);
       seenFiles.add(fingerprint);
-      if (requiresDirectorPortraitAuthorization(material) && mediaKindFromMime(mimeFromExtension(material.path)) === "audio") {
+      if (requiresDirectorPortraitAuthorization(material) && mediaKind === "audio") {
         throw new AppError("AUDIO_PORTRAIT_UNSUPPORTED", `音频不能授权为虚拟人像：${material.path}`);
       }
     }
@@ -602,11 +609,14 @@ export class XinyingService {
           referenceId: null,
           platformPortraitId: material.portraitId,
           role: null,
+          containsPerson: null,
           authorizationState: "not-needed",
           authorizationJobId: null,
         });
         return;
       }
+      const requiresAuthorization = requiresDirectorPortraitAuthorization(material);
+      const effectiveRole: ReferenceRole | undefined = requiresAuthorization ? "character" : material.role;
       const reusable = reusableByPath.get(material.path);
       if (reusable) {
         selectedPortraitIds.push(reusable.id);
@@ -617,7 +627,8 @@ export class XinyingService {
           sourcePath: material.path,
           referenceId: null,
           platformPortraitId: reusable.id,
-          role: material.role ?? null,
+          role: effectiveRole ?? null,
+          containsPerson: material.containsPerson ?? null,
           authorizationState: "approved",
           authorizationJobId: null,
         });
@@ -626,10 +637,10 @@ export class XinyingService {
       const shared = selectedFiles.find((entry) => entry.material === material)!.shared;
       const reference = referencesBySharedId.get(shared.id);
       if (!reference) throw new AppError("DIRECTOR_REFERENCE_IMPORT_FAILED", `未能把素材加入当前项目：${material.path}`);
-      if (material.role && reference.role !== material.role) this.updateReferenceRole(reference.id, material.role);
+      if (effectiveRole && reference.role !== effectiveRole) this.updateReferenceRole(reference.id, effectiveRole);
       selectedReferenceIds.add(reference.id);
       desiredOrder.push(referenceMaterialKey(reference.id));
-      const authorization = requiresDirectorPortraitAuthorization(material)
+      const authorization = requiresAuthorization
         ? this.directorAuthorization(reference.id)
         : { state: "not-needed" as const, jobId: null };
       preparedMaterials.push({
@@ -638,7 +649,8 @@ export class XinyingService {
         sourcePath: material.path,
         referenceId: reference.id,
         platformPortraitId: null,
-        role: material.role ?? reference.role,
+        role: effectiveRole ?? reference.role,
+        containsPerson: material.containsPerson ?? null,
         authorizationState: authorization.state,
         authorizationJobId: authorization.jobId,
       });
@@ -1371,6 +1383,11 @@ export class XinyingService {
     if (project.mode !== "first-last-frame" && project.modelName.includes("首尾帧")) warnings.push("当前生成模式与首尾帧模型不匹配");
     if (project.mode === "first-last-frame" && references.length === 2 && (references[0].role !== "first-frame" || references[1].role !== "last-frame")) {
       warnings.push("首尾帧模式请将 @图1 标为首帧、@图2 标为尾帧");
+    }
+    const unresolvedPersonReferences = references.filter((reference) =>
+      reference.role === "character" && ["image", "video"].includes(mediaKindFromMime(reference.mimeType)));
+    if (unresolvedPersonReferences.length) {
+      warnings.push(`人物图片/视频必须先通过虚拟人像授权并替换原素材：${unresolvedPersonReferences.map((item) => item.name).join("、")}`);
     }
     warnings.push(...materialLimitWarnings(project.modelName, orderedKinds));
     references.forEach((item) => {
