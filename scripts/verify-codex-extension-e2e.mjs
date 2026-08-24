@@ -37,8 +37,8 @@ try {
     const captureScript = path.join(root, "capture-launcher-output.ps1");
     const launcherPath = manager.launcherPath.replace(/'/g, "''");
     await fs.promises.writeFile(captureScript, [
-      `$output = & '${launcherPath}' doctor`,
-      'if (-not $output) { throw "心影Pro CLI 启动器在返回前没有输出 JSON" }',
+      `\uFEFF$output = & '${launcherPath}' doctor`,
+      'if (-not $output) { throw "Xinying Pro CLI launcher returned before producing JSON" }',
       "$output",
       "exit $LASTEXITCODE",
       "",
