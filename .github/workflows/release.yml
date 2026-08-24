@@ -85,7 +85,13 @@ jobs:
         if: env.HAS_MAC_CERTIFICATE != 'true'
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: false
-        run: npx electron-builder --mac dmg zip --universal --publish never
+        run: |
+          for attempt in 1 2 3; do
+            npx electron-builder --mac dmg zip --universal --publish never && exit 0
+            if [ "$attempt" -eq 3 ]; then exit 1; fi
+            echo "macOS packaging failed on attempt ${attempt}; retrying in 15 seconds"
+            sleep 15
+          done
       - name: Build signed macOS package
         if: env.HAS_MAC_CERTIFICATE == 'true'
         env:
