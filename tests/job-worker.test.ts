@@ -32,17 +32,14 @@ describe("JobWorker", () => {
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
-  it("submits, monitors, and captures a visible result into the local library", async () => {
+  it("stops automating a video job once Heart confirms it is generating", async () => {
     const project = service.createProject({ name: "队列闭环", prompt: "固定机位", mode: "text-to-video" });
     const queued = service.submitGeneration(project.id);
-    const outputPath = path.join(tempDir, "captured.mp4");
-    fs.writeFileSync(outputPath, "video");
     const adapter = {
       submitGeneration: vi.fn().mockResolvedValue({ status: "running", platformTaskId: "chat:p:s:0", message: "已提交" }),
       submitPortraitReview: vi.fn(),
       inspectRunningJob: vi.fn().mockResolvedValue({ status: "completed", platformTaskId: "chat:p:s:0", outputUrl: "https://media.example/result.mp4", message: "已完成" }),
       inspectPortraitReview: vi.fn(),
-      downloadVisibleResult: vi.fn().mockResolvedValue(outputPath),
     } as unknown as PlaywrightXinyingAdapter;
     const worker = new JobWorker(service, adapter);
 
@@ -51,12 +48,8 @@ describe("JobWorker", () => {
     expect(service.getJob(queued.id).platformTaskId).toBe("chat:p:s:0");
 
     await (worker as unknown as { monitorRunning(): Promise<void> }).monitorRunning();
-    const completed = service.getJob(queued.id);
-    expect(completed.status).toBe("completed");
-    expect(completed.outputPath).toBe(outputPath);
-    expect(completed.outputUrl).toBeNull();
-    expect(adapter.downloadVisibleResult).toHaveBeenCalledOnce();
-    expect(service.listJobEvents(queued.id).at(-1)?.code).toBe("COMPLETED");
+    expect(service.getJob(queued.id).status).toBe("running");
+    expect(adapter.inspectRunningJob).not.toHaveBeenCalled();
   });
 
   it("moves a visible human checkpoint into the recoverable task state", async () => {
@@ -123,24 +116,27 @@ describe("JobWorker", () => {
     expect(service.listJobEvents(batch.jobs[1].id).at(-1)?.code).toBe("REUSE_SOURCE_UNAVAILABLE");
   });
 
-  it("serializes overlapping monitor ticks for the shared heart page", async () => {
+  it("serializes overlapping portrait-review monitor ticks for the shared heart page", async () => {
     const project = service.createProject({ name: "轮询串行化", prompt: "固定机位", mode: "text-to-video" });
-    const job = service.submitGeneration(project.id);
-    service.updateJob(job.id, { status: "running", platformTaskId: "chat:p:s:0" });
+    const portraitPath = path.join(tempDir, "portrait.png");
+    fs.writeFileSync(portraitPath, "image");
+    const portrait = service.addPortraits([portraitPath], true)[0];
+    const job = service.submitPortraitReview(portrait.id, project.id);
+    service.updateJob(job.id, { status: "running", platformTaskId: `portrait:${job.id}` });
     let release!: (value: { status: "running"; platformTaskId: string; message: string }) => void;
     const pending = new Promise<{ status: "running"; platformTaskId: string; message: string }>((resolve) => { release = resolve; });
     const adapter = {
-      inspectRunningJob: vi.fn().mockReturnValue(pending),
-      inspectPortraitReview: vi.fn(),
+      inspectRunningJob: vi.fn(),
+      inspectPortraitReview: vi.fn().mockReturnValue(pending),
     } as unknown as PlaywrightXinyingAdapter;
     const worker = new JobWorker(service, adapter);
 
     const first = (worker as unknown as { monitorRunning(): Promise<void> }).monitorRunning();
-    await vi.waitFor(() => expect(adapter.inspectRunningJob).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(adapter.inspectPortraitReview).toHaveBeenCalledOnce());
     const overlapping = (worker as unknown as { monitorRunning(): Promise<void> }).monitorRunning();
     await overlapping;
-    expect(adapter.inspectRunningJob).toHaveBeenCalledOnce();
-    release({ status: "running", platformTaskId: "chat:p:s:0", message: "仍在运行" });
+    expect(adapter.inspectPortraitReview).toHaveBeenCalledOnce();
+    release({ status: "running", platformTaskId: `portrait:${job.id}`, message: "仍在审核" });
     await first;
   });
 });

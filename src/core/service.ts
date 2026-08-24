@@ -1106,7 +1106,7 @@ export class XinyingService {
     const project = this.getProject(projectId);
     this.upsertCompletedJobResults();
     const localJobsByTask = new Map(this.listJobs()
-      .filter((job) => job.kind === "generation" && job.status === "completed" && job.projectId === projectId && job.platformTaskId)
+      .filter((job) => job.kind === "generation" && ["running", "completed"].includes(job.status) && job.projectId === projectId && job.platformTaskId)
       .map((job) => [job.platformTaskId!, job]));
     const seen = new Set<string>();
     const syncedAt = now();
@@ -1120,6 +1120,19 @@ export class XinyingService {
       seen.add(id);
       return { ...result, id, jobId: localJob?.id ?? result.jobId, outputPath: localJob?.outputPath ?? result.outputPath, available: true, lastSeenAt: result.lastSeenAt || syncedAt };
     });
+    for (const result of normalized) {
+      const job = localJobsByTask.get(result.platformTaskId);
+      if (!job) continue;
+      if (job.status === "completed") continue;
+      this.updateJob(job.id, {
+        status: "completed",
+        outputUrl: result.outputPath ? null : result.outputUrl,
+        outputPath: result.outputPath,
+        completedAt: result.createdAt || syncedAt,
+        requiresHumanReason: null,
+      });
+      this.addJobEvent(job.id, "info", "COMPLETED_ON_RESULT_SYNC", "同步结果库时检测到对应心影视频，本地任务已标记完成");
+    }
     this.database.transaction(() => {
       this.database.db.prepare("UPDATE platform_results SET available = 0 WHERE project_id = ? AND job_id IS NULL").run(projectId);
       const upsert = this.database.db.prepare(`INSERT INTO platform_results

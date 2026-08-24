@@ -512,6 +512,33 @@ describe("XinyingService", () => {
     expect(fs.readFileSync(destination, "utf8")).toBe("remote-video");
   });
 
+  it("completes a submitted generation only when result sync finds its Heart video", () => {
+    const project = service.createProject({ name: "人工查看结果", prompt: "固定机位", mode: "text-to-video" });
+    const job = service.submitGeneration(project.id);
+    service.updateJob(job.id, { status: "running", platformTaskId: "chat:platform-project:session-2:0" });
+
+    const [result] = service.syncPlatformResults(project.id, [{
+      id: "remote-result-2",
+      projectId: project.id,
+      platformProjectId: project.platformProjectId,
+      platformTaskId: "chat:platform-project:session-2:0",
+      jobId: null,
+      prompt: "固定机位",
+      outputUrl: "https://media.example/result-2.mp4",
+      previewUrl: "https://media.example/result-2.jpg",
+      outputPath: null,
+      marked: false,
+      available: true,
+      createdAt: "2026-08-24T08:00:00.000Z",
+      lastSeenAt: "2026-08-24T08:00:00.000Z",
+    }]);
+
+    expect(result.jobId).toBe(job.id);
+    expect(service.getJob(job.id).status).toBe("completed");
+    expect(service.getJob(job.id).outputUrl).toBe("https://media.example/result-2.mp4");
+    expect(service.listJobEvents(job.id).at(-1)?.code).toBe("COMPLETED_ON_RESULT_SYNC");
+  });
+
   it("keeps Heart portraits newest-first and invalidates only the synced workspace", () => {
     service.syncPlatformPortraits([
       {

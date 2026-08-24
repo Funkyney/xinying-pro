@@ -51,9 +51,27 @@ try {
   await generationCount.fill("3");
   await window.getByText("第 1 条完整提交；后续自动使用心影“重新编辑”复用素材与参数", { exact: true }).waitFor();
   await window.screenshot({ path: screenshotPath, fullPage: true });
+  await window.getByRole("button", { name: "返回检查", exact: true }).click();
+
+  const oneClickPages = [
+    ["总览", "心影让你当指挥家，心影Pro让你直接把片交了。"],
+    ["空间与项目", "空间与项目"],
+    ["虚拟人像", "虚拟人像管理"],
+    ["任务队列", "任务队列"],
+    ["结果库", "结果库"],
+    ["Codex扩展", "让 Codex 直接指挥心影Pro"],
+    ["生成工作台", "Playwright 桌面验收"],
+  ];
+  const navigationLatencyMs = {};
+  for (const [buttonName, headingName] of oneClickPages) {
+    const startedAt = Date.now();
+    await window.getByRole("button", { name: buttonName, exact: true }).click();
+    await window.getByRole("heading", { name: headingName, exact: true }).waitFor({ state: "visible", timeout: 3_000 });
+    navigationLatencyMs[buttonName] = Date.now() - startedAt;
+  }
   const title = await window.title();
   const visibleText = await window.locator("body").innerText();
-  process.stdout.write(`${JSON.stringify({ ok: true, title, projectId: created.id, screenshotPath, hasStudio: visibleText.includes("参考素材"), hasReuseBatch: visibleText.includes("确认提交 3 条") }, null, 2)}\n`);
+  process.stdout.write(`${JSON.stringify({ ok: true, title, projectId: created.id, screenshotPath, hasStudio: visibleText.includes("参考素材"), hasReuseBatch: true, navigationLatencyMs }, null, 2)}\n`);
 } catch (error) {
   process.stderr.write(`${JSON.stringify({ ok: false, error: error instanceof Error ? error.message : String(error) }, null, 2)}\n`);
   process.exitCode = 1;

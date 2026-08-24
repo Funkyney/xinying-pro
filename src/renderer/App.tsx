@@ -64,6 +64,7 @@ import { assignMediaLabels, mediaKindFromMime } from "../shared/media";
 import { ReferenceBoard, type ReferenceAuthorizationState } from "./components/ReferenceBoard";
 import { SharedMaterialLibrary } from "./components/SharedMaterialLibrary";
 import { PlatformPanel } from "./components/PlatformPanel";
+import { InteractionGate, userFacingError } from "./interaction";
 import xinyingLogo from "./assets/xinying-logo.svg";
 
 type PageKey = "dashboard" | "projects" | "studio" | "portraits" | "jobs" | "results" | "codex" | "platform";
@@ -138,21 +139,28 @@ export function App() {
   const [error, setError] = useState<string>("");
   const [toast, setToast] = useState<string>("");
   const [updateState, setUpdateState] = useState<AppUpdateState>({ status: "idle", currentVersion: "…" });
+  const actionGateRef = useRef(new InteractionGate());
+  const updateGateRef = useRef(new InteractionGate());
+  const refreshSequenceRef = useRef(0);
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (clearPreviousError = false) => {
+    const sequence = ++refreshSequenceRef.current;
     try {
       const next = await window.xinying.dashboard();
+      if (sequence !== refreshSequenceRef.current) return;
       setSnapshot(next);
       setSelectedProjectId((current) => next.projects.some((project) => project.id === current) ? current : next.projects[0]?.id || "");
-      setError("");
+      if (clearPreviousError) setError("");
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      if (sequence === refreshSequenceRef.current) setError(userFacingError(cause));
     }
   }, []);
 
   useEffect(() => {
-    void refresh();
-    const timer = window.setInterval(() => void refresh(), 4_000);
+    void refresh(true);
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible" && !actionGateRef.current.isActive) void refresh();
+    }, 4_000);
     return () => window.clearInterval(timer);
   }, [refresh]);
 
@@ -163,37 +171,52 @@ export function App() {
   }, [toast]);
 
   useEffect(() => {
-    void window.xinying.updates.state().then(setUpdateState);
+    void window.xinying.updates.state().then(setUpdateState).catch((cause) => {
+      setUpdateState((current) => ({ ...current, status: "error", message: userFacingError(cause) }));
+    });
     return window.xinying.updates.onStateChange(setUpdateState);
   }, []);
 
   useEffect(() => window.xinying.session.onLoginCompleted(() => {
     setPage("dashboard");
     setToast("飞书登录成功，已返回工作台");
-    void refresh();
+    void refresh(true);
   }), [refresh]);
 
   const handleUpdate = async () => {
-    if (updateState.status === "downloaded") {
-      if (confirm("新版已经下载完成。现在重启心影Pro并安装更新？")) await window.xinying.updates.install();
-      return;
+    if (!updateGateRef.current.tryEnter()) return;
+    try {
+      if (updateState.status === "downloaded") {
+        if (confirm("新版已经下载完成。现在重启心影Pro并安装更新？")) await window.xinying.updates.install();
+        return;
+      }
+      setUpdateState((current) => ({ ...current, status: current.status === "available" ? "downloading" : "checking", message: "正在连接更新服务…" }));
+      const next = updateState.status === "available"
+        ? await window.xinying.updates.download()
+        : await window.xinying.updates.check();
+      setUpdateState(next);
+    } catch (cause) {
+      setUpdateState((current) => ({ ...current, status: "error", message: userFacingError(cause) }));
+    } finally {
+      updateGateRef.current.leave();
     }
-    const next = updateState.status === "available"
-      ? await window.xinying.updates.download()
-      : await window.xinying.updates.check();
-    setUpdateState(next);
   };
 
   const run = async (action: () => Promise<unknown>, success?: string) => {
+    if (!actionGateRef.current.tryEnter()) {
+      setToast("上一项操作正在处理，请稍候");
+      return;
+    }
     setBusy(true);
     setError("");
     try {
       await action();
-      await refresh();
       if (success) setToast(success);
+      void refresh();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      setError(userFacingError(cause));
     } finally {
+      actionGateRef.current.leave();
       setBusy(false);
     }
   };
@@ -204,7 +227,7 @@ export function App() {
   const session = snapshot?.session;
 
   return (
-    <div className="app-shell">
+    <div className="app-shell" aria-busy={busy}>
       <aside className="sidebar">
         <AppLogo />
         <nav>
@@ -230,7 +253,7 @@ export function App() {
             <UpdateControl state={updateState} onClick={() => void handleUpdate()} />
             <button className="platform-context-button" onClick={() => setPage("projects")} title="切换个人/团队空间或心影项目"><Building2 size={15} /><span><small>{selectedPlatformWorkspace?.kind === "personal" ? "个人空间" : selectedPlatformWorkspace?.name ?? "尚未选择心影空间"}</small><strong>{selectedPlatformProject?.name ?? (selectedProject?.platformProjectId ? selectedProject.name : "选择项目后开始生成")}</strong></span><ChevronRight size={14} /></button>
             {selectedProject && <select value={selectedProjectId} onChange={(event) => setSelectedProjectId(event.target.value)}>{snapshot?.projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select>}
-            <button className="icon-button" onClick={() => void refresh()} title="刷新"><RefreshCw size={16} className={busy ? "spinning" : ""} /></button>
+            <button className="icon-button" onClick={() => void refresh(true)} title="刷新" aria-label="刷新工作台"><RefreshCw size={16} className={busy ? "spinning" : ""} /></button>
           </div>
         </header>
 
@@ -252,7 +275,7 @@ export function App() {
           )}
         </div>
       </main>
-      {busy && <div className="busy-overlay"><div className="loader" /></div>}
+      {busy && <div className="busy-overlay" role="status" aria-live="polite"><div className="loader" /><span>正在处理…</span></div>}
     </div>
   );
 }
@@ -261,17 +284,22 @@ function CodexExtensionPage() {
   const [status, setStatus] = useState<CodexExtensionStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [working, setWorking] = useState(false);
+  const [openingFolder, setOpeningFolder] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const statusGateRef = useRef(new InteractionGate());
+  const operationGateRef = useRef(new InteractionGate());
 
   const refreshStatus = useCallback(async () => {
+    if (!statusGateRef.current.tryEnter()) return;
     setLoading(true);
     try {
       setStatus(await window.xinying.codexExtension.status());
       setError("");
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      setError(userFacingError(cause));
     } finally {
+      statusGateRef.current.leave();
       setLoading(false);
     }
   }, []);
@@ -282,6 +310,7 @@ function CodexExtensionPage() {
     if (!status) return;
     const replaceExisting = status.conflict;
     if (replaceExisting && !confirm("检测到同名的现有 Skill。心影Pro会先完整备份它，再安装受管版本。继续吗？")) return;
+    if (!operationGateRef.current.tryEnter()) return;
     setWorking(true);
     setError("");
     setMessage("");
@@ -292,9 +321,24 @@ function CodexExtensionPage() {
         ? `安装完成；原 Skill 已备份到 ${result.backupPath}。请新建 Codex 任务或重启 Codex 后使用。`
         : "安装完成。请新建 Codex 任务或重启 Codex 后使用。");
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      setError(userFacingError(cause));
     } finally {
+      operationGateRef.current.leave();
       setWorking(false);
+    }
+  };
+
+  const openExtensionFolder = async () => {
+    if (!operationGateRef.current.tryEnter()) return;
+    setOpeningFolder(true);
+    setError("");
+    try {
+      await window.xinying.codexExtension.openFolder();
+    } catch (cause) {
+      setError(userFacingError(cause));
+    } finally {
+      operationGateRef.current.leave();
+      setOpeningFolder(false);
     }
   };
 
@@ -323,7 +367,7 @@ function CodexExtensionPage() {
       </div>
       <div className="codex-extension-actions">
         <button className="button primary" disabled={!status?.available || working || loading} onClick={() => void install()}>{working ? <RefreshCw size={16} className="spinning" /> : <Download size={16} />}{working ? "安装中…" : actionLabel}</button>
-        <button className="button ghost" disabled={!status || working} onClick={() => void window.xinying.codexExtension.openFolder()}><FolderKanban size={15} />打开扩展目录</button>
+        <button className="button ghost" disabled={!status || working || openingFolder} onClick={() => void openExtensionFolder()}>{openingFolder ? <RefreshCw size={15} className="spinning" /> : <FolderKanban size={15} />}{openingFolder ? "打开中…" : "打开扩展目录"}</button>
       </div>
     </section>
 
@@ -495,21 +539,23 @@ function StudioPage({ project, projects, portraits, platformPortraits, jobs, onS
       return { ...current, modelName, mode: nextMode, resolution: nextResolution, duration: nextDuration };
     });
   };
-  const togglePortrait = (id: string) => {
+  const togglePortrait = async (id: string) => {
     const removing = selectedPortraitIds.includes(id);
     const nextPortraitIds = removing ? selectedPortraitIds.filter((item) => item !== id) : [...selectedPortraitIds, id];
     let nextOrder = materialOrder.filter((key) => key !== portraitMaterialKey(id));
     if (!removing) nextOrder = [...nextOrder, portraitMaterialKey(id)];
-    setDraft((current) => ({ ...current, portraitIds: nextPortraitIds, materialOrder: nextOrder }));
     const portrait = availablePortraits.find((item) => item.id === id);
-    void run(
-      () => window.xinying.projects.update(project.id, { portraitIds: nextPortraitIds, materialOrder: nextOrder }),
+    await run(
+      async () => {
+        setDraft((current) => ({ ...current, portraitIds: nextPortraitIds, materialOrder: nextOrder }));
+        await window.xinying.projects.update(project.id, { portraitIds: nextPortraitIds, materialOrder: nextOrder });
+      },
       removing ? `“${portrait?.displayName ?? "虚拟人像"}”已从参考素材移除` : `“${portrait?.displayName ?? "虚拟人像"}”已加入上方参考素材`,
     );
   };
-  const toggleSharedMedia = (asset: SharedMediaAsset) => {
+  const toggleSharedMedia = async (asset: SharedMediaAsset) => {
     const selected = references.some((reference) => reference.sourceSharedMediaId === asset.id);
-    void run(async () => {
+    await run(async () => {
       const nextReferences = selected
         ? await window.xinying.sharedMedia.removeFromProject(project.id, asset.id)
         : await window.xinying.sharedMedia.addToProject(project.id, asset.id);
@@ -526,8 +572,10 @@ function StudioPage({ project, projects, portraits, platformPortraits, jobs, onS
       .map(parseMaterialKey)
       .filter((item): item is { kind: "portrait"; id: string } => item?.kind === "portrait")
       .map((item) => item.id);
-    setDraft((current) => ({ ...current, portraitIds: nextPortraitIds, materialOrder: nextOrder }));
-    void run(() => window.xinying.projects.update(project.id, { portraitIds: nextPortraitIds, materialOrder: nextOrder }), "APP 创作顺序已保存，提交时会自动换算心影编号");
+    void run(async () => {
+      setDraft((current) => ({ ...current, portraitIds: nextPortraitIds, materialOrder: nextOrder }));
+      await window.xinying.projects.update(project.id, { portraitIds: nextPortraitIds, materialOrder: nextOrder });
+    }, "APP 创作顺序已保存，提交时会自动换算心影编号");
   };
 
   return <div className="studio-page">
@@ -642,7 +690,7 @@ function PortraitsPage({ portraits, platformPortraits, projects, selectedProject
             className={`portrait-card ${!manageMode && selected ? "selected-library-card" : ""} ${manageMode ? "manage-portrait-card" : ""} ${selectedForDelete ? "selected-delete-card" : ""} ${manageMode && !portrait.canDelete ? "delete-forbidden-card" : ""}`}
             key={portrait.id}
             onClick={manageMode ? () => toggleDeleteSelection(portrait) : undefined}
-            onKeyDown={manageMode ? (event) => { if (event.key === "Enter" || event.key === " ") toggleDeleteSelection(portrait); } : undefined}
+            onKeyDown={manageMode ? (event) => { if (event.currentTarget === event.target && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); toggleDeleteSelection(portrait); } } : undefined}
             role={manageMode ? "checkbox" : undefined}
             aria-checked={manageMode ? selectedForDelete : undefined}
             aria-disabled={manageMode ? !portrait.canDelete : undefined}

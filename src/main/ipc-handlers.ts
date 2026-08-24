@@ -36,20 +36,14 @@ export function registerIpcHandlers(
   handle(IPC.projectsRemove, (_event, id: string) => service.removeProject(id));
   handle(IPC.platformProjectsCatalog, () => service.getPlatformCatalog());
   handle(IPC.platformProjectsSync, async () => {
-    const conflicting = service.listJobs().find((job) => ["submitting", "running"].includes(job.status));
-    if (conflicting) throw new Error("有心影任务正在运行，请等待任务结束后再同步空间与项目");
     const catalog = await platform.withAutomationViewport(() => adapter.syncPlatformCatalog());
     return service.syncPlatformCatalog(catalog);
   });
   handle(IPC.platformProjectsOpen, async (_event, projectId: string) => {
-    const conflicting = service.listJobs().find((job) => ["submitting", "running"].includes(job.status));
-    if (conflicting) throw new Error("有心影任务正在运行，请等待任务结束后再切换项目");
     const binding = await platform.withAutomationViewport(() => adapter.openPlatformProject(service.getPlatformCatalog(), projectId));
     return service.bindPlatformProject(binding);
   });
   handle(IPC.platformProjectsCreate, async (_event, input: PlatformProjectCreateInput) => {
-    const conflicting = service.listJobs().find((job) => ["submitting", "running"].includes(job.status));
-    if (conflicting) throw new Error("有心影任务正在运行，请等待任务结束后再新建项目");
     const binding = await platform.withAutomationViewport(() => adapter.createPlatformProject(service.getPlatformCatalog(), input));
     return service.bindPlatformProject(binding);
   });
@@ -128,16 +122,12 @@ export function registerIpcHandlers(
   handle(IPC.portraitsRemove, (_event, id: string) => service.removePortrait(id));
   handle(IPC.portraitsPlatformList, () => service.listPlatformPortraits());
   handle(IPC.portraitsSync, async (_event, projectId?: string) => {
-    const conflicting = service.listJobs().find((job) => ["submitting", "running"].includes(job.status));
-    if (conflicting) throw new Error("有心影任务正在运行，请等待任务结束后再同步虚拟人像库");
     const targetProject = projectId ? service.getProject(projectId) : service.listProjects().find((project) => project.platformUrl);
     if (!targetProject?.platformUrl) throw new Error("请先选择并进入一个心影项目，再同步该空间的虚拟人像库");
     const portraits = await platform.withAutomationViewport(() => adapter.syncPlatformPortraits(targetProject.platformUrl, targetProject.modelName, targetProject.platformWorkspaceId));
     return service.syncPlatformPortraits(portraits, targetProject.platformWorkspaceId, false);
   });
   handle(IPC.portraitsPlatformDelete, async (_event, projectId: string, ids: string[]) => {
-    const conflicting = service.listJobs().find((job) => ["submitting", "running"].includes(job.status));
-    if (conflicting) throw new Error("有心影任务正在运行，请等待任务结束后再删除虚拟人像");
     const targetProject = service.getProject(projectId);
     if (!targetProject.platformUrl || !targetProject.platformWorkspaceId) {
       throw new Error("请先选择一个已绑定心影空间与项目的本地项目");
@@ -185,8 +175,6 @@ export function registerIpcHandlers(
 
   handle(IPC.resultsList, (_event, projectId?: string) => service.listResults(projectId));
   handle(IPC.resultsSync, async (_event, projectId: string) => {
-    const conflicting = service.listJobs().find((job) => ["submitting", "running"].includes(job.status));
-    if (conflicting) throw new Error("有心影任务正在运行，请等待任务结束后再同步结果库");
     const project = service.getProject(projectId);
     const remote = await platform.withAutomationViewport(() => adapter.syncProjectResults(project));
     return service.syncPlatformResults(projectId, remote);

@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Image as ImageIcon, Music2, Plus, RefreshCw, Trash2, Upload, UserRoundCheck, Video } from "lucide-react";
 import type { PlatformPortrait, ReferenceAsset, ReferenceMediaKind, SharedMediaAsset } from "../../shared/contracts";
 import { portraitMaterialKey, referenceMaterialKey } from "../../shared/material-order";
@@ -13,9 +13,9 @@ interface SharedMaterialLibraryProps {
   materialLabels: string[];
   onUpload: () => void;
   onSyncPortraits: () => void;
-  onToggleAsset: (asset: SharedMediaAsset) => void;
+  onToggleAsset: (asset: SharedMediaAsset) => void | Promise<void>;
   onDeleteAsset: (asset: SharedMediaAsset) => void;
-  onTogglePortrait: (portrait: PlatformPortrait) => void;
+  onTogglePortrait: (portrait: PlatformPortrait) => void | Promise<void>;
 }
 
 type LibraryEntry =
@@ -42,6 +42,8 @@ function MediaPreview({ asset }: { asset: SharedMediaAsset }) {
 export function SharedMaterialLibrary(props: SharedMaterialLibraryProps) {
   const [category, setCategory] = useState<LibraryCategory>("all");
   const [query, setQuery] = useState("");
+  const pendingRef = useRef(new Set<string>());
+  const [pendingKeys, setPendingKeys] = useState<Set<string>>(() => new Set());
   const normalizedQuery = query.trim().toLocaleLowerCase("zh-CN");
   const referenceBySharedId = useMemo(() => new Map(
     props.references.filter((reference) => reference.sourceSharedMediaId).map((reference) => [reference.sourceSharedMediaId!, reference]),
@@ -80,6 +82,22 @@ export function SharedMaterialLibrary(props: SharedMaterialLibraryProps) {
     });
   }, [category, normalizedQuery, props.assets, props.materialLabels, props.materialOrder, props.portraits, referenceBySharedId]);
   const visibleEntries = entries.slice(0, 120);
+  const toggleEntry = async (key: string, action: () => void | Promise<void>) => {
+    if (pendingRef.current.has(key)) return;
+    pendingRef.current.add(key);
+    setPendingKeys(new Set(pendingRef.current));
+    try {
+      await action();
+    } finally {
+      pendingRef.current.delete(key);
+      setPendingKeys(new Set(pendingRef.current));
+    }
+  };
+  const activateByKeyboard = (event: React.KeyboardEvent<HTMLElement>, action: () => void) => {
+    if (event.currentTarget !== event.target || (event.key !== "Enter" && event.key !== " ")) return;
+    event.preventDefault();
+    action();
+  };
 
   return (
     <section className="panel shared-material-library">
@@ -96,17 +114,22 @@ export function SharedMaterialLibrary(props: SharedMaterialLibraryProps) {
         <span className="library-count">显示 {visibleEntries.length} / {entries.length}</span>
       </div>
       <div className="shared-library-grid">
-        {visibleEntries.map((entry) => entry.type === "media" ? (
-          <article role="button" tabIndex={0} key={`media:${entry.asset.id}`} className={`shared-library-card ${entry.selectedOrder >= 0 ? "selected" : ""}`} onClick={() => props.onToggleAsset(entry.asset)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") props.onToggleAsset(entry.asset); }}>
-            <div className="shared-library-preview"><MediaPreview asset={entry.asset} /><span className={`shared-kind-badge kind-${entry.asset.mediaKind}`}>{entry.asset.mediaKind === "image" ? "图片" : entry.asset.mediaKind === "video" ? "视频" : "音频"}</span>{entry.selectedLabel && <b>{entry.selectedLabel}</b>}<button type="button" className="shared-library-delete" title="从共享素材库删除" onClick={(event) => { event.stopPropagation(); props.onDeleteAsset(entry.asset); }}><Trash2 size={13} /></button></div>
-            <div className="shared-library-meta"><strong>{entry.asset.name}</strong><span>{entry.selectedOrder >= 0 ? "已加入当前项目，点击移出" : "点击加入当前项目"}</span></div>
-          </article>
-        ) : (
-          <article role="button" tabIndex={0} key={`portrait:${entry.portrait.id}`} className={`shared-library-card portrait ${entry.selectedOrder >= 0 ? "selected" : ""}`} onClick={() => props.onTogglePortrait(entry.portrait)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") props.onTogglePortrait(entry.portrait); }}>
-            <div className="shared-library-preview"><img src={entry.portrait.previewUrl} alt={entry.portrait.displayName} loading="lazy" /><span className="shared-kind-badge kind-portrait"><UserRoundCheck size={11} />虚拟人像</span>{entry.selectedLabel && <b>{entry.selectedLabel}</b>}</div>
-            <div className="shared-library-meta"><strong>{entry.portrait.displayName}</strong><span>{entry.selectedOrder >= 0 ? "已加入当前项目，点击移出" : entry.portrait.mediaKind === "video" ? "视频角色 · 点击加入" : "图片角色 · 点击加入"}</span></div>
-          </article>
-        ))}
+        {visibleEntries.map((entry) => {
+          const key = entry.type === "media" ? `media:${entry.asset.id}` : `portrait:${entry.portrait.id}`;
+          const pending = pendingKeys.has(key);
+          if (entry.type === "media") return (
+            <article role="button" tabIndex={pending ? -1 : 0} aria-busy={pending} key={key} className={`shared-library-card ${entry.selectedOrder >= 0 ? "selected" : ""} ${pending ? "pending" : ""}`} onClick={() => void toggleEntry(key, () => props.onToggleAsset(entry.asset))} onKeyDown={(event) => activateByKeyboard(event, () => void toggleEntry(key, () => props.onToggleAsset(entry.asset)))}>
+              <div className="shared-library-preview"><MediaPreview asset={entry.asset} /><span className={`shared-kind-badge kind-${entry.asset.mediaKind}`}>{entry.asset.mediaKind === "image" ? "图片" : entry.asset.mediaKind === "video" ? "视频" : "音频"}</span>{entry.selectedLabel && <b>{entry.selectedLabel}</b>}<button type="button" className="shared-library-delete" title="从共享素材库删除" onClick={(event) => { event.stopPropagation(); props.onDeleteAsset(entry.asset); }}><Trash2 size={13} /></button></div>
+              <div className="shared-library-meta"><strong>{entry.asset.name}</strong><span>{pending ? (entry.selectedOrder >= 0 ? "正在移出…" : "正在加入…") : entry.selectedOrder >= 0 ? "已加入当前项目，点击移出" : "点击加入当前项目"}</span></div>
+            </article>
+          );
+          return (
+            <article role="button" tabIndex={pending ? -1 : 0} aria-busy={pending} key={key} className={`shared-library-card portrait ${entry.selectedOrder >= 0 ? "selected" : ""} ${pending ? "pending" : ""}`} onClick={() => void toggleEntry(key, () => props.onTogglePortrait(entry.portrait))} onKeyDown={(event) => activateByKeyboard(event, () => void toggleEntry(key, () => props.onTogglePortrait(entry.portrait)))}>
+              <div className="shared-library-preview"><img src={entry.portrait.previewUrl} alt={entry.portrait.displayName} loading="lazy" /><span className="shared-kind-badge kind-portrait"><UserRoundCheck size={11} />虚拟人像</span>{entry.selectedLabel && <b>{entry.selectedLabel}</b>}</div>
+              <div className="shared-library-meta"><strong>{entry.portrait.displayName}</strong><span>{pending ? (entry.selectedOrder >= 0 ? "正在移出…" : "正在加入…") : entry.selectedOrder >= 0 ? "已加入当前项目，点击移出" : entry.portrait.mediaKind === "video" ? "视频角色 · 点击加入" : "图片角色 · 点击加入"}</span></div>
+            </article>
+          );
+        })}
         {!visibleEntries.length && <div className="shared-library-empty"><Plus size={24} /><strong>当前分类还没有素材</strong><span>{category === "portrait" ? "点击“同步人像”读取当前心影空间的授权角色。" : "点击“上传共享素材”导入图片、视频或音频。"}</span></div>}
       </div>
       {entries.length > visibleEntries.length && <p className="shared-library-limit">当前显示前 120 项；可通过分类或搜索快速定位其余素材。</p>}

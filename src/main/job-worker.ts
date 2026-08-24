@@ -96,24 +96,16 @@ export class JobWorker {
     if (this.processing) return;
     this.processing = true;
     try {
-      const running = this.service.listJobs().filter((job) => job.status === "running");
+      // A video-generation run is complete for automation as soon as Heart
+      // confirms it is generating. Do not keep taking over the shared page to
+      // poll or download it; the user can inspect/sync results when desired.
+      // Portrait authorization still needs monitoring because later reference
+      // submission depends on its approved/rejected state.
+      const running = this.service.listJobs().filter((job) => job.status === "running" && job.kind === "portrait-review");
       for (const job of running.slice(0, 3)) {
         try {
-          const outcome = await this.runWithAutomationView(async () => {
-            let inspected = job.kind === "generation"
-              ? await this.adapter.inspectRunningJob(job)
-              : await this.adapter.inspectPortraitReview(job, this.service.getPortrait(job.portraitId!));
-            if (job.kind === "generation" && inspected.status === "completed" && !inspected.outputPath) {
-              try {
-                const outputPath = await this.adapter.downloadVisibleResult(job);
-                inspected = { ...inspected, outputPath, message: `${inspected.message}；结果已保存到本地结果库` };
-              } catch (error) {
-                const appError = asAppError(error);
-                this.service.addJobEvent(job.id, "warning", "AUTO_DOWNLOAD_FAILED", appError.message);
-              }
-            }
-            return inspected;
-          });
+          const outcome = await this.runWithAutomationView(() =>
+            this.adapter.inspectPortraitReview(job, this.service.getPortrait(job.portraitId!)));
           this.applyOutcome(job, outcome, false);
         } catch (error) {
           const appError = asAppError(error);
