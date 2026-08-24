@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { BrowserWindow, WebContentsView, app, session, shell, type WebContents } from "electron";
-import type { PlatformViewBounds } from "../shared/contracts";
+import type { PlatformAutomationState, PlatformViewBounds } from "../shared/contracts";
 import type { SelectorPack } from "./selector-pack";
 import { classifyPlatformNavigation } from "./platform-navigation";
 import { AsyncOperationQueue } from "./async-operation-queue";
@@ -39,6 +39,16 @@ export class PlatformViewManager {
   private visible = false;
   private automationDepth = 0;
   private readonly automationQueue = new AsyncOperationQueue();
+  private pendingAutomationCount = 0;
+  private automationState: PlatformAutomationState = {
+    phase: "idle",
+    label: "",
+    detail: "",
+    pendingCount: 0,
+    current: null,
+    total: null,
+    startedAt: null,
+  };
   private loginFlowActive = false;
   private loginChallengeObserved = false;
   private completingLogin = false;
@@ -56,6 +66,7 @@ export class PlatformViewManager {
     private readonly window: BrowserWindow,
     private readonly selectors: SelectorPack,
     private readonly onLoginCompleted?: () => void,
+    private readonly onAutomationStateChanged?: (state: PlatformAutomationState) => void,
   ) {
     this.view = new WebContentsView({
       webPreferences: {
@@ -215,8 +226,46 @@ export class PlatformViewManager {
     if (this.visible && this.automationDepth === 0) this.view.setBounds(this.bounds);
   }
 
-  async withAutomationViewport<T>(operation: () => Promise<T>): Promise<T> {
+  getAutomationState(): PlatformAutomationState {
+    return { ...this.automationState };
+  }
+
+  reportAutomationProgress(detail: string, current: number | null = null, total: number | null = null): void {
+    if (this.automationState.phase !== "running") return;
+    this.setAutomationState({ ...this.automationState, detail, current, total });
+  }
+
+  private setAutomationState(state: PlatformAutomationState): void {
+    this.automationState = state;
+    this.onAutomationStateChanged?.({ ...state });
+  }
+
+  async withAutomationViewport<T>(operation: () => Promise<T>, label = "正在操作心影"): Promise<T> {
+    this.pendingAutomationCount += 1;
+    if (this.automationState.phase === "idle") {
+      this.setAutomationState({
+        phase: "queued",
+        label,
+        detail: "已加入心影操作队列",
+        pendingCount: this.pendingAutomationCount,
+        current: null,
+        total: null,
+        startedAt: null,
+      });
+    } else {
+      this.setAutomationState({ ...this.automationState, pendingCount: this.pendingAutomationCount });
+    }
     return this.automationQueue.run(async () => {
+      this.pendingAutomationCount = Math.max(0, this.pendingAutomationCount - 1);
+      this.setAutomationState({
+        phase: "running",
+        label,
+        detail: "正在等待心影页面就绪",
+        pendingCount: this.pendingAutomationCount,
+        current: null,
+        total: null,
+        startedAt: new Date().toISOString(),
+      });
       this.automationDepth += 1;
       this.syncVisibility();
       await new Promise((resolve) => setTimeout(resolve, 100));
@@ -225,6 +274,15 @@ export class PlatformViewManager {
       } finally {
         this.automationDepth = Math.max(0, this.automationDepth - 1);
         this.syncVisibility();
+        this.setAutomationState({
+          phase: this.pendingAutomationCount > 0 ? "queued" : "idle",
+          label: this.pendingAutomationCount > 0 ? "下一项心影操作" : "",
+          detail: this.pendingAutomationCount > 0 ? "正在进入下一项操作" : "",
+          pendingCount: this.pendingAutomationCount,
+          current: null,
+          total: null,
+          startedAt: null,
+        });
       }
     });
   }

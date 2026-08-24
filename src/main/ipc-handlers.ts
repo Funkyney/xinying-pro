@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { BrowserWindow, dialog, ipcMain, shell } from "electron";
 import { IPC } from "../shared/ipc";
-import type { PlatformProjectCreateInput, PlatformViewBounds, PortraitMetadataInput, ProjectInput, ReferenceRole } from "../shared/contracts";
+import type { PlatformPortraitDeleteProgress, PlatformProjectCreateInput, PlatformViewBounds, PortraitMetadataInput, ProjectInput, ReferenceRole } from "../shared/contracts";
 import type { XinyingService } from "../core/service";
 import type { PlatformViewManager } from "./platform-view";
 import type { PlaywrightXinyingAdapter } from "./playwright-adapter";
@@ -28,6 +28,7 @@ export function registerIpcHandlers(
     sharedMedia: service.listSharedMedia(),
     results: service.listResults(),
     platformCatalog: service.getPlatformCatalog(),
+    platformAutomation: platform.getAutomationState(),
     session: await adapter.sessionState(),
   }));
   handle(IPC.projectsList, () => service.listProjects());
@@ -36,15 +37,19 @@ export function registerIpcHandlers(
   handle(IPC.projectsRemove, (_event, id: string) => service.removeProject(id));
   handle(IPC.platformProjectsCatalog, () => service.getPlatformCatalog());
   handle(IPC.platformProjectsSync, async () => {
-    const catalog = await platform.withAutomationViewport(() => adapter.syncPlatformCatalog());
+    const catalog = await platform.withAutomationViewport(() => adapter.syncPlatformCatalog(), "正在同步心影空间与项目");
     return service.syncPlatformCatalog(catalog);
   });
   handle(IPC.platformProjectsOpen, async (_event, projectId: string) => {
-    const binding = await platform.withAutomationViewport(() => adapter.openPlatformProject(service.getPlatformCatalog(), projectId));
+    const selected = service.getPlatformCatalog().projects.find((project) => project.id === projectId);
+    const binding = await platform.withAutomationViewport(
+      () => adapter.openPlatformProject(service.getPlatformCatalog(), projectId),
+      `正在进入项目${selected?.name ? `「${selected.name}」` : ""}`,
+    );
     return service.bindPlatformProject(binding);
   });
   handle(IPC.platformProjectsCreate, async (_event, input: PlatformProjectCreateInput) => {
-    const binding = await platform.withAutomationViewport(() => adapter.createPlatformProject(service.getPlatformCatalog(), input));
+    const binding = await platform.withAutomationViewport(() => adapter.createPlatformProject(service.getPlatformCatalog(), input), `正在创建项目「${input.name.trim()}」`);
     return service.bindPlatformProject(binding);
   });
 
@@ -124,7 +129,10 @@ export function registerIpcHandlers(
   handle(IPC.portraitsSync, async (_event, projectId?: string) => {
     const targetProject = projectId ? service.getProject(projectId) : service.listProjects().find((project) => project.platformUrl);
     if (!targetProject?.platformUrl) throw new Error("请先选择并进入一个心影项目，再同步该空间的虚拟人像库");
-    const portraits = await platform.withAutomationViewport(() => adapter.syncPlatformPortraits(targetProject.platformUrl, targetProject.modelName, targetProject.platformWorkspaceId));
+    const portraits = await platform.withAutomationViewport(
+      () => adapter.syncPlatformPortraits(targetProject.platformUrl, targetProject.modelName, targetProject.platformWorkspaceId),
+      "正在同步当前空间虚拟人像",
+    );
     return service.syncPlatformPortraits(portraits, targetProject.platformWorkspaceId, false);
   });
   handle(IPC.portraitsPlatformDelete, async (_event, projectId: string, ids: string[]) => {
@@ -133,15 +141,65 @@ export function registerIpcHandlers(
       throw new Error("请先选择一个已绑定心影空间与项目的本地项目");
     }
     const portraits = service.validatePlatformPortraitDeletion(ids, targetProject.platformWorkspaceId);
-    const result = await platform.withAutomationViewport(() => adapter.deletePlatformPortraits(
-      targetProject.platformUrl,
-      targetProject.modelName,
-      portraits,
-    ));
+    const requestedIds = portraits.map((portrait) => portrait.id);
+    let latestProgress: PlatformPortraitDeleteProgress | null = null;
+    const notifyProgress = (progress: PlatformPortraitDeleteProgress) => {
+      latestProgress = progress;
+      if (!window.isDestroyed()) window.webContents.send(IPC.portraitsPlatformDeleteProgress, progress);
+      if (progress.status !== "queued") platform.reportAutomationProgress(progress.message, progress.current, progress.total);
+    };
+    notifyProgress({
+      status: "queued",
+      requestedIds,
+      deletedIds: [],
+      currentId: null,
+      currentName: null,
+      current: 0,
+      total: portraits.length,
+      message: `已排队，准备删除 ${portraits.length} 个虚拟人像`,
+    });
+    let result;
+    try {
+      result = await platform.withAutomationViewport(() => adapter.deletePlatformPortraits(
+        targetProject.platformUrl,
+        targetProject.modelName,
+        portraits,
+        (progress) => {
+          if (progress.status === "deleted" && progress.currentId) {
+            service.markPlatformPortraitsDeleted([progress.currentId], targetProject.platformWorkspaceId);
+          }
+          notifyProgress(progress);
+        },
+      ), `正在删除 ${portraits.length} 个虚拟人像`);
+    } catch (error) {
+      const previous = latestProgress as PlatformPortraitDeleteProgress | null;
+      const message = error instanceof Error ? error.message : String(error);
+      notifyProgress({
+        status: "failed",
+        requestedIds,
+        deletedIds: previous?.deletedIds ?? [],
+        currentId: previous?.currentId ?? null,
+        currentName: previous?.currentName ?? null,
+        current: previous?.current ?? 0,
+        total: portraits.length,
+        message: `删除任务未完成：${message}`,
+      });
+      throw error;
+    }
     service.markPlatformPortraitsDeleted(result.deletedIds, targetProject.platformWorkspaceId);
     if (result.failed) {
       throw new Error(`已永久删除 ${result.deletedIds.length} 项；删除“${result.failed.displayName}”时停止：${result.failed.message}`);
     }
+    notifyProgress({
+      status: "completed",
+      requestedIds,
+      deletedIds: result.deletedIds,
+      currentId: null,
+      currentName: null,
+      current: result.deletedIds.length,
+      total: portraits.length,
+      message: `已删除 ${result.deletedIds.length} / ${portraits.length} 个虚拟人像`,
+    });
     return result;
   });
 
@@ -164,7 +222,7 @@ export function registerIpcHandlers(
     if (result.canceled || !result.filePath) return job;
     if (!job.outputPath) {
       try {
-        const captured = await platform.withAutomationViewport(() => adapter.downloadVisibleResult(job));
+        const captured = await platform.withAutomationViewport(() => adapter.downloadVisibleResult(job), "正在从心影下载视频");
         service.updateJob(id, { outputPath: captured });
       } catch (error) {
         if (!job.outputUrl) throw error;
@@ -176,7 +234,7 @@ export function registerIpcHandlers(
   handle(IPC.resultsList, (_event, projectId?: string) => service.listResults(projectId));
   handle(IPC.resultsSync, async (_event, projectId: string) => {
     const project = service.getProject(projectId);
-    const remote = await platform.withAutomationViewport(() => adapter.syncProjectResults(project));
+    const remote = await platform.withAutomationViewport(() => adapter.syncProjectResults(project), `正在同步「${project.name}」结果库`);
     return service.syncPlatformResults(projectId, remote);
   });
   handle(IPC.resultsMark, (_event, ids: string[], marked: boolean) => service.markResults(ids, marked));
@@ -184,7 +242,7 @@ export function registerIpcHandlers(
     const result = service.getResult(id);
     if (result.jobId && !result.outputPath && !result.outputUrl) {
       const job = service.getJob(result.jobId);
-      const captured = await platform.withAutomationViewport(() => adapter.downloadVisibleResult(job));
+      const captured = await platform.withAutomationViewport(() => adapter.downloadVisibleResult(job), "正在从心影下载视频");
       service.updateJob(job.id, { outputPath: captured });
     }
     return service.getResult(id);

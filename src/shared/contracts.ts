@@ -258,6 +258,29 @@ export interface PlatformPortraitDeleteResult {
   };
 }
 
+export type PlatformAutomationPhase = "idle" | "queued" | "running";
+
+export interface PlatformAutomationState {
+  phase: PlatformAutomationPhase;
+  label: string;
+  detail: string;
+  pendingCount: number;
+  current: number | null;
+  total: number | null;
+  startedAt: string | null;
+}
+
+export interface PlatformPortraitDeleteProgress {
+  status: "queued" | "deleting" | "deleted" | "failed" | "completed";
+  requestedIds: string[];
+  deletedIds: string[];
+  currentId: string | null;
+  currentName: string | null;
+  current: number;
+  total: number;
+  message: string;
+}
+
 export interface PortraitMetadataInput {
   displayName?: string;
   gender?: PortraitGender;
@@ -314,6 +337,7 @@ export interface DashboardSnapshot {
   sharedMedia: SharedMediaAsset[];
   results: PlatformResult[];
   platformCatalog: PlatformCatalogSnapshot;
+  platformAutomation: PlatformAutomationState;
   session: SessionState;
 }
 
@@ -421,6 +445,7 @@ export interface XinyingApi {
     platformList(): Promise<PlatformPortrait[]>;
     sync(projectId?: string): Promise<PlatformPortrait[]>;
     deletePlatform(projectId: string, ids: string[]): Promise<PlatformPortraitDeleteResult>;
+    onDeleteProgress(listener: (progress: PlatformPortraitDeleteProgress) => void): () => void;
   };
   jobs: {
     list(): Promise<Job[]>;
@@ -451,6 +476,7 @@ export interface XinyingApi {
     setVisible(visible: boolean): Promise<void>;
     isVisible(): Promise<boolean>;
     setBounds(bounds: PlatformViewBounds): Promise<void>;
+    onAutomationStateChange(listener: (state: PlatformAutomationState) => void): () => void;
   };
   updates: {
     state(): Promise<AppUpdateState>;

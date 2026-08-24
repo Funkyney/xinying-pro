@@ -11,6 +11,7 @@ import type {
   PlatformProjectCreateInput,
   PlatformPortrait,
   PlatformPortraitDeleteResult,
+  PlatformPortraitDeleteProgress,
   PlatformResult,
   Project,
   PlatformWorkspace,
@@ -345,6 +346,46 @@ export class PlaywrightXinyingAdapter {
     return page;
   }
 
+  private isTransientProjectNavigationError(error: unknown): boolean {
+    if (error instanceof AppError) {
+      return new Set([
+        "PLATFORM_PAGE_NOT_READY",
+        "PROJECT_SELECTOR_NOT_FOUND",
+        "WORKSPACE_LIST_NOT_FOUND",
+        "PROJECT_LIST_NOT_FOUND",
+        "PLATFORM_PROJECT_NOT_FOUND",
+        "PLATFORM_PROJECT_SWITCH_FAILED",
+        "GENERATION_SESSION_CREATE_FAILED",
+      ]).has(error.code);
+    }
+    const message = error instanceof Error ? error.message : String(error);
+    return /timeout|detached|execution context was destroyed|target page/i.test(message);
+  }
+
+  private async recoverProjectNavigation(page: Page, attempt: number): Promise<void> {
+    await page.keyboard.press("Escape").catch(() => undefined);
+    const current = page.url();
+    await page.goto(platformHomeUrl(current, this.selectors.baseUrl, this.selectors.projects.homePath), {
+      waitUntil: "domcontentloaded",
+      timeout: 30_000,
+    }).catch(() => undefined);
+    await page.waitForTimeout(350 * attempt);
+  }
+
+  private async retryProjectNavigation<T>(page: Page, operation: () => Promise<T>, attempts = 3): Promise<T> {
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      try {
+        return await operation();
+      } catch (error) {
+        lastError = error;
+        if (attempt >= attempts || !this.isTransientProjectNavigationError(error)) throw error;
+        await this.recoverProjectNavigation(page, attempt);
+      }
+    }
+    throw lastError;
+  }
+
   private async openProjectSelector(page: Page): Promise<Locator> {
     const existing = await firstVisible(page, this.selectors.projects.selectorPanel);
     if (existing) return existing;
@@ -470,6 +511,7 @@ export class PlaywrightXinyingAdapter {
   }
 
   private async chooseProject(page: Page, panel: Locator, project: PlatformProject): Promise<string> {
+    const previousRemoteId = new URL(page.url()).searchParams.get("projectId") ?? "";
     const primarySelector = this.selectors.projects.projectItems[0] ?? ".selector-project-item";
     const cards = panel.locator(primarySelector).filter({ visible: true });
     const loaded = await cards.first().waitFor({ state: "visible", timeout: 8_000 }).then(() => true).catch(() => false);
@@ -488,11 +530,21 @@ export class PlaywrightXinyingAdapter {
     }, { name: project.name, shortId: project.shortId }).catch(() => false);
     if (!clicked) throw new AppError("PLATFORM_PROJECT_NOT_FOUND", `找不到心影项目：${project.name}`);
     const deadline = Date.now() + 12_000;
+    let stableRemoteId = "";
+    let stableRounds = 0;
     while (Date.now() < deadline) {
       const remoteId = new URL(page.url()).searchParams.get("projectId") ?? "";
       const trigger = await firstVisible(page, this.selectors.projects.selectorTrigger);
       const triggerText = (await trigger?.innerText().catch(() => "")) ?? "";
       if (remoteId && triggerText.includes(project.name)) return remoteId;
+      if (remoteId && remoteId === stableRemoteId) stableRounds += 1;
+      else {
+        stableRemoteId = remoteId;
+        stableRounds = remoteId ? 1 : 0;
+      }
+      // The projectId is the authoritative switch result. Heart sometimes
+      // updates the selector caption noticeably later than the URL.
+      if (remoteId && remoteId !== previousRemoteId && stableRounds >= 3) return remoteId;
       await page.waitForTimeout(200);
     }
     throw new AppError("PLATFORM_PROJECT_SWITCH_FAILED", `心影未能切换到项目：${project.name}`);
@@ -563,7 +615,7 @@ export class PlaywrightXinyingAdapter {
     const currentUrl = new URL(originalUrl);
     const currentRemoteId = currentUrl.searchParams.get("projectId") ?? "";
     const syncedAt = new Date().toISOString();
-    try {
+    const readCatalog = async (): Promise<PlatformCatalogSnapshot> => {
       await this.ensureHomePage(page);
       const trigger = await this.waitForVisible(page, this.selectors.projects.selectorTrigger, 20_000);
       const triggerParts = ((await trigger?.innerText().catch(() => "")) ?? "").split("｜").map((item) => item.trim());
@@ -590,6 +642,9 @@ export class PlaywrightXinyingAdapter {
         ...options,
         syncedAt,
       };
+    };
+    try {
+      return await this.retryProjectNavigation(page, readCatalog);
     } finally {
       if (page.url() !== originalUrl) {
         await page.goto(originalUrl, { waitUntil: "domcontentloaded", timeout: 30_000 }).catch(() => undefined);
@@ -603,11 +658,21 @@ export class PlaywrightXinyingAdapter {
     const workspace = catalog.workspaces.find((item) => item.id === project.workspaceId && item.available);
     if (!workspace) throw new AppError("WORKSPACE_NOT_FOUND", "所选项目的心影空间当前不可用");
     const page = await this.page();
-    await this.ensureHomePage(page);
-    const panel = await this.openProjectSelector(page);
-    await this.chooseWorkspace(page, panel, workspace);
-    const remoteId = await this.chooseProject(page, panel, project);
-    const generationUrl = await this.openGenerationSession(page, remoteId);
+    const open = async () => {
+      // Once a project has been opened, its full remoteId is persisted. Going
+      // straight to avpAgent avoids the slow and occasionally stale selector.
+      if (project.remoteId) {
+        const generationUrl = await this.openGenerationSession(page, project.remoteId);
+        return { remoteId: project.remoteId, generationUrl };
+      }
+      await this.ensureHomePage(page);
+      const panel = await this.openProjectSelector(page);
+      await this.chooseWorkspace(page, panel, workspace);
+      const remoteId = await this.chooseProject(page, panel, project);
+      const generationUrl = await this.openGenerationSession(page, remoteId);
+      return { remoteId, generationUrl };
+    };
+    const { remoteId, generationUrl } = await this.retryProjectNavigation(page, open);
     return {
       workspace: { ...workspace, isCurrent: true, lastSeenAt: new Date().toISOString() },
       project: {
@@ -859,8 +924,24 @@ export class PlaywrightXinyingAdapter {
     targetUrl: string,
     modelName: string,
     portraits: PlatformPortrait[],
+    onProgress?: (progress: PlatformPortraitDeleteProgress) => void,
   ): Promise<PlatformPortraitDeleteResult> {
     const result: PlatformPortraitDeleteResult = { requestedIds: portraits.map((portrait) => portrait.id), deletedIds: [] };
+    const report = (
+      status: PlatformPortraitDeleteProgress["status"],
+      index: number,
+      portrait: PlatformPortrait | null,
+      message: string,
+    ) => onProgress?.({
+      status,
+      requestedIds: result.requestedIds,
+      deletedIds: [...result.deletedIds],
+      currentId: portrait?.id ?? null,
+      currentName: portrait?.displayName ?? null,
+      current: index,
+      total: portraits.length,
+      message,
+    });
     const page = await this.page();
     const originalUrl = page.url();
     const target = safeGenerationUrl(targetUrl);
@@ -888,8 +969,9 @@ export class PlaywrightXinyingAdapter {
       if (!initialCards) throw new AppError("PORTRAIT_LIBRARY_EMPTY", "心影认证角色库没有可管理的人像卡片");
       await this.loadPortraitCards(page, initialCards, 30, 6, 400);
 
-      for (const portrait of portraits) {
+      for (const [index, portrait] of portraits.entries()) {
         try {
+          report("deleting", index + 1, portrait, `正在删除 ${index + 1} / ${portraits.length}：${portrait.displayName}`);
           const cards = await firstCollectionWithin(dialog, this.selectors.generation.portraitCards);
           if (!cards) throw new AppError("PORTRAIT_LIBRARY_EMPTY", "心影认证角色库没有可管理的人像卡片");
           const matched = await this.findPlatformPortraitCard(cards, portrait);
@@ -924,9 +1006,11 @@ export class PlaywrightXinyingAdapter {
           }
           if (!disappeared) throw new AppError("PLATFORM_PORTRAIT_DELETE_UNCONFIRMED", `心影未确认删除“${portrait.displayName}”`);
           result.deletedIds.push(portrait.id);
+          report("deleted", index + 1, portrait, `已删除 ${index + 1} / ${portraits.length}：${portrait.displayName}`);
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           result.failed = { id: portrait.id, displayName: portrait.displayName, message };
+          report("failed", index + 1, portrait, `删除“${portrait.displayName}”失败：${message}`);
           break;
         }
       }

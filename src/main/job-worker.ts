@@ -3,7 +3,7 @@ import type { XinyingService } from "../core/service";
 import { asAppError } from "../core/errors";
 import type { PlaywrightXinyingAdapter, AdapterOutcome } from "./playwright-adapter";
 
-type AutomationViewRunner = <T>(operation: () => Promise<T>) => Promise<T>;
+type AutomationViewRunner = <T>(operation: () => Promise<T>, label?: string) => Promise<T>;
 
 function stringJobParameter(job: Job, key: string): string {
   const value = job.parameters[key];
@@ -75,7 +75,8 @@ export class JobWorker {
       );
       const outcome = await this.runWithAutomationView(() => job.kind === "generation"
         ? this.adapter.submitGeneration(job, reuseFromPlatformTaskId)
-        : this.adapter.submitPortraitReview(job, this.service.getPortrait(job.portraitId!)));
+        : this.adapter.submitPortraitReview(job, this.service.getPortrait(job.portraitId!)),
+      job.kind === "generation" ? "正在向心影提交视频生成" : "正在向心影提交虚拟人像审核");
       this.applyOutcome(job, outcome);
     } catch (error) {
       const appError = asAppError(error);
@@ -105,7 +106,7 @@ export class JobWorker {
       for (const job of running.slice(0, 3)) {
         try {
           const outcome = await this.runWithAutomationView(() =>
-            this.adapter.inspectPortraitReview(job, this.service.getPortrait(job.portraitId!)));
+            this.adapter.inspectPortraitReview(job, this.service.getPortrait(job.portraitId!)), "正在检查虚拟人像审核结果");
           this.applyOutcome(job, outcome, false);
         } catch (error) {
           const appError = asAppError(error);

@@ -166,6 +166,31 @@ describe("XinyingService", () => {
     expect(service.getPlatformCatalog().currentProjectId).toBe("team:remote-1");
   });
 
+  it("keeps a discovered full Heart project id across later catalog refreshes", () => {
+    const initial = service.syncPlatformCatalog({
+      workspaces: [{ id: "team", name: "团队空间", kind: "team", sortOrder: 0, isCurrent: true }],
+      projects: [{
+        id: "team:project-a", workspaceId: "team", remoteId: "full-remote-project-id", name: "项目A",
+        shortId: "000001", homeUrl: "https://blueaivideo.com/home?projectId=full-remote-project-id", sortOrder: 0, isCurrent: true,
+      }],
+      currentWorkspaceId: "team",
+      currentProjectId: "team:project-a",
+      customerOptions: [],
+      creationTypeOptions: [],
+      syncedAt: "2026-08-21T00:00:00.000Z",
+    });
+    expect(initial.projects[0].remoteId).toBe("full-remote-project-id");
+
+    const refreshed = service.syncPlatformCatalog({
+      ...initial,
+      projects: [{ ...initial.projects[0], remoteId: "", homeUrl: "", isCurrent: false }],
+      currentProjectId: "",
+      syncedAt: "2026-08-24T00:00:00.000Z",
+    });
+    expect(refreshed.projects[0].remoteId).toBe("full-remote-project-id");
+    expect(refreshed.projects[0].homeUrl).toContain("full-remote-project-id");
+  });
+
   it("migrates an existing project database without losing rows", () => {
     database.close();
     const databasePath = path.join(tempDir, "xinying.sqlite3");

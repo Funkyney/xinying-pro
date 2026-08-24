@@ -62,6 +62,8 @@ function createWindow(): void {
 
   platformManager = new PlatformViewManager(mainWindow, selectors, () => {
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(IPC.sessionLoginCompleted);
+  }, (state) => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(IPC.platformAutomationChanged, state);
   });
   adapter = new PlaywrightXinyingAdapter(
     CDP_PORT,
@@ -77,7 +79,7 @@ function createWindow(): void {
       service.updatePlatformPortraitMediaKind(portraitId, mediaKind);
     },
   );
-  worker = new JobWorker(service, adapter, (operation) => platformManager!.withAutomationViewport(operation));
+  worker = new JobWorker(service, adapter, (operation, label) => platformManager!.withAutomationViewport(operation, label));
   const bundledSkillPath = app.isPackaged
     ? path.join(process.resourcesPath, "codex-skills", "xinying-pro-generate")
     : path.join(app.getAppPath(), "codex-skills", "xinying-pro-generate");

@@ -40,8 +40,10 @@ import type {
   Job,
   JobEvent,
   JobStatus,
+  PlatformAutomationState,
   PortraitAsset,
   PlatformPortrait,
+  PlatformPortraitDeleteProgress,
   PlatformProject,
   PlatformProjectCreateInput,
   PlatformResult,
@@ -139,6 +141,9 @@ export function App() {
   const [error, setError] = useState<string>("");
   const [toast, setToast] = useState<string>("");
   const [updateState, setUpdateState] = useState<AppUpdateState>({ status: "idle", currentVersion: "…" });
+  const [platformAutomation, setPlatformAutomation] = useState<PlatformAutomationState>({
+    phase: "idle", label: "", detail: "", pendingCount: 0, current: null, total: null, startedAt: null,
+  });
   const actionGateRef = useRef(new InteractionGate());
   const updateGateRef = useRef(new InteractionGate());
   const refreshSequenceRef = useRef(0);
@@ -183,6 +188,12 @@ export function App() {
     void refresh(true);
   }), [refresh]);
 
+  useEffect(() => window.xinying.platformView.onAutomationStateChange(setPlatformAutomation), []);
+
+  useEffect(() => {
+    if (snapshot?.platformAutomation) setPlatformAutomation(snapshot.platformAutomation);
+  }, [snapshot?.platformAutomation]);
+
   const handleUpdate = async () => {
     if (!updateGateRef.current.tryEnter()) return;
     try {
@@ -211,8 +222,8 @@ export function App() {
     setError("");
     try {
       await action();
+      await refresh();
       if (success) setToast(success);
-      void refresh();
     } catch (cause) {
       setError(userFacingError(cause));
     } finally {
@@ -275,7 +286,7 @@ export function App() {
           )}
         </div>
       </main>
-      {busy && <div className="busy-overlay" role="status" aria-live="polite"><div className="loader" /><span>正在处理…</span></div>}
+      {(busy || platformAutomation.phase !== "idle") && <div className="busy-overlay" role="status" aria-live="polite"><div className="loader" /><span><strong>{platformAutomation.phase === "queued" ? `排队等待：${platformAutomation.label}` : platformAutomation.label || "正在处理…"}</strong><small>{platformAutomation.detail || (busy ? "正在更新本地工作台" : "")}{platformAutomation.pendingCount > 0 ? ` · 后面还有 ${platformAutomation.pendingCount} 项` : ""}</small>{platformAutomation.total && platformAutomation.current !== null ? <em>{platformAutomation.current} / {platformAutomation.total}</em> : null}</span></div>}
     </div>
   );
 }
@@ -610,12 +621,14 @@ function PortraitsPage({ portraits, platformPortraits, projects, selectedProject
   const [selectedDeleteIds, setSelectedDeleteIds] = useState<Set<string>>(() => new Set());
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [deleteConsent, setDeleteConsent] = useState(false);
+  const [deleteProgress, setDeleteProgress] = useState<PlatformPortraitDeleteProgress | null>(null);
+  const [locallyDeletedIds, setLocallyDeletedIds] = useState<Set<string>>(() => new Set());
   const updateConsent = (confirmed: boolean) => {
     setConsent(confirmed);
     if (confirmed) localStorage.setItem("xinying:portrait-compliance-v1", "confirmed");
     else localStorage.removeItem("xinying:portrait-compliance-v1");
   };
-  const availablePlatformPortraits = platformPortraits.filter((portrait) => portrait.available && (!selectedProject?.platformWorkspaceId || !portrait.workspaceId || portrait.workspaceId === selectedProject.platformWorkspaceId));
+  const availablePlatformPortraits = platformPortraits.filter((portrait) => !locallyDeletedIds.has(portrait.id) && portrait.available && (!selectedProject?.platformWorkspaceId || !portrait.workspaceId || portrait.workspaceId === selectedProject.platformWorkspaceId));
   const normalizedQuery = portraitQuery.trim().toLocaleLowerCase("zh-CN");
   const filteredPlatformPortraits = availablePlatformPortraits.filter((portrait) => !normalizedQuery || portrait.displayName.toLocaleLowerCase("zh-CN").includes(normalizedQuery));
   const managedPlatformPortraits = manageMode ? filteredPlatformPortraits.filter((portrait) => portrait.canDelete) : filteredPlatformPortraits;
@@ -633,7 +646,15 @@ function PortraitsPage({ portraits, platformPortraits, projects, selectedProject
     setSelectedDeleteIds(new Set());
     setDeleteConfirmOpen(false);
     setDeleteConsent(false);
+    setDeleteProgress(null);
+    setLocallyDeletedIds(new Set());
   }, [selectedProject?.id, selectedProject?.platformWorkspaceId]);
+  useEffect(() => window.xinying.portraits.onDeleteProgress((progress) => {
+    setDeleteProgress(progress);
+    if (progress.deletedIds.length) {
+      setLocallyDeletedIds((current) => new Set([...current, ...progress.deletedIds]));
+    }
+  }), []);
   useEffect(() => {
     const valid = new Set(availablePlatformPortraits.filter((portrait) => portrait.canDelete).map((portrait) => portrait.id));
     setSelectedDeleteIds((current) => new Set([...current].filter((id) => valid.has(id))));
@@ -665,6 +686,7 @@ function PortraitsPage({ portraits, platformPortraits, projects, selectedProject
     void run(() => window.xinying.projects.update(selectedProject.id, { portraitIds: ids, materialOrder: order }), `“${portrait.displayName}”已加入当前项目参考素材`);
   };
   return <div><div className="page-heading"><div><span className="eyebrow">AUTHORIZED PORTRAITS</span><h1>虚拟人像管理</h1><p>同步当前个人/团队空间的共享角色，或上传新素材并自动完成合规授权。</p></div><div className="heading-actions"><button className="button secondary" disabled={!selectedProject} onClick={() => selectedProject && run(() => window.xinying.portraits.sync(selectedProject.id), "当前空间虚拟人像库已同步")}><RefreshCw size={15} />同步当前空间</button><button className="button primary" disabled={!consent || !selectedProject} onClick={() => run(() => window.xinying.portraits.pickAndAdd(consent), "虚拟人像素材已导入")}><Plus size={16} />导入新素材</button></div></div>
+    {deleteProgress && <section className={`portrait-delete-progress progress-${deleteProgress.status}`} role="status" aria-live="polite"><div className="progress-heading"><span>{["queued", "deleting"].includes(deleteProgress.status) ? <RefreshCw size={17} className="spinning" /> : deleteProgress.status === "failed" ? <ShieldAlert size={17} /> : <CheckCircle2 size={17} />}</span><div><strong>{deleteProgress.status === "queued" ? "删除任务已排队" : deleteProgress.status === "deleting" ? "正在从心影删除" : deleteProgress.status === "failed" ? "删除在当前项目停止" : "删除已确认"}</strong><small>{deleteProgress.message}</small></div><b>{deleteProgress.current} / {deleteProgress.total}</b>{!["queued", "deleting"].includes(deleteProgress.status) && <button className="icon-button" title="关闭删除状态" onClick={() => setDeleteProgress(null)}><X size={15} /></button>}</div><div className="progress-track"><i style={{ width: `${deleteProgress.total ? Math.round((deleteProgress.current / deleteProgress.total) * 100) : 0}%` }} /></div></section>}
     <section className="portrait-project-context panel"><div><Building2 size={20} /><span><small>调用目标项目</small><strong>{selectedProject?.name ?? "尚未选择心影项目"}</strong></span></div>{projects.length > 0 && <select value={selectedProject?.id ?? ""} onChange={(event) => onSelectProject(event.target.value)}><option value="" disabled>选择项目</option>{projects.filter((project) => project.platformProjectId && project.platformUrl).map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select>}<button className="button ghost" onClick={() => onNavigate("projects")}><FolderKanban size={15} />切换空间/项目</button></section>
     <label className="consent-banner"><input type="checkbox" checked={consent} onChange={(event) => updateConsent(event.target.checked)} /><span><strong>记住我的合规确认，并在提交时自动勾选心影承诺</strong>我确认素材为我原创设计且享有完整合法权利，不与任何自然人的肖像或形象相同或相似，并同意心影《虚拟人像素材合规承诺与授权确认书》。</span></label>
     <section className="portrait-section">
@@ -706,7 +728,7 @@ function PortraitsPage({ portraits, platformPortraits, projects, selectedProject
       </div>
     </section>
     <section className="portrait-section"><div className="panel-heading compact"><div><span className="eyebrow">LOCAL UPLOADS</span><h2>本地待上传 / 审核</h2><p>名称自动取文件名，性别、年龄、人种默认“其他”；提交到当前项目所属空间并自动勾选承诺。</p></div></div><div className="portrait-grid">{portraits.map((portrait) => { const active = ["queued", "reviewing", "needs-human"].includes(portrait.platformStatus); const scope = portrait.applicationScope === "domestic" ? "国内版" : portrait.applicationScope === "overseas" ? "海外版" : "国内版 + 海外版"; return <article className="portrait-card" key={portrait.id}><div className="portrait-media">{portrait.mimeType.startsWith("video") ? <video src={window.xinying.references.mediaUrl(portrait.filePath)} /> : <img src={window.xinying.references.mediaUrl(portrait.filePath)} alt={portrait.displayName} />}<span className={`portrait-status portrait-${portrait.platformStatus}`}>{portrait.platformStatus}</span></div><div className="portrait-body"><strong>{portrait.displayName}</strong><span>{portrait.gender} · {portrait.ageGroup} · {portrait.ethnicity} · {scope}</span><span>{portrait.consentConfirmed ? "已记录合规确认" : "未确认合规承诺"}</span>{portrait.reviewNote && <p>{portrait.reviewNote}</p>}<div className="card-actions"><button className="button secondary" disabled={!selectedProject || !portrait.consentConfirmed || active || portrait.platformStatus === "approved"} onClick={() => selectedProject && run(() => window.xinying.portraits.submitReview(portrait.id, selectedProject.id), "上传审核任务已加入队列")}><UserRoundCheck size={15} />自动上传并授权</button><button className="icon-button danger" disabled={active} title={active ? "请先完成或取消关联审核任务" : "删除本地素材"} onClick={() => confirm("删除本地虚拟人像素材？") && run(() => window.xinying.portraits.remove(portrait.id), "素材已删除")}><Trash2 size={15} /></button></div></div></article>; })}{!portraits.length && <EmptyState title="暂无本地待上传素材" description="选择心影项目并确认合规声明后，可从这里上传图片或视频并自动授权。" />}</div></section>
-    {deleteConfirmOpen && <div className="modal-backdrop"><section className="confirm-modal portrait-delete-modal"><div className="modal-icon danger-modal-icon"><Trash2 size={21} /></div><h2>永久删除 {selectedDeletePortraits.length} 个心影虚拟人像？</h2><p>目标空间：{workspaceName} · 调用项目：{selectedProject?.name ?? "未选择"}</p><div className="warning-box"><span><ShieldAlert size={14} />删除后不可恢复；这些角色会从心影个人或团队共享库中消失，并自动从本 APP 的相关项目参考素材中移除。</span></div><div className="portrait-delete-list">{selectedDeletePortraits.slice(0, 30).map((portrait, index) => <span key={portrait.id}><b>{index + 1}</b>{portrait.displayName}<small>可管理上传最新第 {(portrait.deleteSortOrder ?? portrait.sortOrder) + 1}</small></span>)}{selectedDeletePortraits.length > 30 && <em>另有 {selectedDeletePortraits.length - 30} 项，将按上方选择清单一并删除</em>}</div><label className="delete-confirm-check"><input type="checkbox" checked={deleteConsent} onChange={(event) => setDeleteConsent(event.target.checked)} /><span><strong>我确认永久删除以上虚拟人像</strong>此操作会真实修改心影共享库，无法撤销。</span></label><div className="modal-actions"><button className="button ghost" onClick={() => { setDeleteConfirmOpen(false); setDeleteConsent(false); }}>取消</button><button className="button danger" disabled={!deleteConsent || !selectedProject || !selectedDeletePortraits.length} onClick={() => { if (!selectedProject) return; const ids = selectedDeletePortraits.map((portrait) => portrait.id); setDeleteConfirmOpen(false); setDeleteConsent(false); void run(async () => { await window.xinying.portraits.deletePlatform(selectedProject.id, ids); setSelectedDeleteIds(new Set()); setManageMode(false); }, `已从心影永久删除 ${ids.length} 个虚拟人像`); }}><Trash2 size={15} />确认永久删除</button></div></section></div>}
+    {deleteConfirmOpen && <div className="modal-backdrop"><section className="confirm-modal portrait-delete-modal"><div className="modal-icon danger-modal-icon"><Trash2 size={21} /></div><h2>永久删除 {selectedDeletePortraits.length} 个心影虚拟人像？</h2><p>目标空间：{workspaceName} · 调用项目：{selectedProject?.name ?? "未选择"}</p><div className="warning-box"><span><ShieldAlert size={14} />删除后不可恢复；这些角色会从心影个人或团队共享库中消失，并自动从本 APP 的相关项目参考素材中移除。</span></div><div className="portrait-delete-list">{selectedDeletePortraits.slice(0, 30).map((portrait, index) => <span key={portrait.id}><b>{index + 1}</b>{portrait.displayName}<small>可管理上传最新第 {(portrait.deleteSortOrder ?? portrait.sortOrder) + 1}</small></span>)}{selectedDeletePortraits.length > 30 && <em>另有 {selectedDeletePortraits.length - 30} 项，将按上方选择清单一并删除</em>}</div><label className="delete-confirm-check"><input type="checkbox" checked={deleteConsent} onChange={(event) => setDeleteConsent(event.target.checked)} /><span><strong>我确认永久删除以上虚拟人像</strong>此操作会真实修改心影共享库，无法撤销。</span></label><div className="modal-actions"><button className="button ghost" onClick={() => { setDeleteConfirmOpen(false); setDeleteConsent(false); }}>取消</button><button className="button danger" disabled={!deleteConsent || !selectedProject || !selectedDeletePortraits.length} onClick={() => { if (!selectedProject) return; const ids = selectedDeletePortraits.map((portrait) => portrait.id); setDeleteProgress({ status: "queued", requestedIds: ids, deletedIds: [], currentId: null, currentName: null, current: 0, total: ids.length, message: `已提交，等待删除 ${ids.length} 个虚拟人像` }); setDeleteConfirmOpen(false); setDeleteConsent(false); void run(async () => { await window.xinying.portraits.deletePlatform(selectedProject.id, ids); setSelectedDeleteIds(new Set()); setManageMode(false); }, `已从心影永久删除 ${ids.length} 个虚拟人像`); }}><Trash2 size={15} />确认永久删除</button></div></section></div>}
   </div>;
 }
 

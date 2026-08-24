@@ -277,6 +277,15 @@ export class XinyingService {
   }
 
   syncPlatformCatalog(catalog: PlatformCatalogSnapshot): PlatformCatalogSnapshot {
+    const previousProjects = new Map(this.getPlatformCatalog().projects.map((project) => [project.id, project]));
+    const projectsWithStableBindings = catalog.projects.map((project) => {
+      const previous = previousProjects.get(project.id);
+      return {
+        ...project,
+        remoteId: project.remoteId || previous?.remoteId || "",
+        homeUrl: project.homeUrl || previous?.homeUrl || "",
+      };
+    });
     const workspaceIds = new Set<string>();
     for (const workspace of catalog.workspaces) {
       if (!workspace.id.trim() || !workspace.name.trim() || workspaceIds.has(workspace.id)) {
@@ -285,7 +294,7 @@ export class XinyingService {
       workspaceIds.add(workspace.id);
     }
     const projectIds = new Set<string>();
-    for (const project of catalog.projects) {
+    for (const project of projectsWithStableBindings) {
       if (!project.id.trim() || !project.name.trim() || !workspaceIds.has(project.workspaceId) || projectIds.has(project.id)) {
         throw new AppError("INVALID_PLATFORM_CATALOG", "心影项目目录包含无效、重复或无归属的项目");
       }
@@ -294,7 +303,7 @@ export class XinyingService {
     const normalized: PlatformCatalogSnapshot = {
       ...catalog,
       workspaces: [...catalog.workspaces].sort((a, b) => a.sortOrder - b.sortOrder),
-      projects: [...catalog.projects].sort((a, b) => a.sortOrder - b.sortOrder),
+      projects: [...projectsWithStableBindings].sort((a, b) => a.sortOrder - b.sortOrder),
       customerOptions: [...new Set(catalog.customerOptions.map((item) => item.trim()).filter(Boolean))],
       creationTypeOptions: [...new Set(catalog.creationTypeOptions.map((item) => item.trim()).filter(Boolean))],
       syncedAt: catalog.syncedAt || now(),

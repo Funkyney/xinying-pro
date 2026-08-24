@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron";
-import type { PlatformProjectCreateInput, PlatformViewBounds, PortraitMetadataInput, ProjectInput, ReferenceRole, XinyingApi } from "../shared/contracts";
+import type { PlatformAutomationState, PlatformPortraitDeleteProgress, PlatformProjectCreateInput, PlatformViewBounds, PortraitMetadataInput, ProjectInput, ReferenceRole, XinyingApi } from "../shared/contracts";
 
 // Sandboxed Electron preload scripts cannot require arbitrary local modules.
 // Keep this runtime channel table self-contained; src/shared/ipc.ts is the
@@ -35,6 +35,7 @@ const IPC = {
   portraitsPlatformList: "portraits:platform-list",
   portraitsSync: "portraits:sync",
   portraitsPlatformDelete: "portraits:platform-delete",
+  portraitsPlatformDeleteProgress: "portraits:platform-delete-progress",
   jobsList: "jobs:list",
   jobsPreview: "jobs:preview",
   jobsSubmit: "jobs:submit",
@@ -57,6 +58,7 @@ const IPC = {
   platformVisible: "platform-view:visible",
   platformVisibleState: "platform-view:visible-state",
   platformBounds: "platform-view:bounds",
+  platformAutomationChanged: "platform-view:automation-changed",
   updateState: "update:state",
   updateCheck: "update:check",
   updateDownload: "update:download",
@@ -108,6 +110,11 @@ const api: XinyingApi = {
     platformList: () => ipcRenderer.invoke(IPC.portraitsPlatformList),
     sync: (projectId?: string) => ipcRenderer.invoke(IPC.portraitsSync, projectId),
     deletePlatform: (projectId: string, ids: string[]) => ipcRenderer.invoke(IPC.portraitsPlatformDelete, projectId, ids),
+    onDeleteProgress: (listener) => {
+      const handler = (_event: Electron.IpcRendererEvent, progress: PlatformPortraitDeleteProgress) => listener(progress);
+      ipcRenderer.on(IPC.portraitsPlatformDeleteProgress, handler);
+      return () => ipcRenderer.removeListener(IPC.portraitsPlatformDeleteProgress, handler);
+    },
   },
   jobs: {
     list: () => ipcRenderer.invoke(IPC.jobsList),
@@ -142,6 +149,11 @@ const api: XinyingApi = {
     setVisible: (visible: boolean) => ipcRenderer.invoke(IPC.platformVisible, visible),
     isVisible: () => ipcRenderer.invoke(IPC.platformVisibleState),
     setBounds: (bounds: PlatformViewBounds) => ipcRenderer.invoke(IPC.platformBounds, bounds),
+    onAutomationStateChange: (listener) => {
+      const handler = (_event: Electron.IpcRendererEvent, state: PlatformAutomationState) => listener(state);
+      ipcRenderer.on(IPC.platformAutomationChanged, handler);
+      return () => ipcRenderer.removeListener(IPC.platformAutomationChanged, handler);
+    },
   },
   updates: {
     state: () => ipcRenderer.invoke(IPC.updateState),
