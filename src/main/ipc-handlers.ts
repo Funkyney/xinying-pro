@@ -20,17 +20,21 @@ export function registerIpcHandlers(
     ipcMain.handle(channel, listener);
   };
 
-  handle(IPC.dashboard, async () => ({
-    projects: service.listProjects(),
-    jobs: service.listJobs(),
-    portraits: service.listPortraits(),
-    platformPortraits: service.listPlatformPortraits(),
-    sharedMedia: service.listSharedMedia(),
-    results: service.listResults(),
-    platformCatalog: service.getPlatformCatalog(),
-    platformAutomation: platform.getAutomationState(),
-    session: await adapter.sessionState(),
-  }));
+  handle(IPC.dashboard, async (_event, options?: { includeLibraries?: boolean }) => {
+    const includeLibraries = options?.includeLibraries !== false;
+    return {
+      projects: service.listProjects(),
+      jobs: service.listJobs(),
+      portraits: service.listPortraits(),
+      platformPortraits: includeLibraries ? service.listPlatformPortraits() : [],
+      platformPortraitCount: service.countAvailablePlatformPortraits(),
+      sharedMedia: service.listSharedMedia(),
+      results: includeLibraries ? service.listResults() : [],
+      platformCatalog: service.getPlatformCatalog(),
+      platformAutomation: platform.getAutomationState(),
+      session: await adapter.sessionState(),
+    };
+  });
   handle(IPC.projectsList, () => service.listProjects());
   handle(IPC.projectsCreate, (_event, input: ProjectInput) => service.createProject(input));
   handle(IPC.projectsUpdate, (_event, id: string, input: Partial<ProjectInput>) => service.updateProject(id, input));
@@ -135,7 +139,11 @@ export function registerIpcHandlers(
   handle(IPC.portraitsSubmit, (_event, id: string, projectId?: string) => service.submitPortraitReview(id, projectId));
   handle(IPC.portraitsAuthorizeReference, (_event, referenceId: string, projectId: string, consentConfirmed: boolean) => service.authorizeReference(referenceId, projectId, consentConfirmed));
   handle(IPC.portraitsRemove, (_event, id: string) => service.removePortrait(id));
-  handle(IPC.portraitsPlatformList, () => service.listPlatformPortraits());
+  handle(IPC.portraitsPlatformList, (_event, projectId?: string) => {
+    if (!projectId) return service.listPlatformPortraits();
+    const project = service.getProject(projectId);
+    return project.platformWorkspaceId ? service.listPlatformPortraits(project.platformWorkspaceId) : [];
+  });
   handle(IPC.portraitsSync, async (_event, projectId?: string) => {
     const targetProject = projectId ? service.getProject(projectId) : service.listProjects().find((project) => project.platformUrl);
     if (!targetProject?.platformUrl) throw new Error("请先选择并进入一个心影项目，再同步该空间的虚拟人像库");

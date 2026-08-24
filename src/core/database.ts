@@ -557,7 +557,10 @@ export class XinyingDatabase {
     sharedMediaAsset: (id: string) => this.db.prepare("SELECT * FROM shared_media_assets WHERE id = ?").get(id) as SharedMediaRow | undefined,
     sharedMediaByHash: (sha256: string) => this.db.prepare("SELECT * FROM shared_media_assets WHERE sha256 = ?").get(sha256) as SharedMediaRow | undefined,
     portraits: () => this.db.prepare("SELECT * FROM portrait_assets ORDER BY updated_at DESC").all() as PortraitRow[],
-    platformPortraits: () => this.db.prepare("SELECT * FROM platform_portraits ORDER BY available DESC, sort_order ASC, display_name COLLATE NOCASE ASC").all() as PlatformPortraitRow[],
+    platformPortraitCount: () => (this.db.prepare("SELECT COUNT(*) AS count FROM platform_portraits WHERE available = 1").get() as { count: number }).count,
+    platformPortraits: (workspaceId?: string) => (workspaceId === undefined
+      ? this.db.prepare("SELECT * FROM platform_portraits ORDER BY available DESC, sort_order ASC, display_name COLLATE NOCASE ASC").all()
+      : this.db.prepare("SELECT * FROM platform_portraits WHERE workspace_id = ? ORDER BY available DESC, sort_order ASC, display_name COLLATE NOCASE ASC").all(workspaceId)) as PlatformPortraitRow[],
     platformResults: (projectId?: string) => (projectId
       ? this.db.prepare("SELECT * FROM platform_results WHERE project_id = ? ORDER BY created_at DESC, id DESC").all(projectId)
       : this.db.prepare("SELECT * FROM platform_results ORDER BY created_at DESC, id DESC").all()) as PlatformResultRow[],

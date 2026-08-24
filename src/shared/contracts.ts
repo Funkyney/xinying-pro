@@ -350,6 +350,7 @@ export interface DashboardSnapshot {
   jobs: Job[];
   portraits: PortraitAsset[];
   platformPortraits: PlatformPortrait[];
+  platformPortraitCount?: number;
   sharedMedia: SharedMediaAsset[];
   results: PlatformResult[];
   platformCatalog: PlatformCatalogSnapshot;
@@ -421,7 +422,7 @@ export interface CodexExtensionInstallResult extends CodexExtensionStatus {
 }
 
 export interface XinyingApi {
-  dashboard(): Promise<DashboardSnapshot>;
+  dashboard(options?: { includeLibraries?: boolean }): Promise<DashboardSnapshot>;
   projects: {
     list(): Promise<Project[]>;
     create(input: ProjectInput): Promise<Project>;
@@ -459,7 +460,7 @@ export interface XinyingApi {
     submitReview(id: string, projectId?: string): Promise<Job>;
     authorizeReference(referenceId: string, projectId: string, consentConfirmed: boolean): Promise<Job>;
     remove(id: string): Promise<void>;
-    platformList(): Promise<PlatformPortrait[]>;
+    platformList(projectId?: string): Promise<PlatformPortrait[]>;
     sync(projectId?: string): Promise<PlatformPortrait[]>;
     deletePlatform(projectId: string, ids: string[]): Promise<PlatformPortraitDeleteResult>;
     onDeleteProgress(listener: (progress: PlatformPortraitDeleteProgress) => void): () => void;

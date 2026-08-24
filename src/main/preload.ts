@@ -71,7 +71,7 @@ const IPC = {
 } as const;
 
 const api: XinyingApi = {
-  dashboard: () => ipcRenderer.invoke(IPC.dashboard),
+  dashboard: (options) => ipcRenderer.invoke(IPC.dashboard, options),
   projects: {
     list: () => ipcRenderer.invoke(IPC.projectsList),
     create: (input: ProjectInput) => ipcRenderer.invoke(IPC.projectsCreate, input),
@@ -109,7 +109,7 @@ const api: XinyingApi = {
     submitReview: (id: string, projectId?: string) => ipcRenderer.invoke(IPC.portraitsSubmit, id, projectId),
     authorizeReference: (referenceId: string, projectId: string, consentConfirmed: boolean) => ipcRenderer.invoke(IPC.portraitsAuthorizeReference, referenceId, projectId, consentConfirmed),
     remove: (id: string) => ipcRenderer.invoke(IPC.portraitsRemove, id),
-    platformList: () => ipcRenderer.invoke(IPC.portraitsPlatformList),
+    platformList: (projectId?: string) => ipcRenderer.invoke(IPC.portraitsPlatformList, projectId),
     sync: (projectId?: string) => ipcRenderer.invoke(IPC.portraitsSync, projectId),
     deletePlatform: (projectId: string, ids: string[]) => ipcRenderer.invoke(IPC.portraitsPlatformDelete, projectId, ids),
     onDeleteProgress: (listener) => {

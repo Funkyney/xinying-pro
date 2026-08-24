@@ -139,6 +139,8 @@ function EmptyState({ title, description, action }: { title: string; description
 export function App() {
   const [page, setPage] = useState<PageKey>("dashboard");
   const [snapshot, setSnapshot] = useState<DashboardSnapshot | null>(null);
+  const [platformPortraits, setPlatformPortraits] = useState<PlatformPortrait[]>([]);
+  const [results, setResults] = useState<PlatformResult[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState<string>("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>("");
@@ -150,11 +152,14 @@ export function App() {
   const actionGateRef = useRef(new InteractionGate());
   const updateGateRef = useRef(new InteractionGate());
   const refreshSequenceRef = useRef(0);
+  const portraitLoadSequenceRef = useRef(0);
+  const resultLoadSequenceRef = useRef(0);
+  const [libraryRevision, setLibraryRevision] = useState(0);
 
   const refresh = useCallback(async (clearPreviousError = false) => {
     const sequence = ++refreshSequenceRef.current;
     try {
-      const next = await window.xinying.dashboard();
+      const next = await window.xinying.dashboard({ includeLibraries: false });
       if (sequence !== refreshSequenceRef.current) return;
       setSnapshot(next);
       setSelectedProjectId((current) => next.projects.some((project) => project.id === current) ? current : next.projects[0]?.id || "");
@@ -171,6 +176,34 @@ export function App() {
     }, 4_000);
     return () => window.clearInterval(timer);
   }, [refresh]);
+
+  useEffect(() => {
+    const sequence = ++portraitLoadSequenceRef.current;
+    if (!selectedProjectId || (page !== "studio" && page !== "portraits")) {
+      setPlatformPortraits([]);
+      return;
+    }
+    setPlatformPortraits([]);
+    void window.xinying.portraits.platformList(selectedProjectId).then((items) => {
+      if (sequence === portraitLoadSequenceRef.current) setPlatformPortraits(items);
+    }).catch((cause) => {
+      if (sequence === portraitLoadSequenceRef.current) setError(userFacingError(cause));
+    });
+  }, [page, selectedProjectId, libraryRevision]);
+
+  useEffect(() => {
+    const sequence = ++resultLoadSequenceRef.current;
+    if (!selectedProjectId || page !== "results") {
+      setResults([]);
+      return;
+    }
+    setResults([]);
+    void window.xinying.results.list(selectedProjectId).then((items) => {
+      if (sequence === resultLoadSequenceRef.current) setResults(items);
+    }).catch((cause) => {
+      if (sequence === resultLoadSequenceRef.current) setError(userFacingError(cause));
+    });
+  }, [page, selectedProjectId, libraryRevision]);
 
   useEffect(() => {
     if (!toast) return;
@@ -226,6 +259,7 @@ export function App() {
     try {
       await action();
       await refresh();
+      setLibraryRevision((current) => current + 1);
       if (success) setToast(success);
     } catch (cause) {
       setError(userFacingError(cause));
@@ -279,10 +313,10 @@ export function App() {
             <>
               {page === "dashboard" && <DashboardPage snapshot={snapshot} onNavigate={setPage} />}
               {page === "projects" && <PlatformProjectsPage snapshot={snapshot} run={run} onOpened={(project) => { setSelectedProjectId(project.id); setPage("studio"); }} />}
-              {page === "studio" && <StudioPage project={selectedProject} projects={snapshot.projects} portraits={snapshot.portraits} platformPortraits={snapshot.platformPortraits} jobs={snapshot.jobs} onSelect={setSelectedProjectId} onNavigate={setPage} run={run} onOpenPlatform={(url) => run(async () => { await window.xinying.session.openUrl(url); setPage("platform"); })} onDelete={(id) => run(async () => { await window.xinying.projects.remove(id); setSelectedProjectId(""); setPage("dashboard"); }, "项目及其本地素材已删除")} />}
-              {page === "portraits" && <PortraitsPage portraits={snapshot.portraits} platformPortraits={snapshot.platformPortraits} projects={snapshot.projects} selectedProject={selectedProject} workspaceName={selectedPlatformWorkspace?.name ?? "当前心影空间"} onSelectProject={setSelectedProjectId} run={run} onNavigate={setPage} />}
+              {page === "studio" && <StudioPage project={selectedProject} projects={snapshot.projects} portraits={snapshot.portraits} platformPortraits={platformPortraits} jobs={snapshot.jobs} onSelect={setSelectedProjectId} onNavigate={setPage} run={run} onOpenPlatform={(url) => run(async () => { await window.xinying.session.openUrl(url); setPage("platform"); })} onDelete={(id) => run(async () => { await window.xinying.projects.remove(id); setSelectedProjectId(""); setPage("dashboard"); }, "项目及其本地素材已删除")} />}
+              {page === "portraits" && <PortraitsPage portraits={snapshot.portraits} platformPortraits={platformPortraits} projects={snapshot.projects} selectedProject={selectedProject} workspaceName={selectedPlatformWorkspace?.name ?? "当前心影空间"} onSelectProject={setSelectedProjectId} run={run} onNavigate={setPage} />}
               {page === "jobs" && <JobsPage jobs={snapshot.jobs} projects={snapshot.projects} portraits={snapshot.portraits} run={run} />}
-              {page === "results" && <ResultsPage results={snapshot.results} projects={snapshot.projects} selectedProject={selectedProject} onSelectProject={setSelectedProjectId} run={run} />}
+              {page === "results" && <ResultsPage results={results} projects={snapshot.projects} selectedProject={selectedProject} onSelectProject={setSelectedProjectId} run={run} />}
               {page === "codex" && <CodexExtensionPage />}
               {page === "platform" && <PlatformPanel />}
             </>
@@ -420,7 +454,7 @@ function DashboardPage({ snapshot, onNavigate }: { snapshot: DashboardSnapshot; 
       </section>
       <section className="panel project-entry-panel">
         <div className="panel-heading compact"><div><span className="eyebrow">XINYING CONTEXT</span><h2>先选空间与项目</h2></div><Building2 size={20} /></div>
-        <div className="project-entry-facts"><span><strong>{snapshot.platformCatalog.workspaces.length}</strong> 个空间</span><span><strong>{snapshot.platformCatalog.projects.length}</strong> 个可见项目</span><span><strong>{snapshot.platformPortraits.filter((item) => item.available).length}</strong> 个授权人像</span></div>
+        <div className="project-entry-facts"><span><strong>{snapshot.platformCatalog.workspaces.length}</strong> 个空间</span><span><strong>{snapshot.platformCatalog.projects.length}</strong> 个可见项目</span><span><strong>{snapshot.platformPortraitCount ?? snapshot.platformPortraits.filter((item) => item.available).length}</strong> 个授权人像</span></div>
         <button className="button secondary full" onClick={() => onNavigate("projects")}><FolderKanban size={16} />选择或新建心影项目</button>
         <p className="fine-print">个人空间内容仅自己可见；团队空间的项目、生成记录与虚拟人像可供团队成员协作。</p>
       </section>

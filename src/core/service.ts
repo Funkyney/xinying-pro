@@ -1006,8 +1006,11 @@ export class XinyingService {
   }
 
   listPlatformPortraits(workspaceId?: string): PlatformPortrait[] {
-    const all = this.database.rows.platformPortraits().map((row) => this.database.mapPlatformPortrait(row));
-    return workspaceId ? all.filter((portrait) => portrait.workspaceId === workspaceId) : all;
+    return this.database.rows.platformPortraits(workspaceId).map((row) => this.database.mapPlatformPortrait(row));
+  }
+
+  countAvailablePlatformPortraits(): number {
+    return this.database.rows.platformPortraitCount();
   }
 
   private validatePlatformPortraitSelection(ids: string[]): void {
