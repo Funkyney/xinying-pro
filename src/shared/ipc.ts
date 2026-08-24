@@ -6,6 +6,7 @@ export const IPC = {
   projectsRemove: "projects:remove",
   platformProjectsCatalog: "platform-projects:catalog",
   platformProjectsSync: "platform-projects:sync",
+  platformProjectsConversations: "platform-projects:conversations",
   platformProjectsOpen: "platform-projects:open",
   platformProjectsCreate: "platform-projects:create",
   referencesList: "references:list",

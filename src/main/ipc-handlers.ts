@@ -43,11 +43,18 @@ export function registerIpcHandlers(
     );
     return service.syncPlatformCatalog(catalog);
   });
-  handle(IPC.platformProjectsOpen, async (_event, projectId: string) => {
+  handle(IPC.platformProjectsConversations, async (_event, projectId: string) => {
+    const selected = service.getPlatformCatalog().projects.find((project) => project.id === projectId);
+    return platform.withAutomationViewport(
+      () => adapter.listPlatformConversations(service.getPlatformCatalog(), projectId),
+      `正在读取项目${selected?.name ? `「${selected.name}」` : ""}的对话记录`,
+    );
+  });
+  handle(IPC.platformProjectsOpen, async (_event, projectId: string, conversationId?: string) => {
     const selected = service.getPlatformCatalog().projects.find((project) => project.id === projectId);
     const binding = await platform.withAutomationViewport(
-      () => adapter.openPlatformProject(service.getPlatformCatalog(), projectId),
-      `正在进入项目${selected?.name ? `「${selected.name}」` : ""}`,
+      () => adapter.openPlatformProject(service.getPlatformCatalog(), projectId, conversationId),
+      `正在进入项目${selected?.name ? `「${selected.name}」` : ""}${conversationId ? "的所选对话" : "并新建对话"}`,
     );
     return service.bindPlatformProject(binding);
   });

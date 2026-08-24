@@ -47,7 +47,7 @@
 - `count`：1–20，默认 1。
 - `replaceMaterials`：默认 true；true 表示最终素材和顺序完全以本清单为准。
 - `settings`：可选。`mode` 为 `text-to-video`、`image-to-video`、`reference-to-video` 或 `first-last-frame`；其余值须符合当前心影模型能力。
-- `materials`：最多 9 项，数组顺序就是 APP 的最终创作顺序。
+- `materials`：数组顺序就是 APP 的最终创作顺序。Seedance 2.5 最多 30 图 / 10 视频 / 10 音频、合计 50 项；Seedance 2.0 最多 9 图 / 3 视频 / 3 音频、合计 15 项。虚拟人像计入对应的图片或视频数量。
 - `kind: file`：本地图片、视频或音频。`role` 可为 `first-frame`、`last-frame`、`character`、`scene`、`product`、`style`、`motion`、`other`。
 - `authorizeAsPortrait`：只用于图片或视频；清晰、可识别且会出现在成片中的人物必须为 true，先完成虚拟人像授权才允许生成。`role: character` 在 APP 中也会被强制视为需要授权，不能按普通本地参考提交。
 - `kind: platform-portrait`：直接复用已同步到当前心影空间的虚拟人像。

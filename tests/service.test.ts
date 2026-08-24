@@ -247,6 +247,48 @@ describe("XinyingService", () => {
     expect(service.createProject({ name: "2.5 30秒", modelName: "Seedance 2.5 全能参考", duration: 30 }).duration).toBe(30);
   });
 
+  it("accepts Seedance 2.5's official 30 image, 10 video, and 10 audio reference limit", () => {
+    const project = service.createProject({
+      name: "2.5 五十项素材",
+      prompt: "参考 @图30、@视频10 与 @音频10",
+      modelName: "Seedance 2.5 全能参考",
+    });
+    const files = [
+      ...Array.from({ length: 30 }, (_, index) => fixture(`limit-image-${index}.png`, `image-${index}`)),
+      ...Array.from({ length: 10 }, (_, index) => fixture(`limit-video-${index}.mp4`, `video-${index}`)),
+      ...Array.from({ length: 10 }, (_, index) => fixture(`limit-audio-${index}.mp3`, `audio-${index}`)),
+    ];
+    service.addReferences(project.id, files);
+    const allowed = service.previewSubmission(project.id);
+    expect(allowed.references).toHaveLength(50);
+    expect(allowed.ready).toBe(true);
+    expect(allowed.warnings).toEqual([]);
+
+    service.addReferences(project.id, [fixture("limit-image-overflow.png", "image-overflow")]);
+    const overflow = service.previewSubmission(project.id);
+    expect(overflow.ready).toBe(false);
+    expect(overflow.warnings).toContain("SEEDANCE 2.5 参考素材合计最多 50 项，当前为 51 项");
+    expect(overflow.warnings).toContain("SEEDANCE 2.5 最多使用 30 张图片（含虚拟人像），当前为 31 张");
+  });
+
+  it("allows a 50-item Seedance 2.5 director manifest instead of the old nine-item ceiling", () => {
+    const project = service.createProject({ name: "导演五十项" });
+    const materials: DirectorManifest["materials"] = [
+      ...Array.from({ length: 30 }, (_, index) => ({ kind: "file" as const, path: fixture(`director-limit-image-${index}.png`, `director-image-${index}`), role: "scene" as const })),
+      ...Array.from({ length: 10 }, (_, index) => ({ kind: "file" as const, path: fixture(`director-limit-video-${index}.mp4`, `director-video-${index}`), role: "motion" as const })),
+      ...Array.from({ length: 10 }, (_, index) => ({ kind: "file" as const, path: fixture(`director-limit-audio-${index}.mp3`, `director-audio-${index}`), role: "other" as const })),
+    ];
+    const validation = service.validateDirectorRun({
+      version: 1,
+      projectId: project.id,
+      prompt: "按素材顺序生成",
+      count: 1,
+      replaceMaterials: true,
+      materials,
+    });
+    expect(validation.materialCount).toBe(50);
+  });
+
   it("preserves explicit reference order and roles", () => {
     const project = service.createProject({ name: "排序测试" });
     const first = fixture("first.png", "first");

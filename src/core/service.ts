@@ -198,6 +198,30 @@ function validateProjectSettings(input: Pick<Project, "modelName" | "mode" | "as
   }
 }
 
+function materialLimitWarnings(modelName: string, kinds: Array<"image" | "video" | "audio" | "unknown">): string[] {
+  const profile = modelProfile(modelName);
+  if (!profile) return [];
+  const counts = kinds.reduce((result, kind) => {
+    const normalized = kind === "unknown" ? "image" : kind;
+    result[normalized] += 1;
+    return result;
+  }, { image: 0, video: 0, audio: 0 });
+  const warnings: string[] = [];
+  if (kinds.length > profile.materialLimits.maxTotal) {
+    warnings.push(`${profile.shortName} 参考素材合计最多 ${profile.materialLimits.maxTotal} 项，当前为 ${kinds.length} 项`);
+  }
+  if (counts.image > profile.materialLimits.image) {
+    warnings.push(`${profile.shortName} 最多使用 ${profile.materialLimits.image} 张图片（含虚拟人像），当前为 ${counts.image} 张`);
+  }
+  if (counts.video > profile.materialLimits.video) {
+    warnings.push(`${profile.shortName} 最多使用 ${profile.materialLimits.video} 条视频，当前为 ${counts.video} 条`);
+  }
+  if (counts.audio > profile.materialLimits.audio) {
+    warnings.push(`${profile.shortName} 最多使用 ${profile.materialLimits.audio} 条音频，当前为 ${counts.audio} 条`);
+  }
+  return warnings;
+}
+
 function normalizePortraitIds(value: string[] | undefined): string[] {
   if (!value) return [];
   const normalized = value.map((item) => item.trim()).filter(Boolean);
@@ -444,10 +468,12 @@ export class XinyingService {
     if (!Number.isInteger(manifest.count) || manifest.count < 1 || manifest.count > 20) {
       throw new AppError("INVALID_GENERATION_COUNT", "单次导演任务生成数量必须是 1 到 20 的整数");
     }
-    if (manifest.materials.length > 9) throw new AppError("DIRECTOR_MATERIAL_LIMIT", "导演任务最多包含 9 项参考素材");
+    const settings = manifest.settings ?? {};
+    const targetModelName = settings.modelName ?? project.modelName;
 
     const seenFiles = new Set<string>();
     const seenPortraits = new Set<string>();
+    const materialKinds: Array<"image" | "video" | "audio" | "unknown"> = [];
     for (const material of manifest.materials) {
       if (material.kind === "platform-portrait") {
         if (seenPortraits.has(material.portraitId)) throw new AppError("DUPLICATE_PLATFORM_PORTRAIT", "导演任务不能重复使用同一个心影虚拟人像");
@@ -457,9 +483,11 @@ export class XinyingService {
         if (project.platformWorkspaceId && portrait.workspaceId !== project.platformWorkspaceId) {
           throw new AppError("PLATFORM_PORTRAIT_WORKSPACE_MISMATCH", `虚拟人像不属于当前心影空间：${portrait.displayName}`);
         }
+        materialKinds.push(portrait.mediaKind);
         continue;
       }
       ensureFile(material.path, REFERENCE_EXTENSIONS);
+      materialKinds.push(mediaKindFromMime(mimeFromExtension(material.path)));
       const fingerprint = hashFile(material.path);
       if (seenFiles.has(fingerprint)) throw new AppError("DUPLICATE_DIRECTOR_MATERIAL", `导演任务不能重复使用同一份本地素材：${material.path}`);
       seenFiles.add(fingerprint);
@@ -468,9 +496,11 @@ export class XinyingService {
       }
     }
 
-    const settings = manifest.settings ?? {};
+    const limitWarnings = materialLimitWarnings(targetModelName, materialKinds);
+    if (limitWarnings.length) throw new AppError("DIRECTOR_MATERIAL_LIMIT", limitWarnings.join("；"));
+
     validateProjectSettings({
-      modelName: settings.modelName ?? project.modelName,
+      modelName: targetModelName,
       mode: settings.mode ?? project.mode,
       aspectRatio: settings.aspectRatio ?? project.aspectRatio,
       duration: settings.duration ?? project.duration,
@@ -1342,7 +1372,7 @@ export class XinyingService {
     if (project.mode === "first-last-frame" && references.length === 2 && (references[0].role !== "first-frame" || references[1].role !== "last-frame")) {
       warnings.push("首尾帧模式请将 @图1 标为首帧、@图2 标为尾帧");
     }
-    if (references.length + selectedPortraits.length > 9) warnings.push("参考图片、视频、音频与虚拟人像合计超过 9 项，请在心影当前页面确认实际限制");
+    warnings.push(...materialLimitWarnings(project.modelName, orderedKinds));
     references.forEach((item) => {
       if (!fs.existsSync(item.filePath)) warnings.push(`素材文件已丢失：${item.name}`);
     });

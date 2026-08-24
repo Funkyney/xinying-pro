@@ -6,6 +6,7 @@ import type {
   HumanCheckpoint,
   Job,
   PlatformCatalogSnapshot,
+  PlatformConversation,
   PlatformProject,
   PlatformProjectBinding,
   PlatformProjectCreateInput,
@@ -208,6 +209,55 @@ function recordValue(value: unknown): Record<string, unknown> {
 
 function nonEmptyString(...values: unknown[]): string {
   return values.find((value): value is string => typeof value === "string" && Boolean(value.trim()))?.trim() ?? "";
+}
+
+function normalizedConversationTimestamp(...values: unknown[]): string {
+  for (const value of values) {
+    if (typeof value === "number" && Number.isFinite(value)) {
+      const milliseconds = value < 10_000_000_000 ? value * 1_000 : value;
+      const parsed = new Date(milliseconds);
+      if (Number.isFinite(parsed.getTime())) return parsed.toISOString();
+    }
+    if (typeof value === "string" && value.trim()) {
+      const numeric = Number(value);
+      if (Number.isFinite(numeric) && /^\d+(?:\.\d+)?$/.test(value.trim())) {
+        const milliseconds = numeric < 10_000_000_000 ? numeric * 1_000 : numeric;
+        const parsed = new Date(milliseconds);
+        if (Number.isFinite(parsed.getTime())) return parsed.toISOString();
+      }
+      const timestamp = Date.parse(value);
+      if (Number.isFinite(timestamp)) return new Date(timestamp).toISOString();
+    }
+  }
+  return "";
+}
+
+function platformConversationsFromApi(
+  body: unknown,
+  projectId: string,
+  currentSessionId = "",
+): PlatformConversation[] {
+  const envelope = recordValue(body);
+  if (Number(envelope.code) !== 0) return [];
+  const data = recordValue(envelope.data);
+  const rows = Array.isArray(data.sessions) ? data.sessions : Array.isArray(data.list) ? data.list : [];
+  const conversations = new Map<string, PlatformConversation>();
+  for (const value of rows) {
+    const row = recordValue(value);
+    const id = nonEmptyString(row.avp_session_id, row.session_id, row.id);
+    if (!id || conversations.has(id)) continue;
+    conversations.set(id, {
+      id,
+      projectId,
+      title: nonEmptyString(row.session_title, row.title, row.name) || "未命名对话",
+      updatedAt: normalizedConversationTimestamp(row.updated_at, row.update_time, row.updatedAt, row.created_at, row.create_time),
+      isCurrent: id === currentSessionId,
+    });
+  }
+  return [...conversations.values()].sort((left, right) => {
+    if (left.isCurrent !== right.isCurrent) return left.isCurrent ? -1 : 1;
+    return right.updatedAt.localeCompare(left.updatedAt);
+  });
 }
 
 function safeHttpsUrl(...values: unknown[]): string | null {
@@ -696,15 +746,21 @@ export class PlaywrightXinyingAdapter {
     throw new AppError("PLATFORM_PROJECT_SWITCH_FAILED", `心影未能切换到项目：${project.name}`);
   }
 
-  private async openGenerationSession(page: Page, remoteProjectId: string): Promise<string> {
-    const target = `${this.selectors.baseUrl.replace(/\/$/, "")}/avpAgent?projectId=${encodeURIComponent(remoteProjectId)}`;
+  private async openGenerationSession(page: Page, remoteProjectId: string, conversationId?: string): Promise<string> {
+    const targetUrl = new URL(`${this.selectors.baseUrl.replace(/\/$/, "")}/avpAgent`);
+    targetUrl.searchParams.set("projectId", remoteProjectId);
+    if (conversationId?.trim()) targetUrl.searchParams.set("sessionId", conversationId.trim());
+    const target = targetUrl.toString();
     await page.goto(target, { waitUntil: "domcontentloaded", timeout: 30_000 });
     let deadline = Date.now() + 20_000;
     while (Date.now() < deadline) {
       const current = safeGenerationUrl(page.url());
-      if (current?.searchParams.get("projectId") === remoteProjectId && await firstVisible(page, this.selectors.generation.composer)) return current.toString();
+      const expectedSession = conversationId?.trim() ?? "";
+      const sessionMatches = !expectedSession || current?.searchParams.get("sessionId") === expectedSession;
+      if (current?.searchParams.get("projectId") === remoteProjectId && sessionMatches && await firstVisible(page, this.selectors.generation.composer)) return current.toString();
       await page.waitForTimeout(250);
     }
+    if (conversationId?.trim()) throw new AppError("GENERATION_SESSION_NOT_FOUND", "已进入心影项目，但所选历史对话未能加载");
     const createSession = page.getByText("新建会话", { exact: true }).filter({ visible: true }).first();
     if ((await createSession.count()) > 0) await clickDom(createSession);
     deadline = Date.now() + 20_000;
@@ -1033,7 +1089,63 @@ export class PlaywrightXinyingAdapter {
     }
   }
 
-  async openPlatformProject(catalog: PlatformCatalogSnapshot, projectId: string): Promise<PlatformProjectBinding> {
+  async listPlatformConversations(catalog: PlatformCatalogSnapshot, projectId: string): Promise<PlatformConversation[]> {
+    const project = catalog.projects.find((item) => item.id === projectId && item.available);
+    if (!project) throw new AppError("PLATFORM_PROJECT_NOT_FOUND", "所选心影项目不在当前同步目录中");
+    const workspace = catalog.workspaces.find((item) => item.id === project.workspaceId && item.available);
+    if (!workspace) throw new AppError("WORKSPACE_NOT_FOUND", "所选项目的心影空间当前不可用");
+    const page = await this.page();
+    const resolveRemoteId = async (): Promise<string> => {
+      if (project.remoteId) return project.remoteId;
+      await this.ensureHomePage(page);
+      const panel = await this.openProjectSelector(page);
+      await this.chooseWorkspace(page, panel, workspace);
+      return this.chooseProject(page, panel, project);
+    };
+    const remoteId = await this.retryProjectNavigation(page, resolveRemoteId);
+    const current = safeGenerationUrl(page.url());
+    const currentSessionId = current?.searchParams.get("projectId") === remoteId
+      ? current.searchParams.get("sessionId") ?? ""
+      : "";
+    if (current?.searchParams.get("projectId") !== remoteId) {
+      const target = `${this.selectors.baseUrl.replace(/\/$/, "")}/avpAgent?projectId=${encodeURIComponent(remoteId)}`;
+      await page.goto(target, { waitUntil: "domcontentloaded", timeout: 30_000 });
+    }
+    this.requireAuthenticatedPage(page);
+    const composer = await this.waitForVisible(page, this.selectors.generation.composer, 20_000);
+    if (!composer) throw new AppError("GENERATION_PAGE_NOT_READY", "心影内容生成页未完成加载，暂时无法读取对话记录");
+    let body: unknown;
+    try {
+      body = await page.evaluate(async ({ remoteProjectId }) => {
+        const sessions: unknown[] = [];
+        let pageNumber = 1;
+        let total = Number.POSITIVE_INFINITY;
+        while (sessions.length < total && pageNumber <= 100) {
+          const url = new URL("/api/avp_agent/session/list", window.location.origin);
+          url.searchParams.set("page", String(pageNumber));
+          url.searchParams.set("page_size", "40");
+          url.searchParams.set("project_id", remoteProjectId);
+          url.searchParams.set("session_biz_type", "stooory");
+          const response = await fetch(url.toString(), { method: "GET", credentials: "include" });
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          const envelope = await response.json() as { code?: unknown; message?: unknown; data?: { sessions?: unknown[]; total?: unknown } };
+          if (Number(envelope.code) !== 0) throw new Error(typeof envelope.message === "string" ? envelope.message : "心影返回了错误状态");
+          const rows = Array.isArray(envelope.data?.sessions) ? envelope.data.sessions : [];
+          sessions.push(...rows);
+          const parsedTotal = Number(envelope.data?.total);
+          total = Number.isFinite(parsedTotal) ? parsedTotal : sessions.length;
+          if (!rows.length || rows.length < 40) break;
+          pageNumber += 1;
+        }
+        return { code: 0, data: { sessions, total: Number.isFinite(total) ? total : sessions.length } };
+      }, { remoteProjectId: remoteId });
+    } catch (error) {
+      throw new AppError("PLATFORM_CONVERSATIONS_LOAD_FAILED", "未能读取该项目的心影对话记录，请稍后重试", error);
+    }
+    return platformConversationsFromApi(body, project.id, currentSessionId);
+  }
+
+  async openPlatformProject(catalog: PlatformCatalogSnapshot, projectId: string, conversationId?: string): Promise<PlatformProjectBinding> {
     const project = catalog.projects.find((item) => item.id === projectId && item.available);
     if (!project) throw new AppError("PLATFORM_PROJECT_NOT_FOUND", "所选心影项目不在当前同步目录中");
     const workspace = catalog.workspaces.find((item) => item.id === project.workspaceId && item.available);
@@ -1043,14 +1155,14 @@ export class PlaywrightXinyingAdapter {
       // Once a project has been opened, its full remoteId is persisted. Going
       // straight to avpAgent avoids the slow and occasionally stale selector.
       if (project.remoteId) {
-        const generationUrl = await this.openGenerationSession(page, project.remoteId);
+        const generationUrl = await this.openGenerationSession(page, project.remoteId, conversationId);
         return { remoteId: project.remoteId, generationUrl };
       }
       await this.ensureHomePage(page);
       const panel = await this.openProjectSelector(page);
       await this.chooseWorkspace(page, panel, workspace);
       const remoteId = await this.chooseProject(page, panel, project);
-      const generationUrl = await this.openGenerationSession(page, remoteId);
+      const generationUrl = await this.openGenerationSession(page, remoteId, conversationId);
       return { remoteId, generationUrl };
     };
     const { remoteId, generationUrl } = await this.retryProjectNavigation(page, open);
@@ -1531,7 +1643,7 @@ export class PlaywrightXinyingAdapter {
   private async clearUploadedMaterials(page: Page): Promise<void> {
     const list = await firstVisible(page, this.selectors.generation.materialList);
     if (!list) return;
-    for (let guard = 0; guard < 30; guard += 1) {
+    for (let guard = 0; guard < 60; guard += 1) {
       const material = list.locator(":scope > .ContentChatUploadItem").filter({ has: page.locator(".content-delete") }).last();
       if ((await material.count()) === 0) break;
       const remove = material.locator(".content-delete").first();
@@ -2660,6 +2772,7 @@ export const adapterInternals = {
   platformPortraitIdentity,
   platformWorkspaceIdentity,
   platformProjectIdentity,
+  platformConversationsFromApi,
   platformCatalogFromApi,
   platformMaterialResult,
   configurablePortraitOptions,

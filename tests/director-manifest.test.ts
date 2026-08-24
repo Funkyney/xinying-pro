@@ -47,4 +47,20 @@ describe("director manifest", () => {
       unsafe: true,
     })).toThrow(/格式无效/);
   });
+
+  it("accepts up to 50 Seedance 2.5 materials at the schema boundary", () => {
+    const materials = Array.from({ length: 50 }, (_, index) => ({ kind: "file" as const, path: `asset-${index}.png` }));
+    expect(parseDirectorManifest({
+      version: 1,
+      projectId: "project-1",
+      prompt: "五十项参考",
+      materials,
+    }).materials).toHaveLength(50);
+    expect(() => parseDirectorManifest({
+      version: 1,
+      projectId: "project-1",
+      prompt: "五十一项参考",
+      materials: [...materials, { kind: "file", path: "overflow.png" }],
+    })).toThrow(/格式无效/);
+  });
 });

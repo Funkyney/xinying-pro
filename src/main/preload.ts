@@ -12,6 +12,7 @@ const IPC = {
   projectsRemove: "projects:remove",
   platformProjectsCatalog: "platform-projects:catalog",
   platformProjectsSync: "platform-projects:sync",
+  platformProjectsConversations: "platform-projects:conversations",
   platformProjectsOpen: "platform-projects:open",
   platformProjectsCreate: "platform-projects:create",
   referencesList: "references:list",
@@ -80,7 +81,8 @@ const api: XinyingApi = {
   platformProjects: {
     catalog: () => ipcRenderer.invoke(IPC.platformProjectsCatalog),
     sync: () => ipcRenderer.invoke(IPC.platformProjectsSync),
-    open: (projectId: string) => ipcRenderer.invoke(IPC.platformProjectsOpen, projectId),
+    conversations: (projectId: string) => ipcRenderer.invoke(IPC.platformProjectsConversations, projectId),
+    open: (projectId: string, conversationId?: string) => ipcRenderer.invoke(IPC.platformProjectsOpen, projectId, conversationId),
     create: (input: PlatformProjectCreateInput) => ipcRenderer.invoke(IPC.platformProjectsCreate, input),
   },
   references: {

@@ -13,6 +13,7 @@ import { CheckCircle2, FileAudio2, GripVertical, ImagePlus, LoaderCircle, Refres
 import type { PlatformPortrait, ReferenceAsset, ReferenceRole } from "../../shared/contracts";
 import { parseMaterialKey, portraitMaterialKey, referenceMaterialKey } from "../../shared/material-order";
 import { assignMediaLabels, mediaKindFromMime } from "../../shared/media";
+import type { XinyingModelProfile } from "../../shared/model-profiles";
 
 const roleLabels: Record<ReferenceRole, string> = {
   "first-frame": "首帧",
@@ -128,6 +129,7 @@ interface ReferenceBoardProps {
   onRemove: (id: string) => void;
   onRemovePortrait: (id: string) => void;
   authorizationStates: Record<string, ReferenceAuthorizationState>;
+  materialLimits?: XinyingModelProfile["materialLimits"];
 }
 
 export function ReferenceBoard(props: ReferenceBoardProps) {
@@ -138,6 +140,22 @@ export function ReferenceBoard(props: ReferenceBoardProps) {
     const item = parseMaterialKey(key);
     return item?.kind === "reference" ? referencesById.has(item.id) : item?.kind === "portrait" ? portraitsById.has(item.id) : false;
   }), [props.materialOrder, referencesById, portraitsById]);
+  const counts = useMemo(() => ids.reduce((result, key) => {
+    const item = parseMaterialKey(key);
+    const kind = item?.kind === "portrait"
+      ? portraitsById.get(item.id)?.mediaKind ?? "image"
+      : item?.kind === "reference"
+        ? mediaKindFromMime(referencesById.get(item.id)?.mimeType ?? "")
+        : "image";
+    result[kind === "unknown" ? "image" : kind] += 1;
+    return result;
+  }, { image: 0, video: 0, audio: 0 }), [ids, portraitsById, referencesById]);
+  const exceedsLimits = Boolean(props.materialLimits && (
+    ids.length > props.materialLimits.maxTotal
+    || counts.image > props.materialLimits.image
+    || counts.video > props.materialLimits.video
+    || counts.audio > props.materialLimits.audio
+  ));
 
   const handleDragEnd = (event: DragEndEvent) => {
     const { active, over } = event;
@@ -157,6 +175,7 @@ export function ReferenceBoard(props: ReferenceBoardProps) {
           <p>本地素材按此顺序上传；多个 V 角色由心影官方排序，提交时 APP 会自动换算提示词编号。</p>
         </div>
         <div className="heading-actions">
+          {props.materialLimits && <span className={`material-limit-counter ${exceedsLimits ? "over" : ""}`} title={`上限：${props.materialLimits.image} 图 / ${props.materialLimits.video} 视频 / ${props.materialLimits.audio} 音频`}><strong>{ids.length} / {props.materialLimits.maxTotal}</strong><small>{counts.image} 图 · {counts.video} 视频 · {counts.audio} 音频</small></span>}
           <button className="button ghost" disabled={!props.assets.length} onClick={props.onBatchReplace}><RefreshCw size={16} />批量替换本地素材</button>
           <button className="button secondary" onClick={props.onAdd}><ImagePlus size={16} />添加图片/视频/音频</button>
         </div>

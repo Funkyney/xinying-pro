@@ -46,6 +46,14 @@ export interface PlatformProject {
   lastSeenAt: string;
 }
 
+export interface PlatformConversation {
+  id: string;
+  projectId: string;
+  title: string;
+  updatedAt: string;
+  isCurrent: boolean;
+}
+
 export interface PlatformCatalogSnapshot {
   workspaces: PlatformWorkspace[];
   projects: PlatformProject[];
@@ -421,7 +429,8 @@ export interface XinyingApi {
   platformProjects: {
     catalog(): Promise<PlatformCatalogSnapshot>;
     sync(): Promise<PlatformCatalogSnapshot>;
-    open(projectId: string): Promise<Project>;
+    conversations(projectId: string): Promise<PlatformConversation[]>;
+    open(projectId: string, conversationId?: string): Promise<Project>;
     create(input: PlatformProjectCreateInput): Promise<Project>;
   };
   references: {

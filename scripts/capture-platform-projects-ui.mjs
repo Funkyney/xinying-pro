@@ -8,7 +8,7 @@ try {
     .find((page) => page.url().startsWith("file:") || page.url().includes("127.0.0.1:5173"));
   if (!renderer) throw new Error("找不到心影Pro渲染页面");
   await renderer.getByRole("button", { name: "空间与项目", exact: true }).click();
-  await renderer.getByRole("heading", { name: "空间与项目", exact: true }).waitFor({ timeout: 10_000 });
+  await renderer.getByRole("heading", { name: "空间、项目与对话", exact: true }).waitFor({ timeout: 10_000 });
   await renderer.waitForTimeout(800);
   const outputDir = path.resolve("test-results");
   fs.mkdirSync(outputDir, { recursive: true });

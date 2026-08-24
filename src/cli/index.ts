@@ -67,7 +67,7 @@ function compactResult(result: PlatformResult) {
   };
 }
 
-type AppOperation = "platform-sync" | "platform-open" | "platform-create" | "portrait-sync" | "portrait-delete" | "results-sync";
+type AppOperation = "platform-sync" | "platform-conversations" | "platform-open" | "platform-create" | "portrait-sync" | "portrait-delete" | "results-sync";
 
 async function invokeRunningApp(operation: AppOperation, args: unknown[] = []): Promise<unknown> {
   const { chromium } = await import("playwright-core");
@@ -90,7 +90,8 @@ async function invokeRunningApp(operation: AppOperation, args: unknown[] = []): 
     return await renderer.evaluate(async ({ operation: requested, args: values }) => {
       switch (requested) {
         case "platform-sync": return window.xinying.platformProjects.sync();
-        case "platform-open": return window.xinying.platformProjects.open(String(values[0]));
+        case "platform-conversations": return window.xinying.platformProjects.conversations(String(values[0]));
+        case "platform-open": return window.xinying.platformProjects.open(String(values[0]), values[1] ? String(values[1]) : undefined);
         case "platform-create": return window.xinying.platformProjects.create(values[0] as PlatformProjectCreateInput);
         case "portrait-sync": return window.xinying.portraits.sync(values[0] ? String(values[0]) : undefined);
         case "portrait-delete": return window.xinying.portraits.deletePlatform(String(values[0]), values[1] as string[]);
@@ -207,10 +208,15 @@ project.command("remove").argument("<id>").option("--confirm", "确认删除").a
 const platform = program.command("platform").description("读取并操控 APP 内已登录的心影空间与项目");
 platform.command("catalog").description("读取最近一次同步的空间与项目目录").action(() => output(runtime().service.getPlatformCatalog()));
 platform.command("sync").description("通过运行中的 APP 同步个人空间、团队空间和项目").action(async () => output(await invokeRunningApp("platform-sync")));
+platform.command("conversations")
+  .argument("<catalog-project-id>")
+  .description("读取所选心影项目的历史对话，供后续精确复用")
+  .action(async (projectId: string) => output(await invokeRunningApp("platform-conversations", [projectId])));
 platform.command("open")
   .argument("<catalog-project-id>")
-  .description("切换到目录中的心影项目并建立生成会话")
-  .action(async (projectId: string) => output(await invokeRunningApp("platform-open", [projectId])));
+  .option("--conversation-id <id>", "复用该项目中的指定历史对话；省略时新建对话")
+  .description("切换到目录中的心影项目并绑定新建或指定的生成对话")
+  .action(async (projectId: string, options) => output(await invokeRunningApp("platform-open", [projectId, options.conversationId])));
 platform.command("create")
   .requiredOption("--workspace-id <id>", "目标个人或团队空间目录 ID")
   .requiredOption("--name <name>", "项目名称")

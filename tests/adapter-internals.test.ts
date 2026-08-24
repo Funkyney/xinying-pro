@@ -71,6 +71,28 @@ describe("Playwright adapter task references", () => {
     expect(adapterInternals.platformProjectIdentity(personal, "项目A", "000001")).not.toBe(adapterInternals.platformProjectIdentity(team, "项目A", "000001"));
   });
 
+  it("maps and sorts Heart project conversations for exact session reuse", () => {
+    const conversations = adapterInternals.platformConversationsFromApi({
+      code: 0,
+      data: {
+        sessions: [
+          { avp_session_id: "session-old", session_title: "旧版分镜", updated_at: "2026-08-20T10:00:00+08:00" },
+          { avp_session_id: "session-current", session_title: "最终广告片", update_time: 1787536800 },
+          { avp_session_id: "session-current", session_title: "重复行" },
+        ],
+      },
+    }, "catalog-project", "session-current");
+
+    expect(conversations).toHaveLength(2);
+    expect(conversations[0]).toMatchObject({
+      id: "session-current",
+      projectId: "catalog-project",
+      title: "最终广告片",
+      isCurrent: true,
+    });
+    expect(conversations[1]).toMatchObject({ id: "session-old", title: "旧版分镜", isCurrent: false });
+  });
+
   it("builds a complete directly-openable catalog from Heart's read-only directory responses", () => {
     const catalog = adapterInternals.platformCatalogFromApi({
       currentRemoteId: "remote-team",

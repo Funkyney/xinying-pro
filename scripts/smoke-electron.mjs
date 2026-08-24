@@ -45,6 +45,8 @@ try {
   await window.waitForTimeout(4_500);
   await window.getByRole("button", { name: "生成工作台", exact: true }).click();
   await window.getByRole("heading", { name: "Playwright 桌面验收" }).waitFor({ timeout: 10_000 });
+  await window.getByText("0 / 50", { exact: true }).waitFor({ timeout: 10_000 });
+  await window.getByText(/最多 50 项 · 30 图 \/ 10 视频 \/ 10 音频/).waitFor({ timeout: 10_000 });
   await window.getByRole("button", { name: "预览提交", exact: true }).click();
   const generationCount = window.locator(".generation-count-control input");
   await generationCount.waitFor({ state: "visible", timeout: 10_000 });
@@ -55,7 +57,7 @@ try {
 
   const oneClickPages = [
     ["总览", "心影让你当指挥家，心影Pro让你直接把片交了。"],
-    ["空间与项目", "空间与项目"],
+    ["空间与项目", "空间、项目与对话"],
     ["虚拟人像", "虚拟人像管理"],
     ["任务队列", "任务队列"],
     ["结果库", "结果库"],

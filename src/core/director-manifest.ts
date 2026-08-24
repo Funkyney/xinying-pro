@@ -50,7 +50,7 @@ const manifestSchema = z.object({
     resolution: z.string().trim().min(1).optional(),
     audioEnabled: z.boolean().optional(),
   }).strict().optional(),
-  materials: z.array(z.discriminatedUnion("kind", [fileMaterialSchema, platformPortraitMaterialSchema])).max(9),
+  materials: z.array(z.discriminatedUnion("kind", [fileMaterialSchema, platformPortraitMaterialSchema])).max(50),
 }).strict();
 
 export function parseDirectorManifest(value: unknown, baseDir = process.cwd()): DirectorManifest {
