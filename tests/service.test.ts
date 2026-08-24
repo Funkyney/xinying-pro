@@ -842,6 +842,35 @@ describe("XinyingService", () => {
     expect(service.getPortrait(localPortrait.id).platformAssetId).toBe("director-face-asset");
   });
 
+  it("links a renamed Heart approval back to the local portrait", () => {
+    const project = service.createProject({ name: "改名审核回认" });
+    const reference = service.addReferences(project.id, [fixture("renamed-face.png", "same-face")])[0];
+    const review = service.authorizeReference(reference.id, project.id, true);
+    const linked = service.approvePortraitFromPlatform(review.portraitId!, {
+      id: "renamed-platform-portrait",
+      displayName: "WechatIMG-heart-name",
+      previewUrl: "https://blueaivideo.com/approved-face.png",
+      platformAssetId: "approved-face",
+      workspaceId: "workspace-team",
+      mediaKind: "image",
+      sortOrder: 0,
+      deleteSortOrder: null,
+      canDelete: false,
+      available: true,
+      lastSeenAt: new Date().toISOString(),
+    }, "已按素材指纹确认通过");
+
+    expect(linked).toMatchObject({
+      platformStatus: "approved",
+      platformAssetId: "approved-face",
+      reviewNote: "已按素材指纹确认通过",
+    });
+    expect(service.listPlatformPortraits("workspace-team")[0]).toMatchObject({
+      id: "renamed-platform-portrait",
+      displayName: "WechatIMG-heart-name",
+    });
+  });
+
   it("requires person checks for images and videos and routes any positive video through portrait authorization", () => {
     const project = service.createProject({ name: "视频人物硬门禁", prompt: "参考 @视频1 与 @图1" });
     const personVideo = fixture("person-motion.mp4", "person-video");

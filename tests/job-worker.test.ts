@@ -140,7 +140,7 @@ describe("JobWorker", () => {
     await first;
   });
 
-  it("checks one portrait at a time through silent background automation", async () => {
+  it("reconciles all due portraits in one silent background operation", async () => {
     const project = service.createProject({ name: "后台审核轮询", prompt: "固定机位", mode: "text-to-video" });
     const portraitPaths = [path.join(tempDir, "portrait-a.png"), path.join(tempDir, "portrait-b.png")];
     portraitPaths.forEach((portraitPath) => fs.writeFileSync(portraitPath, "image"));
@@ -162,16 +162,13 @@ describe("JobWorker", () => {
     await (worker as unknown as { monitorRunning(): Promise<void> }).monitorRunning();
     expect(background).toHaveBeenCalledOnce();
     expect(foreground).not.toHaveBeenCalled();
-    expect(adapter.inspectPortraitReview).toHaveBeenCalledOnce();
+    expect(adapter.inspectPortraitReview).toHaveBeenCalledTimes(2);
     expect(adapter.inspectPortraitReview).toHaveBeenCalledWith(
       expect.objectContaining({ id: jobs[0].id }),
       expect.objectContaining({ id: portraits[0].id }),
       { timeoutMs: 5_000 },
     );
-
-    await (worker as unknown as { monitorRunning(): Promise<void> }).monitorRunning();
-    expect(adapter.inspectPortraitReview).toHaveBeenCalledTimes(2);
-    expect(adapter.inspectPortraitReview).toHaveBeenLastCalledWith(
+    expect(adapter.inspectPortraitReview).toHaveBeenCalledWith(
       expect.objectContaining({ id: jobs[1].id }),
       expect.objectContaining({ id: portraits[1].id }),
       { timeoutMs: 5_000 },

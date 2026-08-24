@@ -63,6 +63,57 @@ describe("Playwright adapter task references", () => {
     expect(adapterInternals.platformPortraitIdentity("角色A", "https://cdn.bluemediacdn.com/team/asset-1.png", "team-b").id).not.toBe(first.id);
   });
 
+  it("matches renamed Heart portrait approvals by the uploaded file fingerprint", () => {
+    const records = adapterInternals.platformPortraitApiRecords({
+      code: 0,
+      data: {
+        portraits: [{
+          display_name: "WechatIMG-renamed-by-heart",
+          thumbnail_url: "https://cdn.bluemediacdn.com/team/approved.png",
+          asset_type: "Image",
+          source_info: { SourceInfo: { Md5: "ABC123", Size: 12_345 } },
+        }],
+      },
+    });
+
+    expect(records).toEqual([expect.objectContaining({
+      displayName: "WechatIMG-renamed-by-heart",
+      md5: "abc123",
+      size: 12_345,
+      mediaKind: "image",
+    })]);
+    expect(adapterInternals.matchPlatformPortraitApiRecord(records, {
+      md5: "abc123",
+      size: 12_345,
+      mediaKind: "image",
+    })?.displayName).toBe("WechatIMG-renamed-by-heart");
+  });
+
+  it("falls back to exact byte size for renamed Heart video approvals", () => {
+    const records = adapterInternals.platformPortraitApiRecords({
+      data: {
+        portraits: [{
+          display_name: "renamed-video",
+          thumbnail_url: "https://cdn.bluemediacdn.com/team/approved.mp4",
+          asset_type: "Video",
+          source_info: { SourceInfo: { Size: 98_765 } },
+        }],
+      },
+    });
+    expect(adapterInternals.matchPlatformPortraitApiRecord(records, {
+      md5: "",
+      size: 98_765,
+      mediaKind: "video",
+    })?.displayName).toBe("renamed-video");
+    expect(adapterInternals.matchPlatformPortraitApiRecord(records, {
+      md5: "",
+      size: 98_765,
+      mediaKind: "image",
+    })).toBeNull();
+    expect(adapterInternals.platformPortraitPendingTotal({ data: { total: 0, list: [] } })).toBe(0);
+    expect(adapterInternals.platformPortraitPendingTotal({ data: {} })).toBeNull();
+  });
+
   it("uses workspace-scoped stable identities for Heart spaces and projects", () => {
     const personal = adapterInternals.platformWorkspaceIdentity("personal", "个人空间");
     const team = adapterInternals.platformWorkspaceIdentity("team", "个人空间");

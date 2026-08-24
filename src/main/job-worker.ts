@@ -126,18 +126,39 @@ export class JobWorker {
           const scheduled = (this.portraitCheckNotBefore.get(left.id) ?? 0) - (this.portraitCheckNotBefore.get(right.id) ?? 0);
           return scheduled || left.createdAt.localeCompare(right.createdAt);
         });
-      const job = running[0];
-      if (!job) return;
-      try {
-        const outcome = await this.runWithBackgroundAutomation(() =>
-          this.adapter.inspectPortraitReview(
-            job,
-            this.service.getPortrait(job.portraitId!),
-            { timeoutMs: PORTRAIT_INSPECTION_TIMEOUT_MS },
-          ));
-        if (!outcome) {
-          this.portraitCheckNotBefore.set(job.id, now + PORTRAIT_RETRY_AFTER_SKIP_MS);
-          return;
+      const due = running.slice(0, 50);
+      if (!due.length) return;
+      const results = await this.runWithBackgroundAutomation(async () => {
+        const inspected: Array<{ job: Job; outcome?: AdapterOutcome; error?: unknown }> = [];
+        for (const job of due) {
+          try {
+            inspected.push({
+              job,
+              outcome: await this.adapter.inspectPortraitReview(
+                job,
+                this.service.getPortrait(job.portraitId!),
+                { timeoutMs: PORTRAIT_INSPECTION_TIMEOUT_MS },
+              ),
+            });
+          } catch (error) {
+            inspected.push({ job, error });
+          }
+        }
+        return inspected;
+      });
+      if (!results) {
+        for (const job of due) this.portraitCheckNotBefore.set(job.id, now + PORTRAIT_RETRY_AFTER_SKIP_MS);
+        return;
+      }
+      for (const result of results) {
+        const { job, outcome, error } = result;
+        if (error || !outcome) {
+          const appError = asAppError(error ?? new Error("心影审核状态检查未返回结果"));
+          const attempt = (this.portraitCheckAttempts.get(job.id) ?? 0) + 1;
+          this.portraitCheckAttempts.set(job.id, attempt);
+          this.portraitCheckNotBefore.set(job.id, Date.now() + portraitMonitorDelay(job, attempt));
+          this.service.addJobEvent(job.id, "warning", "MONITOR_RETRY", appError.message);
+          continue;
         }
         this.applyOutcome(job, outcome, false);
         if (outcome.status === "running") {
@@ -148,12 +169,6 @@ export class JobWorker {
           this.portraitCheckAttempts.delete(job.id);
           this.portraitCheckNotBefore.delete(job.id);
         }
-      } catch (error) {
-        const appError = asAppError(error);
-        const attempt = (this.portraitCheckAttempts.get(job.id) ?? 0) + 1;
-        this.portraitCheckAttempts.set(job.id, attempt);
-        this.portraitCheckNotBefore.set(job.id, Date.now() + portraitMonitorDelay(job, attempt));
-        this.service.addJobEvent(job.id, "warning", "MONITOR_RETRY", appError.message);
       }
     } finally {
       this.processing = false;
@@ -203,7 +218,8 @@ export class JobWorker {
         requiresHumanReason: null,
       });
       if (job.kind === "portrait-review" && job.portraitId) {
-        this.service.updatePortraitReviewState(job.portraitId, "approved", outcome.message);
+        if (outcome.platformPortrait) this.service.approvePortraitFromPlatform(job.portraitId, outcome.platformPortrait, outcome.message);
+        else this.service.updatePortraitReviewState(job.portraitId, "approved", outcome.message);
       }
       this.service.addJobEvent(job.id, "info", "COMPLETED", outcome.message);
       return;

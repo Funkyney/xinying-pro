@@ -36,7 +36,7 @@ import {
 
 export type AdapterOutcome =
   | { status: "running"; platformTaskId?: string; message: string }
-  | { status: "completed"; platformTaskId?: string; outputUrl?: string; outputPath?: string; message: string }
+  | { status: "completed"; platformTaskId?: string; outputUrl?: string; outputPath?: string; platformPortrait?: PlatformPortrait; message: string }
   | { status: "failed"; platformTaskId?: string; code: string; message: string }
   | { status: "needs-human"; platformTaskId?: string; checkpoint: HumanCheckpoint }
   | { status: "needs-login"; message: string };
@@ -55,6 +55,21 @@ interface MatchedChatResponse {
 interface UploadedMaterialSnapshot {
   label: string;
   previewText: string;
+}
+
+interface PlatformPortraitApiRecord {
+  displayName: string;
+  previewUrl: string;
+  md5: string;
+  size: number;
+  mediaKind: PlatformPortrait["mediaKind"];
+}
+
+interface PlatformPortraitApiSnapshot {
+  projectId: string;
+  capturedAt: number;
+  records: PlatformPortraitApiRecord[];
+  pendingTotal: number | null;
 }
 
 interface PlatformCatalogApiData {
@@ -205,6 +220,59 @@ function platformProjectIdentity(workspaceId: string, name: string, shortId: str
 
 function recordValue(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function platformPortraitApiRecords(payload: unknown): PlatformPortraitApiRecord[] {
+  const root = recordValue(payload);
+  const data = recordValue(root.data);
+  const portraits = Array.isArray(data.portraits) ? data.portraits : [];
+  return portraits.map((value): PlatformPortraitApiRecord | null => {
+    const portrait = recordValue(value);
+    const sourceInfo = recordValue(recordValue(portrait.source_info).SourceInfo);
+    const displayName = typeof portrait.display_name === "string" ? portrait.display_name.trim() : "";
+    const previewUrl = [portrait.thumbnail_url, portrait.cdn_url, portrait.post_cdn_url]
+      .find((candidate): candidate is string => typeof candidate === "string" && candidate.startsWith("https://")) ?? "";
+    const md5 = typeof sourceInfo.Md5 === "string" ? sourceInfo.Md5.trim().toLowerCase() : "";
+    const size = Number(sourceInfo.Size);
+    const assetType = typeof portrait.asset_type === "string" ? portrait.asset_type.toLowerCase() : "";
+    const mediaKind: PlatformPortrait["mediaKind"] = assetType === "video" ? "video"
+      : assetType === "image" ? "image"
+        : portraitMediaKindFromPreviewUrl(previewUrl);
+    if (!displayName || !previewUrl) return null;
+    return { displayName, previewUrl, md5, size: Number.isFinite(size) ? size : 0, mediaKind };
+  }).filter((record): record is PlatformPortraitApiRecord => Boolean(record));
+}
+
+function matchPlatformPortraitApiRecord(
+  records: PlatformPortraitApiRecord[],
+  fingerprint: { md5: string; size: number; mediaKind: PlatformPortrait["mediaKind"] },
+): PlatformPortraitApiRecord | null {
+  if (fingerprint.md5) {
+    const byMd5 = records.find((record) => record.md5 && record.md5 === fingerprint.md5);
+    if (byMd5) return byMd5;
+  }
+  // Heart exposes MD5 for images, while video rows currently expose the
+  // original byte size instead. Exact size + media type is sufficiently
+  // stable for identifying a re-upload of the same local video.
+  if (fingerprint.mediaKind !== "video") return null;
+  return records.find((record) => fingerprint.size > 0
+    && record.size === fingerprint.size
+    && record.mediaKind === fingerprint.mediaKind) ?? null;
+}
+
+function platformPortraitPendingTotal(payload: unknown): number | null {
+  const total = Number(recordValue(recordValue(payload).data).total);
+  return Number.isInteger(total) && total >= 0 ? total : null;
+}
+
+async function fileMd5(filePath: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const hash = crypto.createHash("md5");
+    const stream = fs.createReadStream(filePath);
+    stream.on("data", (chunk) => hash.update(chunk));
+    stream.on("error", reject);
+    stream.on("end", () => resolve(hash.digest("hex")));
+  });
 }
 
 function nonEmptyString(...values: unknown[]): string {
@@ -433,6 +501,7 @@ function hostMatches(hostname: string, expected: string): boolean {
 
 export class PlaywrightXinyingAdapter {
   private browser: Browser | null = null;
+  private portraitApiSnapshot: PlatformPortraitApiSnapshot | null = null;
 
   constructor(
     private readonly cdpPort: number,
@@ -2239,59 +2308,108 @@ export class PlaywrightXinyingAdapter {
     const inspectionDeadline = Date.now() + timeoutMs;
     const page = await this.page();
     let current = new URL(page.url());
-    if (current.pathname !== this.selectors.portrait.pagePath) {
-      const projectId = current.searchParams.get("projectId");
-      if (!projectId) {
-        return {
-          status: "needs-human",
-          platformTaskId: job.platformTaskId ?? undefined,
-          checkpoint: { reason: "page-changed", message: "当前心影页面缺少 projectId，无法打开角色库核对审核状态" },
-        };
-      }
-      await page.goto(`${this.selectors.baseUrl.replace(/\/$/, "")}${this.selectors.portrait.pagePath}?projectId=${encodeURIComponent(projectId)}`, {
-        waitUntil: "domcontentloaded",
-        timeout: Math.max(1_000, Math.min(30_000, inspectionDeadline - Date.now())),
-      });
-      current = new URL(page.url());
-      if (current.pathname !== this.selectors.portrait.pagePath) {
-        return {
-          status: "needs-human",
-          platformTaskId: job.platformTaskId ?? undefined,
-          checkpoint: { reason: "page-changed", message: "心影没有进入角色库页面，请在原网页模式中检查" },
-        };
-      }
-      const readyTimeout = Math.max(250, inspectionDeadline - Date.now());
-      if (readyTimeout > 250) await this.waitForTextEntry(page, this.selectors.portrait.createTexts, readyTimeout);
-    }
-    const checkpoint = await this.checkpoint(page);
-    if (checkpoint) return checkpoint.reason === "login" ? { status: "needs-login", message: checkpoint.message } : { status: "needs-human", platformTaskId: job.platformTaskId ?? undefined, checkpoint };
-    const dialog = await firstVisible(page, this.selectors.portrait.dialog);
-    if (dialog) {
+    const targetGenerationUrl = stringParameter(job, "platformUrl");
+    const targetProjectId = safeGenerationUrl(targetGenerationUrl)?.searchParams.get("projectId")
+      ?? current.searchParams.get("projectId");
+    if (!targetProjectId) {
       return {
         status: "needs-human",
         platformTaskId: job.platformTaskId ?? undefined,
-        checkpoint: { reason: "approval", message: "未能验证虚拟人像合规承诺的自动勾选或最终提交，请人工检查页面" },
+        checkpoint: { reason: "page-changed", message: "当前心影页面缺少 projectId，无法打开角色库核对审核状态" },
       };
     }
-    while (Date.now() < inspectionDeadline) {
-      const namedAssets = page.locator(".faceCard .face-name-text").filter({ visible: true });
-      const matchingIndex = await namedAssets.evaluateAll((elements, displayName) =>
-        elements.findIndex((element) => (element.textContent ?? "").trim() === displayName), portrait.displayName);
-      if (matchingIndex >= 0) {
-        const namedAsset = namedAssets.nth(matchingIndex);
-        const card = namedAsset.locator("xpath=ancestor::*[contains(concat(' ', normalize-space(@class), ' '), ' faceCard ')][1]");
-        await page.waitForTimeout(800);
-        const cardText = (await card.innerText().catch(() => "")).trim();
-        const cardState = classifyPortraitCardText(cardText);
-        if (cardState === "failed") {
-          return { status: "failed", platformTaskId: job.platformTaskId ?? undefined, code: "PORTRAIT_REJECTED", message: cardText || "心影显示虚拟人像审核失败" };
+
+    const cached = this.portraitApiSnapshot;
+    let snapshot = cached && cached.projectId === targetProjectId && Date.now() - cached.capturedAt < 10_000
+      ? cached
+      : null;
+    if (!snapshot) {
+      const responsePromise = page.waitForResponse((response) => {
+        try {
+          return response.request().method() === "POST" && new URL(response.url()).pathname === "/api/portraits/list";
+        } catch {
+          return false;
         }
-        if (cardState === "running") {
-          return { status: "running", platformTaskId: job.platformTaskId ?? undefined, message: `虚拟人像“${portrait.displayName}”已提交，心影正在审核` };
+      }, { timeout: Math.max(1_000, inspectionDeadline - Date.now()) });
+      const pendingResponsePromise = page.waitForResponse((response) => {
+        try {
+          return response.request().method() === "POST" && new URL(response.url()).pathname === "/api/portraits/batch-status";
+        } catch {
+          return false;
         }
-        return { status: "completed", platformTaskId: job.platformTaskId ?? undefined, message: `虚拟人像“${portrait.displayName}”已出现在心影角色库` };
+      }, { timeout: Math.max(1_000, inspectionDeadline - Date.now()) }).catch(() => null);
+      const portraitUrl = `${this.selectors.baseUrl.replace(/\/$/, "")}${this.selectors.portrait.pagePath}?projectId=${encodeURIComponent(targetProjectId)}`;
+      if (current.pathname === this.selectors.portrait.pagePath && current.searchParams.get("projectId") === targetProjectId) {
+        await page.reload({ waitUntil: "domcontentloaded", timeout: Math.max(1_000, inspectionDeadline - Date.now()) });
+      } else {
+        await page.goto(portraitUrl, { waitUntil: "domcontentloaded", timeout: Math.max(1_000, inspectionDeadline - Date.now()) });
       }
-      await page.waitForTimeout(350);
+      current = new URL(page.url());
+      const response = await responsePromise;
+      const pendingResponse = await pendingResponsePromise;
+      const payload = await response.json().catch(() => null) as unknown;
+      const pendingPayload = pendingResponse ? await pendingResponse.json().catch(() => null) as unknown : null;
+      const root = recordValue(payload);
+      if (root.code === 401) return { status: "needs-login", message: "心影登录已失效，请重新完成飞书扫码登录" };
+      const records = platformPortraitApiRecords(payload);
+      if (!records.length) {
+        return {
+          status: "running",
+          platformTaskId: job.platformTaskId ?? undefined,
+          message: `虚拟人像“${portrait.displayName}”已提交，等待心影角色库返回审核结果`,
+        };
+      }
+      snapshot = {
+        projectId: targetProjectId,
+        capturedAt: Date.now(),
+        records,
+        pendingTotal: platformPortraitPendingTotal(pendingPayload),
+      };
+      this.portraitApiSnapshot = snapshot;
+    }
+    const checkpoint = await this.checkpoint(page);
+    if (checkpoint) return checkpoint.reason === "login" ? { status: "needs-login", message: checkpoint.message } : { status: "needs-human", platformTaskId: job.platformTaskId ?? undefined, checkpoint };
+    const stat = fs.statSync(portrait.filePath);
+    const fingerprint = {
+      md5: portrait.mimeType.startsWith("image/") ? await fileMd5(portrait.filePath) : "",
+      size: stat.size,
+      mediaKind: (portrait.mimeType.startsWith("video/") ? "video" : "image") as PlatformPortrait["mediaKind"],
+    };
+    const matched = matchPlatformPortraitApiRecord(snapshot.records, fingerprint);
+    if (matched) {
+      const workspaceId = stringParameter(job, "platformWorkspaceId");
+      const identity = platformPortraitIdentity(matched.displayName, matched.previewUrl, workspaceId);
+      return {
+        status: "completed",
+        platformTaskId: job.platformTaskId ?? undefined,
+        platformPortrait: {
+          ...identity,
+          displayName: matched.displayName,
+          previewUrl: matched.previewUrl,
+          workspaceId,
+          mediaKind: matched.mediaKind,
+          sortOrder: 0,
+          deleteSortOrder: null,
+          canDelete: false,
+          available: true,
+          lastSeenAt: new Date().toISOString(),
+        },
+        message: `虚拟人像“${portrait.displayName}”已通过素材指纹确认出现在心影角色库`,
+      };
+    }
+    const submittedAt = Date.parse(job.submittedAt ?? job.createdAt);
+    const reviewAge = Number.isFinite(submittedAt) ? Date.now() - submittedAt : 0;
+    const queueFinishedWithoutResult = snapshot.pendingTotal === 0 && reviewAge >= 2 * 60_000;
+    const statusUnavailableTooLong = snapshot.pendingTotal === null && reviewAge >= 10 * 60_000;
+    if (queueFinishedWithoutResult || statusUnavailableTooLong) {
+      return {
+        status: "needs-human",
+        platformTaskId: job.platformTaskId ?? undefined,
+        checkpoint: {
+          reason: "approval",
+          message: `心影长时间未在角色库返回“${portrait.displayName}”对应素材；可能未通过，请在原网页检查审核提示`,
+        },
+      };
     }
     return {
       status: "running",
@@ -2778,4 +2896,7 @@ export const adapterInternals = {
   platformCatalogFromApi,
   platformMaterialResult,
   configurablePortraitOptions,
+  platformPortraitApiRecords,
+  matchPlatformPortraitApiRecord,
+  platformPortraitPendingTotal,
 };

@@ -1645,6 +1645,16 @@ export class XinyingService {
     return this.getPortrait(id);
   }
 
+  approvePortraitFromPlatform(id: string, portrait: PlatformPortrait, reviewNote: string): PortraitAsset {
+    this.getPortrait(id);
+    this.syncPlatformPortraits([portrait], portrait.workspaceId, false);
+    this.database.db.prepare(`UPDATE portrait_assets
+      SET platform_status = 'approved', platform_asset_id = ?, review_note = ?, updated_at = ?
+      WHERE id = ?`)
+      .run(portrait.platformAssetId, reviewNote, now(), id);
+    return this.getPortrait(id);
+  }
+
   async downloadJob(id: string, destination: string): Promise<Job> {
     const job = this.getJob(id);
     if (job.status !== "completed") throw new AppError("JOB_NOT_COMPLETE", "任务尚未完成");
