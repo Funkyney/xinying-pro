@@ -74,8 +74,8 @@ function quoteShell(value: string): string {
   return `'${value.replace(/'/g, `'"'"'`)}'`;
 }
 
-function quoteBatch(value: string): string {
-  return `"${value.replace(/%/g, "%%")}"`;
+function quotePowerShell(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
 }
 
 function backupTimestamp(now: Date): string {
@@ -182,10 +182,13 @@ export class CodexExtensionManager {
       await fs.promises.mkdir(scriptsDir, { recursive: true });
       const stagedLauncher = path.join(scriptsDir, this.launcherName);
       const launcher = this.runtime.platform === "win32"
-        ? `@echo off\r\nsetlocal\r\nchcp 65001 >nul\r\nset "ELECTRON_RUN_AS_NODE=1"\r\nset "XINYING_CLI_ASCII_JSON=1"\r\nstart "" /wait /b ${quoteBatch(this.runtime.appExecutable)} ${quoteBatch(this.runtime.cliEntry)} %*\r\nexit /b %ERRORLEVEL%\r\n`
+        ? `@echo off\r\n"%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0xinying.ps1" %*\r\nexit /b %ERRORLEVEL%\r\n`
         : `#!/bin/sh\nELECTRON_RUN_AS_NODE=1 exec ${quoteShell(this.runtime.appExecutable)} ${quoteShell(this.runtime.cliEntry)} "$@"\n`;
       await fs.promises.writeFile(stagedLauncher, launcher, "utf8");
-      if (this.runtime.platform !== "win32") {
+      if (this.runtime.platform === "win32") {
+        const powerShellLauncher = `\uFEFF$ErrorActionPreference = "Stop"\r\n[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)\r\n\r\nfunction ConvertTo-WindowsCommandLineArgument {\r\n  param([AllowEmptyString()][string]$Value)\r\n  if ($Value.Length -gt 0 -and $Value -notmatch '[\\s"]') { return $Value }\r\n  $builder = New-Object System.Text.StringBuilder\r\n  [void]$builder.Append([char]34)\r\n  $slashes = 0\r\n  foreach ($character in $Value.ToCharArray()) {\r\n    if ($character -eq [char]92) { $slashes += 1; continue }\r\n    if ($character -eq [char]34) {\r\n      [void]$builder.Append([char]92, ($slashes * 2) + 1)\r\n      [void]$builder.Append([char]34)\r\n      $slashes = 0\r\n      continue\r\n    }\r\n    if ($slashes -gt 0) { [void]$builder.Append([char]92, $slashes); $slashes = 0 }\r\n    [void]$builder.Append($character)\r\n  }\r\n  if ($slashes -gt 0) { [void]$builder.Append([char]92, $slashes * 2) }\r\n  [void]$builder.Append([char]34)\r\n  return $builder.ToString()\r\n}\r\n\r\n$arguments = @(${quotePowerShell(this.runtime.cliEntry)}) + @($args)\r\n$startInfo = New-Object System.Diagnostics.ProcessStartInfo\r\n$startInfo.FileName = ${quotePowerShell(this.runtime.appExecutable)}\r\n$startInfo.Arguments = (($arguments | ForEach-Object { ConvertTo-WindowsCommandLineArgument $_ }) -join ' ')\r\n$startInfo.UseShellExecute = $false\r\n$startInfo.CreateNoWindow = $true\r\n$startInfo.RedirectStandardOutput = $true\r\n$startInfo.RedirectStandardError = $true\r\n$startInfo.EnvironmentVariables['ELECTRON_RUN_AS_NODE'] = '1'\r\n$startInfo.EnvironmentVariables['XINYING_CLI_ASCII_JSON'] = '1'\r\n$process = New-Object System.Diagnostics.Process\r\n$process.StartInfo = $startInfo\r\n[void]$process.Start()\r\n$stdoutTask = $process.StandardOutput.ReadToEndAsync()\r\n$stderrTask = $process.StandardError.ReadToEndAsync()\r\n$process.WaitForExit()\r\n$stdout = $stdoutTask.Result\r\n$stderr = $stderrTask.Result\r\nif ($stdout) { [Console]::Out.Write($stdout) }\r\nif ($stderr) { [Console]::Error.Write($stderr) }\r\nexit $process.ExitCode\r\n`;
+        await fs.promises.writeFile(path.join(scriptsDir, "xinying.ps1"), powerShellLauncher, "utf8");
+      } else {
         await fs.promises.chmod(stagedLauncher, 0o755);
       }
 

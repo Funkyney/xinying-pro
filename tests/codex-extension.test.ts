@@ -40,13 +40,15 @@ describe("CodexExtensionManager", () => {
     expect(installed.backupPath).toBeNull();
     expect(await fs.promises.readFile(path.join(manager.skillPath, "SKILL.md"), "utf8")).toContain("xinying-pro-generate");
     const launcher = await fs.promises.readFile(manager.launcherPath, "utf8");
-    expect(launcher).toContain("chcp 65001 >nul");
-    expect(launcher).toContain('set "XINYING_CLI_ASCII_JSON=1"');
-    expect(launcher).toContain('start "" /wait /b');
-    expect(launcher).toContain('"C:\\Program Files\\心影Pro\\心影Pro.exe"');
-    expect(launcher).toContain('"C:\\Program Files\\心影Pro\\resources\\app.asar\\dist-electron\\cli\\index.js"');
+    expect(launcher).toContain("WindowsPowerShell");
+    expect(launcher).toContain('"%~dp0xinying.ps1"');
     expect(launcher).toContain("%*");
-    expect(fs.existsSync(path.join(path.dirname(manager.launcherPath), "xinying.ps1"))).toBe(false);
+    const powerShellLauncher = await fs.promises.readFile(path.join(path.dirname(manager.launcherPath), "xinying.ps1"), "utf8");
+    expect(powerShellLauncher.charCodeAt(0)).toBe(0xfeff);
+    expect(powerShellLauncher).toContain("System.Diagnostics.ProcessStartInfo");
+    expect(powerShellLauncher).toContain("RedirectStandardOutput = $true");
+    expect(powerShellLauncher).toContain("$process.WaitForExit()");
+    expect(powerShellLauncher).toContain("'C:\\Program Files\\心影Pro\\心影Pro.exe'");
   });
 
   it("detects and replaces an older managed version", async () => {
