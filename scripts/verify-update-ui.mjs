@@ -30,6 +30,7 @@ try {
     "not-available",
     "downloading",
     "downloaded",
+    "installing",
     "error",
     "unsupported",
   ]);

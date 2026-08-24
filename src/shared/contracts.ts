@@ -391,7 +391,7 @@ export interface CliEnvelope<T = unknown> {
   timestamp: string;
 }
 
-export type AppUpdateStatus = "idle" | "checking" | "available" | "not-available" | "downloading" | "downloaded" | "error" | "unsupported";
+export type AppUpdateStatus = "idle" | "checking" | "available" | "not-available" | "downloading" | "downloaded" | "installing" | "error" | "unsupported";
 
 export interface AppUpdateState {
   status: AppUpdateStatus;

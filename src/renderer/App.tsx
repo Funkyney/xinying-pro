@@ -125,15 +125,17 @@ function UpdateControl({ state, onClick }: { state: AppUpdateState; onClick: () 
   const checking = state.status === "checking";
   const downloading = state.status === "downloading";
   const downloaded = state.status === "downloaded";
+  const installing = state.status === "installing";
   const label = state.status === "available" ? `更新至 ${state.availableVersion}`
     : downloading ? `下载 ${Math.round(state.progress ?? 0)}%`
       : downloaded ? "重启安装"
-        : state.status === "not-available" ? "已是最新版"
-          : state.status === "error" ? "重试更新"
-            : state.status === "unsupported" ? "开发版本"
-              : checking ? "检查中…" : "检查更新";
+        : installing ? "正在重启安装…"
+          : state.status === "not-available" ? "已是最新版"
+            : state.status === "error" ? "重试更新"
+              : state.status === "unsupported" ? "开发版本"
+                : checking ? "检查中…" : "检查更新";
   const Icon = downloaded ? CheckCircle2 : state.status === "available" || downloading ? Download : RefreshCw;
-  return <button className={`update-button update-${state.status}`} disabled={checking || downloading || state.status === "unsupported"} onClick={onClick} title={state.message ?? label}><Icon size={15} className={checking ? "spinning" : ""} /><span><strong>{label}</strong><small>v{state.currentVersion}</small></span></button>;
+  return <button className={`update-button update-${state.status}`} disabled={checking || downloading || installing || state.status === "unsupported"} onClick={onClick} title={state.message ?? label}><Icon size={15} className={checking || installing ? "spinning" : ""} /><span><strong>{label}</strong><small>v{state.currentVersion}</small></span></button>;
 }
 
 function StatusPill({ status }: { status: JobStatus }) {

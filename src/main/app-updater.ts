@@ -1,4 +1,5 @@
-import { app, type BrowserWindow, ipcMain } from "electron";
+import { spawn } from "node:child_process";
+import { app, autoUpdater as nativeAutoUpdater, type BrowserWindow, ipcMain } from "electron";
 import { autoUpdater } from "electron-updater";
 import type { AppUpdateState } from "../shared/contracts";
 import { IPC } from "../shared/ipc";
@@ -11,6 +12,56 @@ let state: AppUpdateState = {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function powershellLiteral(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
+export function buildWindowsUpdateRelaunchScript(executablePath: string, targetVersion: string, previousPid: number): string {
+  const executable = powershellLiteral(executablePath);
+  const version = powershellLiteral(targetVersion);
+  return [
+    "$ErrorActionPreference = 'SilentlyContinue'",
+    `$previousPid = ${previousPid}`,
+    `$executable = ${executable}`,
+    `$targetVersion = ${version}`,
+    "Wait-Process -Id $previousPid -Timeout 60",
+    "$deadline = (Get-Date).AddMinutes(3)",
+    "while ((Get-Date) -lt $deadline) {",
+    "  if (Test-Path -LiteralPath $executable) {",
+    "    $installedVersion = (Get-Item -LiteralPath $executable).VersionInfo.ProductVersion",
+    "    if ($installedVersion -eq $targetVersion) { break }",
+    "  }",
+    "  Start-Sleep -Milliseconds 750",
+    "}",
+    "Start-Sleep -Seconds 2",
+    "if (Test-Path -LiteralPath $executable) {",
+    "  Start-Process -FilePath $executable -ArgumentList '--updated'",
+    "}",
+  ].join("\n");
+}
+
+function startWindowsRelaunchGuardian(targetVersion: string): void {
+  if (process.platform !== "win32") return;
+  const script = buildWindowsUpdateRelaunchScript(process.execPath, targetVersion, process.pid);
+  const encoded = Buffer.from(script, "utf16le").toString("base64");
+  const guardian = spawn("powershell.exe", [
+    "-NoLogo",
+    "-NoProfile",
+    "-NonInteractive",
+    "-WindowStyle",
+    "Hidden",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-EncodedCommand",
+    encoded,
+  ], {
+    detached: true,
+    stdio: "ignore",
+    windowsHide: true,
+  });
+  guardian.unref();
 }
 
 export function registerAppUpdater(getWindow: () => BrowserWindow | null): void {
@@ -29,6 +80,18 @@ export function registerAppUpdater(getWindow: () => BrowserWindow | null): void 
     return state;
   };
 
+  let forcedExitTimer: NodeJS.Timeout | null = null;
+  nativeAutoUpdater.on("before-quit-for-update", () => {
+    const window = getWindow();
+    if (window && !window.isDestroyed()) window.hide();
+    if (forcedExitTimer) clearTimeout(forcedExitTimer);
+    // A loaded Heart page can keep an embedded webContents alive during a
+    // normal app.quit(). The installer is already detached at this point, so
+    // force the old process down if it has not exited by itself.
+    forcedExitTimer = setTimeout(() => app.exit(0), 5_000);
+    forcedExitTimer.unref();
+  });
+
   autoUpdater.autoDownload = false;
   autoUpdater.autoInstallOnAppQuit = true;
   autoUpdater.allowPrerelease = false;
@@ -37,7 +100,15 @@ export function registerAppUpdater(getWindow: () => BrowserWindow | null): void 
   autoUpdater.on("update-not-available", () => publish({ status: "not-available", availableVersion: undefined, progress: undefined, message: "当前已经是最新版本" }));
   autoUpdater.on("download-progress", (progress) => publish({ status: "downloading", progress: Math.max(0, Math.min(100, progress.percent)), message: `正在下载 ${Math.round(progress.percent)}%` }));
   autoUpdater.on("update-downloaded", (info) => publish({ status: "downloaded", availableVersion: info.version, progress: 100, message: "新版已下载，点击即可重启安装" }));
-  autoUpdater.on("error", (error) => publish({ status: "error", progress: undefined, message: `更新失败：${errorMessage(error)}` }));
+  autoUpdater.on("error", (error) => {
+    if (forcedExitTimer) {
+      clearTimeout(forcedExitTimer);
+      forcedExitTimer = null;
+    }
+    const window = getWindow();
+    if (window && !window.isDestroyed() && !window.isVisible()) window.show();
+    publish({ status: "error", progress: undefined, message: `更新失败：${errorMessage(error)}` });
+  });
 
   const handle = (channel: string, listener: () => unknown) => {
     ipcMain.removeHandler(channel);
@@ -70,10 +141,13 @@ export function registerAppUpdater(getWindow: () => BrowserWindow | null): void 
   });
   handle(IPC.updateInstall, () => {
     if (state.status !== "downloaded") return state;
-    const next = publish({ message: "正在重启并安装新版…" });
-    // 一次点击后静默替换当前安装并自动重启；false 会再次弹出 NSIS 安装向导，
-    // 让同事误以为 APP 卡在“正在安装”。
-    setImmediate(() => autoUpdater.quitAndInstall(true, true));
+    const targetVersion = state.availableVersion ?? app.getVersion();
+    const next = publish({ status: "installing", message: "正在关闭旧版、安装更新并重新打开…" });
+    // electron-updater normally relaunches after a silent NSIS install. Keep a
+    // detached Windows guardian as a second path because the embedded Heart
+    // page or the single-instance hand-off can make that relaunch disappear.
+    startWindowsRelaunchGuardian(targetVersion);
+    setTimeout(() => autoUpdater.quitAndInstall(true, true), 150);
     return next;
   });
 
