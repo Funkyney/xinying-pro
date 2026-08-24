@@ -74,8 +74,8 @@ function quoteShell(value: string): string {
   return `'${value.replace(/'/g, `'"'"'`)}'`;
 }
 
-function quotePowerShell(value: string): string {
-  return `'${value.replace(/'/g, "''")}'`;
+function quoteBatch(value: string): string {
+  return `"${value.replace(/%/g, "%%")}"`;
 }
 
 function backupTimestamp(now: Date): string {
@@ -182,13 +182,10 @@ export class CodexExtensionManager {
       await fs.promises.mkdir(scriptsDir, { recursive: true });
       const stagedLauncher = path.join(scriptsDir, this.launcherName);
       const launcher = this.runtime.platform === "win32"
-        ? `@echo off\r\n"%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0xinying.ps1" %*\r\nexit /b %ERRORLEVEL%\r\n`
+        ? `@echo off\r\nsetlocal\r\nchcp 65001 >nul\r\nset "ELECTRON_RUN_AS_NODE=1"\r\nset "XINYING_CLI_ASCII_JSON=1"\r\nstart "" /wait /b ${quoteBatch(this.runtime.appExecutable)} ${quoteBatch(this.runtime.cliEntry)} %*\r\nexit /b %ERRORLEVEL%\r\n`
         : `#!/bin/sh\nELECTRON_RUN_AS_NODE=1 exec ${quoteShell(this.runtime.appExecutable)} ${quoteShell(this.runtime.cliEntry)} "$@"\n`;
       await fs.promises.writeFile(stagedLauncher, launcher, "utf8");
-      if (this.runtime.platform === "win32") {
-        const powerShellLauncher = `\uFEFF$env:ELECTRON_RUN_AS_NODE = "1"\r\n& ${quotePowerShell(this.runtime.appExecutable)} ${quotePowerShell(this.runtime.cliEntry)} @args\r\nexit $LASTEXITCODE\r\n`;
-        await fs.promises.writeFile(path.join(scriptsDir, "xinying.ps1"), powerShellLauncher, "utf8");
-      } else {
+      if (this.runtime.platform !== "win32") {
         await fs.promises.chmod(stagedLauncher, 0o755);
       }
 

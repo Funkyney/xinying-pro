@@ -32,9 +32,22 @@ try {
   if (!fs.existsSync(appExecutable) || !fs.existsSync(path.join(resourcesPath, "app.asar"))) {
     throw new Error(`安装版执行器路径不存在：${JSON.stringify({ appExecutable, resourcesPath })}`);
   }
-  const execution = process.platform === "win32"
-    ? await execFileAsync(process.env.ComSpec ?? "cmd.exe", ["/d", "/c", manager.launcherPath, "doctor"], { windowsHide: true })
-    : await execFileAsync(manager.launcherPath, ["doctor"]);
+  let execution;
+  if (process.platform === "win32") {
+    const captureScript = path.join(root, "capture-launcher-output.ps1");
+    const launcherPath = manager.launcherPath.replace(/'/g, "''");
+    await fs.promises.writeFile(captureScript, [
+      `$output = & '${launcherPath}' doctor`,
+      'if (-not $output) { throw "心影Pro CLI 启动器在返回前没有输出 JSON" }',
+      "$output",
+      "exit $LASTEXITCODE",
+      "",
+    ].join("\r\n"), "utf8");
+    const powerShell = path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+    execution = await execFileAsync(powerShell, ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", captureScript], { windowsHide: true });
+  } else {
+    execution = await execFileAsync(manager.launcherPath, ["doctor"]);
+  }
   const envelope = JSON.parse(execution.stdout);
   if (!envelope.ok || envelope.command !== "xinying doctor") throw new Error(`启动器返回异常：${execution.stdout}`);
   process.stdout.write(`${JSON.stringify({ ok: true, installed, command: envelope.command }, null, 2)}\n`);

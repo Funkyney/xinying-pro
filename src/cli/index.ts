@@ -35,8 +35,15 @@ function envelope<T>(ok: boolean, data?: T, error?: CliEnvelope["error"]): CliEn
   return { ok, command: currentCommand, ...(data !== undefined ? { data } : {}), ...(error ? { error } : {}), timestamp: new Date().toISOString() };
 }
 
+function serializeEnvelope(value: CliEnvelope<unknown>): string {
+  const json = JSON.stringify(value, null, 2);
+  return process.env.XINYING_CLI_ASCII_JSON === "1"
+    ? json.replace(/[\u0080-\uFFFF]/g, (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`)
+    : json;
+}
+
 function output<T>(data: T): void {
-  process.stdout.write(`${JSON.stringify(envelope(true, data), null, 2)}\n`);
+  process.stdout.write(`${serializeEnvelope(envelope(true, data))}\n`);
 }
 
 function requireConfirm(confirm: boolean | undefined, action: string): void {
@@ -497,7 +504,7 @@ program.parseAsync(process.argv)
         usage: commanderMessages.join("").trim() || undefined,
       })
       : asAppError(error);
-    process.stdout.write(`${JSON.stringify(envelope(false, undefined, { code: appError.code, message: appError.message, details: appError.details }), null, 2)}\n`);
+    process.stdout.write(`${serializeEnvelope(envelope(false, undefined, { code: appError.code, message: appError.message, details: appError.details }))}\n`);
     process.exitCode = 1;
   })
   .finally(() => database?.close());
