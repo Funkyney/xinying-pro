@@ -461,6 +461,38 @@ export class XinyingService {
     return next;
   }
 
+  rememberProjectConversation(projectId: string, generationUrl?: string, platformTaskId?: string): Project {
+    const project = this.getProject(projectId);
+    let target: URL | null = null;
+    let current: URL | null = null;
+    try {
+      current = project.platformUrl ? new URL(project.platformUrl) : null;
+    } catch {
+      current = null;
+    }
+    if (generationUrl) {
+      try {
+        target = new URL(normalizePlatformUrl(generationUrl));
+      } catch {
+        target = null;
+      }
+    }
+    if (!target?.searchParams.get("sessionId") && !current?.searchParams.get("sessionId") && platformTaskId?.startsWith("chat:")) {
+      const parts = platformTaskId.split(":");
+      if (current && parts.length === 4 && parts[1] && parts[2] && parts[2] !== "uninitialized") {
+        target = new URL(current.toString());
+        target.searchParams.set("projectId", parts[1]);
+        target.searchParams.set("sessionId", parts[2]);
+      }
+    }
+    const sessionId = target?.searchParams.get("sessionId") ?? "";
+    if (!target || !sessionId) return project;
+    const currentRemoteId = remoteProjectIdFromUrl(project.platformUrl);
+    if (currentRemoteId && target.searchParams.get("projectId") !== currentRemoteId) return project;
+    const normalized = target.toString();
+    return normalized === project.platformUrl ? project : this.updateProject(projectId, { platformUrl: normalized });
+  }
+
   validateDirectorRun(manifest: DirectorManifest): DirectorRunValidation {
     const project = this.getProject(manifest.projectId);
     if (manifest.version !== 1) throw new AppError("DIRECTOR_MANIFEST_VERSION_UNSUPPORTED", `不支持的导演任务清单版本：${manifest.version}`);

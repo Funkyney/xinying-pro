@@ -232,6 +232,27 @@ describe("XinyingService", () => {
     expect(() => service.createProject({ name: "缺项目编号", platformUrl: "https://blueaivideo.com/avpAgent?sessionId=session" })).toThrow(/projectId/);
   });
 
+  it("persists the selected or newly-created Heart conversation for later generations", () => {
+    const project = service.createProject({
+      name: "持续对话项目",
+      platformWorkspaceId: "personal",
+      platformProjectId: "catalog-project",
+      platformUrl: "https://blueaivideo.com/avpAgent?projectId=remote-project",
+    });
+    const remembered = service.rememberProjectConversation(
+      project.id,
+      "https://blueaivideo.com/avpAgent?projectId=remote-project&sessionId=session-selected",
+      "chat:remote-project:session-selected:3",
+    );
+    expect(remembered.platformUrl).toContain("sessionId=session-selected");
+    expect(service.getProject(project.id).platformUrl).toContain("sessionId=session-selected");
+    const mismatched = service.rememberProjectConversation(
+      project.id,
+      "https://blueaivideo.com/avpAgent?projectId=another-project&sessionId=wrong-session",
+    );
+    expect(mismatched.platformUrl).toContain("sessionId=session-selected");
+  });
+
   it("matches the live Heart capabilities for Seedance 2.0 and 2.5", () => {
     const fourK = service.createProject({
       name: "2.0 4K",

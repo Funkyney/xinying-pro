@@ -35,7 +35,7 @@ import {
 } from "../shared/media";
 
 export type AdapterOutcome =
-  | { status: "running"; platformTaskId?: string; message: string }
+  | { status: "running"; platformTaskId?: string; generationUrl?: string; message: string }
   | { status: "completed"; platformTaskId?: string; outputUrl?: string; outputPath?: string; platformPortrait?: PlatformPortrait; message: string }
   | { status: "failed"; platformTaskId?: string; code: string; message: string }
   | { status: "needs-human"; platformTaskId?: string; checkpoint: HumanCheckpoint }
@@ -1183,7 +1183,7 @@ export class PlaywrightXinyingAdapter {
     this.requireAuthenticatedPage(page);
     const composer = await this.waitForVisible(page, this.selectors.generation.composer, 20_000);
     if (!composer) throw new AppError("GENERATION_PAGE_NOT_READY", "心影内容生成页未完成加载，暂时无法读取对话记录");
-    let body: unknown;
+    let body: unknown = null;
     try {
       body = await page.evaluate(async ({ remoteProjectId }) => {
         const sessions: unknown[] = [];
@@ -1208,10 +1208,42 @@ export class PlaywrightXinyingAdapter {
         }
         return { code: 0, data: { sessions, total: Number.isFinite(total) ? total : sessions.length } };
       }, { remoteProjectId: remoteId });
-    } catch (error) {
-      throw new AppError("PLATFORM_CONVERSATIONS_LOAD_FAILED", "未能读取该项目的心影对话记录，请稍后重试", error);
+      const apiConversations = platformConversationsFromApi(body, project.id, currentSessionId);
+      if (apiConversations.length) return apiConversations;
+    } catch {
+      // Some Heart accounts render the authorized conversation list but reject
+      // direct fetch calls with code 401. Fall back to the visible sidebar and
+      // read the session ids by selecting each rendered row.
     }
-    return platformConversationsFromApi(body, project.id, currentSessionId);
+    const originalUrl = safeGenerationUrl(page.url());
+    const rows = page.locator(".session-panel .session");
+    const rowCount = Math.min(await rows.count(), 80);
+    const conversations: PlatformConversation[] = [];
+    const seen = new Set<string>();
+    for (let index = 0; index < rowCount; index += 1) {
+      const row = page.locator(".session-panel .session").nth(index);
+      const title = ((await row.locator(".session-title-text").innerText().catch(() => "")) || "未命名对话").trim();
+      await clickDom(row).catch(() => undefined);
+      const deadline = Date.now() + 4_000;
+      let sessionId = "";
+      while (Date.now() < deadline) {
+        const selected = safeGenerationUrl(page.url());
+        sessionId = selected?.searchParams.get("projectId") === remoteId
+          ? selected.searchParams.get("sessionId") ?? ""
+          : "";
+        if (sessionId) break;
+        await page.waitForTimeout(100);
+      }
+      if (!sessionId || seen.has(sessionId)) continue;
+      seen.add(sessionId);
+      conversations.push({ id: sessionId, projectId: project.id, title, updatedAt: "", isCurrent: sessionId === currentSessionId });
+    }
+    if (originalUrl && page.url() !== originalUrl.toString()) {
+      await page.goto(originalUrl.toString(), { waitUntil: "domcontentloaded", timeout: 30_000 });
+      await this.waitForVisible(page, this.selectors.generation.composer, 20_000);
+    }
+    if (!conversations.length && body) return platformConversationsFromApi(body, project.id, currentSessionId);
+    return conversations.sort((left, right) => Number(right.isCurrent) - Number(left.isCurrent));
   }
 
   async openPlatformProject(catalog: PlatformCatalogSnapshot, projectId: string, conversationId?: string): Promise<PlatformProjectBinding> {
@@ -2202,7 +2234,20 @@ export class PlaywrightXinyingAdapter {
         checkpoint: { reason: "unknown", message: "发送后未检测到新的心影对话记录。请在原网页模式确认是否已提交，再恢复任务" },
       };
     }
-    const submittedUrl = safeGenerationUrl(page.url());
+    let submittedUrl = safeGenerationUrl(page.url());
+    if (!submittedUrl?.searchParams.get("sessionId")) {
+      const activeConversation = page.locator(".session-panel .session.active").filter({ visible: true }).first();
+      await activeConversation.waitFor({ state: "visible", timeout: 5_000 }).catch(() => undefined);
+      if ((await activeConversation.count()) > 0) {
+        await clickDom(activeConversation).catch(() => undefined);
+        const sessionDeadline = Date.now() + 5_000;
+        while (Date.now() < sessionDeadline) {
+          submittedUrl = safeGenerationUrl(page.url());
+          if (submittedUrl?.searchParams.get("sessionId")) break;
+          await page.waitForTimeout(100);
+        }
+      }
+    }
     const platformTaskId = encodeChatTaskRef({
       ...taskRef,
       sessionId: submittedUrl?.searchParams.get("sessionId") ?? taskRef.sessionId,
@@ -2210,6 +2255,7 @@ export class PlaywrightXinyingAdapter {
     return {
       status: "running",
       platformTaskId,
+      generationUrl: submittedUrl?.toString(),
       message: reusedDraft
         ? "已通过心影“重新编辑”复用上一条的提示词、素材与参数并再次提交生成"
         : "已核验虚拟人像并按 APP 顺序映射心影实际编号后提交生成",

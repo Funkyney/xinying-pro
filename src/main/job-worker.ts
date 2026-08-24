@@ -229,6 +229,13 @@ export class JobWorker {
       platformTaskId: outcome.platformTaskId ?? job.platformTaskId,
       requiresHumanReason: null,
     });
+    if (job.kind === "generation" && job.projectId) {
+      const before = this.service.getProject(job.projectId).platformUrl;
+      const remembered = this.service.rememberProjectConversation(job.projectId, outcome.generationUrl, outcome.platformTaskId);
+      if (remembered.platformUrl !== before) {
+        this.service.addJobEvent(job.id, "info", "CONVERSATION_BOUND", "已锁定本次心影对话；该项目后续生成将默认继续追加到同一对话");
+      }
+    }
     if (job.kind === "portrait-review" && job.portraitId) {
       this.service.updatePortraitReviewState(job.portraitId, "reviewing", outcome.message);
     }

@@ -52,6 +52,31 @@ describe("JobWorker", () => {
     expect(adapter.inspectRunningJob).not.toHaveBeenCalled();
   });
 
+  it("locks a newly-created Heart conversation onto the local project after submission", async () => {
+    const project = service.createProject({
+      name: "自动锁定对话",
+      prompt: "固定机位",
+      mode: "text-to-video",
+      platformUrl: "https://blueaivideo.com/avpAgent?projectId=platform-project",
+    });
+    const queued = service.submitGeneration(project.id);
+    const adapter = {
+      submitGeneration: vi.fn().mockResolvedValue({
+        status: "running",
+        platformTaskId: "chat:platform-project:new-session:0",
+        generationUrl: "https://blueaivideo.com/avpAgent?projectId=platform-project&sessionId=new-session",
+        message: "已提交",
+      }),
+      submitPortraitReview: vi.fn(),
+    } as unknown as PlaywrightXinyingAdapter;
+    const worker = new JobWorker(service, adapter);
+
+    await (worker as unknown as { processQueue(): Promise<void> }).processQueue();
+
+    expect(service.getProject(project.id).platformUrl).toContain("sessionId=new-session");
+    expect(service.listJobEvents(queued.id).some((event) => event.code === "CONVERSATION_BOUND")).toBe(true);
+  });
+
   it("moves a visible human checkpoint into the recoverable task state", async () => {
     const project = service.createProject({ name: "人工检查", prompt: "固定机位", mode: "text-to-video" });
     const queued = service.submitGeneration(project.id);
