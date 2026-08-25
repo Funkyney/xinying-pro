@@ -87,6 +87,17 @@ try {
   if (visual.orbitCount !== 0) throw new Error("BAR 右侧旧图标和英文仍然存在");
   if (!visual.activeNavBackground.includes("gradient")) throw new Error("当前导航没有香槟金渐变选中态");
 
+  const currentProjectStyle = await page.evaluate(() => {
+    const probe = document.createElement("article");
+    probe.className = "platform-project-card current";
+    document.body.appendChild(probe);
+    const computed = getComputedStyle(probe);
+    const result = { backgroundImage: computed.backgroundImage, backgroundColor: computed.backgroundColor };
+    probe.remove();
+    return result;
+  });
+  if (currentProjectStyle.backgroundImage.includes("rgb(16, 19, 27)")) throw new Error("心影当前项目仍然使用旧版深色高亮");
+
   await page.screenshot({ path: outputs.dashboard, fullPage: true });
 
   const pages = [
@@ -102,7 +113,7 @@ try {
     await page.waitForTimeout(250);
     await page.screenshot({ path: screenshot, fullPage: true });
   }
-  process.stdout.write(`${JSON.stringify({ ok: true, outputs, visual }, null, 2)}\n`);
+  process.stdout.write(`${JSON.stringify({ ok: true, outputs, visual, currentProjectStyle }, null, 2)}\n`);
 } catch (error) {
   process.stderr.write(`${JSON.stringify({ ok: false, error: error instanceof Error ? error.message : String(error) }, null, 2)}\n`);
   process.exitCode = 1;

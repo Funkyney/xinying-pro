@@ -283,6 +283,11 @@ p { color: var(--muted); }
   background: linear-gradient(145deg, rgba(239, 211, 157, .25), #fff 70%);
   box-shadow: inset 0 0 0 1px rgba(201, 149, 56, .08);
 }
+.platform-project-card.current {
+  border-color: rgba(201, 149, 56, .48);
+  background: linear-gradient(135deg, rgba(239, 211, 157, .26), #fff 72%);
+  box-shadow: inset 0 0 0 1px rgba(201, 149, 56, .07), 0 10px 24px rgba(91, 68, 32, .055);
+}
 .workspace-tabs strong,
 .platform-project-card strong,
 .conversation-row strong,
