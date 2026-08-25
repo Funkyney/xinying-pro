@@ -71,6 +71,7 @@ import { SharedMaterialLibrary } from "./components/SharedMaterialLibrary";
 import { PlatformPanel } from "./components/PlatformPanel";
 import { InteractionGate, userFacingError } from "./interaction";
 import { useDragMultiSelect, withSelectionState } from "./use-drag-multi-select";
+import dashboardDirector from "./assets/dashboard-director.png";
 import xinyingLogo from "./assets/xinying-logo.svg";
 
 type PageKey = "dashboard" | "projects" | "studio" | "portraits" | "jobs" | "results" | "codex" | "platform";
@@ -449,8 +450,8 @@ function DashboardPage({ snapshot, onNavigate }: { snapshot: DashboardSnapshot; 
   const completed = snapshot.jobs.filter((job) => job.status === "completed").length;
   return <div className="dashboard-page">
     <section className="hero-panel">
-      <div><span className="eyebrow">CREATIVE OPERATIONS</span><h1>心影让你当指挥家，心影Pro让你直接把片交了。</h1><p>整理参考图、锁定编号、管理虚拟人像与生成任务；需要时随时切回心影原网页。</p><div className="hero-actions"><button className="button primary" onClick={() => onNavigate("studio")}><Clapperboard size={17} />进入生成工作台</button><button className="button ghost" onClick={() => onNavigate("platform")}><ExternalLink size={17} />打开心影原网页</button></div></div>
-      <div className="hero-orbit"><div className="orbit-ring"><Video size={34} /></div><span>DIRECT · ORGANIZE · GENERATE</span></div>
+      <div className="hero-copy"><span className="eyebrow">CREATIVE OPERATIONS</span><h1>心影让你当指挥家，心影Pro让你直接把片交了。</h1><p>整理参考图、锁定编号、管理虚拟人像与生成任务；需要时随时切回心影原网页。</p><div className="hero-actions"><button className="button primary" onClick={() => onNavigate("studio")}><Clapperboard size={17} />进入生成工作台</button><button className="button ghost" onClick={() => onNavigate("platform")}><ExternalLink size={17} />打开心影原网页</button></div></div>
+      <div className="hero-visual" aria-hidden="true"><img src={dashboardDirector} alt="" /><div className="hero-orbit"><div className="orbit-ring"><Video size={30} /></div><span>DIRECT · ORGANIZE · GENERATE</span></div></div>
     </section>
     <section className="metric-grid">
       <Metric icon={FolderKanban} value={snapshot.projects.length} label="创作项目" tone="purple" />

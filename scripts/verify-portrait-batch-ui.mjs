@@ -19,6 +19,8 @@ try {
   const renderer = browser.contexts().flatMap((context) => context.pages())
     .find((page) => page.url().startsWith("file:") || page.url().includes("127.0.0.1:5173"));
   if (!renderer) throw new Error("找不到心影Pro渲染页面");
+  const staleModalCancel = renderer.locator(".modal-backdrop").getByRole("button", { name: "取消", exact: true });
+  if (await staleModalCancel.isVisible().catch(() => false)) await staleModalCancel.click();
 
   const dashboard = await renderer.evaluate(() => window.xinying.dashboard());
   const project = dashboard.projects.find((item) => item.platformWorkspaceId && item.platformProjectId && item.platformUrl);
@@ -74,7 +76,10 @@ try {
   if (await modal.getByRole("button", { name: "确认永久删除", exact: true }).isEnabled()) {
     throw new Error("未勾选不可恢复确认时，最终删除按钮不应可用");
   }
-  await renderer.screenshot({ path: path.resolve("test-results", "portrait-batch-management-ui.png"), fullPage: true });
+  await modal.screenshot({
+    path: path.resolve("test-results", "portrait-batch-management-ui.png"),
+    timeout: 60_000,
+  });
   await modal.getByRole("button", { name: "取消", exact: true }).click();
   await batchBar.getByRole("button", { name: "清空选择", exact: true }).click();
   await renderer.getByRole("button", { name: "退出管理", exact: true }).click();

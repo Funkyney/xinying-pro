@@ -30,6 +30,7 @@
     "verify:platform-projects": "node scripts/verify-platform-projects.mjs",
     "verify:projects-ui": "node scripts/capture-platform-projects-ui.mjs",
     "verify:brand-ui": "node scripts/verify-brand-ui.mjs",
+    "verify:theme-ui": "node scripts/verify-theme-ui.mjs",
     "verify:portrait-batch-ui": "node scripts/verify-portrait-batch-ui.mjs",
     "verify:portrait-group-selection": "node scripts/verify-portrait-group-selection.mjs",
     "verify:unified-material-ui": "node scripts/verify-unified-material-ui.mjs",
