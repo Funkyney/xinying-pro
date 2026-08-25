@@ -69,8 +69,12 @@ try {
       sidebarLuminance: luminance(getComputedStyle(sidebar).backgroundColor),
       activeNavBackground: getComputedStyle(activeNav).backgroundImage,
       heroHeight: Math.round(heroRect.height),
+      heroTop: Math.round(heroRect.top),
+      heroBottom: Math.round(heroRect.bottom),
       imageWidth: Math.round(imageRect.width),
       imageHeight: Math.round(imageRect.height),
+      imageTop: Math.round(imageRect.top),
+      imageBottom: Math.round(imageRect.bottom),
       imageNaturalWidth: director.naturalWidth,
       imageNaturalHeight: director.naturalHeight,
       orbitCount: document.querySelectorAll(".hero-orbit").length,
@@ -78,7 +82,8 @@ try {
   });
   if (visual.sidebarLuminance < 210) throw new Error(`侧栏不是暖白主题：${visual.sidebarBackground}`);
   if (visual.heroHeight < 250) throw new Error(`首页 BAR 高度不足：${visual.heroHeight}px`);
-  if (visual.imageWidth < 500 || visual.imageNaturalWidth < 1500) throw new Error(`女生主视觉尺寸不足：${visual.imageWidth}px / ${visual.imageNaturalWidth}px`);
+  if (visual.imageWidth < 480 || visual.imageNaturalWidth < 1500) throw new Error(`女生主视觉尺寸不足：${visual.imageWidth}px / ${visual.imageNaturalWidth}px`);
+  if (visual.imageTop < visual.heroTop || visual.imageBottom > visual.heroBottom) throw new Error(`人物仍被 BAR 裁切：${visual.imageTop}-${visual.imageBottom} / ${visual.heroTop}-${visual.heroBottom}`);
   if (visual.orbitCount !== 0) throw new Error("BAR 右侧旧图标和英文仍然存在");
   if (!visual.activeNavBackground.includes("gradient")) throw new Error("当前导航没有香槟金渐变选中态");
 
