@@ -178,16 +178,20 @@ p { color: var(--muted); }
   letter-spacing: -.035em;
 }
 .hero-panel p { max-width: 610px; margin-bottom: 23px; color: #817c75; }
-.hero-visual { position: relative; min-width: 0; overflow: visible; }
+.hero-visual {
+  position: relative;
+  min-width: 0;
+  overflow: visible;
+}
 .hero-visual::before {
   content: none;
 }
 .hero-visual img {
   position: absolute;
   z-index: 1;
-  right: 118px;
-  bottom: -42px;
-  width: 680px;
+  right: -78px;
+  bottom: -51px;
+  width: 820px;
   height: auto;
   max-width: none;
   mix-blend-mode: multiply;
@@ -195,24 +199,6 @@ p { color: var(--muted); }
   mask-image: linear-gradient(90deg, transparent 0%, rgba(0, 0, 0, .45) 15%, #000 29%, #000 100%);
   filter: saturate(.94) contrast(.98);
   pointer-events: none;
-}
-.hero-orbit {
-  position: absolute;
-  z-index: 4;
-  top: 50%;
-  right: 28px;
-  gap: 14px;
-  width: 132px;
-  transform: translateY(-50%);
-  color: #aaa296;
-}
-.orbit-ring {
-  width: 92px;
-  height: 92px;
-  border-color: rgba(184, 137, 63, .22);
-  color: #99681c;
-  background: rgba(255, 255, 255, .4);
-  box-shadow: 0 0 0 23px rgba(255, 255, 255, .38), 0 0 0 24px rgba(184, 137, 63, .11);
 }
 .metric-grid { gap: 13px; margin: 14px 0; }
 .metric-card {
@@ -466,6 +452,5 @@ td:first-child span { color: #969088; }
   .app-shell { grid-template-columns: 220px minmax(0, 1fr); }
   .hero-panel { grid-template-columns: minmax(540px, 1.05fr) minmax(400px, .95fr); }
   .hero-copy { padding-left: 36px; }
-  .hero-visual img { right: 72px; width: 600px; }
-  .hero-orbit { right: 13px; transform: translateY(-50%) scale(.86); }
+  .hero-visual img { right: -64px; width: 740px; }
 }

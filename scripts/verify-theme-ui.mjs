@@ -73,11 +73,13 @@ try {
       imageHeight: Math.round(imageRect.height),
       imageNaturalWidth: director.naturalWidth,
       imageNaturalHeight: director.naturalHeight,
+      orbitCount: document.querySelectorAll(".hero-orbit").length,
     };
   });
   if (visual.sidebarLuminance < 210) throw new Error(`侧栏不是暖白主题：${visual.sidebarBackground}`);
   if (visual.heroHeight < 250) throw new Error(`首页 BAR 高度不足：${visual.heroHeight}px`);
   if (visual.imageWidth < 500 || visual.imageNaturalWidth < 1500) throw new Error(`女生主视觉尺寸不足：${visual.imageWidth}px / ${visual.imageNaturalWidth}px`);
+  if (visual.orbitCount !== 0) throw new Error("BAR 右侧旧图标和英文仍然存在");
   if (!visual.activeNavBackground.includes("gradient")) throw new Error("当前导航没有香槟金渐变选中态");
 
   await page.screenshot({ path: outputs.dashboard, fullPage: true });
