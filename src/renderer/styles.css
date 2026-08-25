@@ -237,6 +237,12 @@ td:first-child { display: flex; flex-direction: column; gap: 3px; }td:first-chil
 .result-batch-bar { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 16px; padding: 12px 14px; }
 .result-batch-bar > div { display: flex; align-items: center; gap: 9px; }
 .result-batch-bar strong { color: var(--muted); font-size: 11px; }
+.batch-selection-summary { display: flex; flex-direction: column; gap: 2px; }
+.batch-selection-summary small { color: #777f91; font-size: 9px; white-space: nowrap; }
+.drag-select-surface { user-select: none; }
+.drag-select-surface img, .drag-select-surface video { -webkit-user-drag: none; user-select: none; }
+.drag-select-active, .drag-select-active .result-card, .drag-select-active .manage-portrait-card { cursor: crosshair; }
+.drag-select-active .result-card:hover { transform: none; }
 .result-card { position: relative; cursor: pointer; transition: border-color .16s ease, transform .16s ease, box-shadow .16s ease; }
 .result-card:hover { transform: translateY(-2px); border-color: rgba(146,102,255,.65); }
 .result-card.selected-result { border-color: #8758ef; box-shadow: 0 0 0 1px rgba(135,88,239,.55); }

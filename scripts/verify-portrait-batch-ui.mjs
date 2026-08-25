@@ -3,6 +3,17 @@ import { chromium } from "playwright-core";
 
 const port = Number(process.env.XINYING_CDP_PORT ?? 9333);
 let browser;
+
+async function dragAcross(page, start, end) {
+  const startBox = await start.boundingBox();
+  const endBox = await end.boundingBox();
+  if (!startBox || !endBox) throw new Error("拖选测试人像卡片不在可见区域");
+  await page.mouse.move(startBox.x + startBox.width / 2, startBox.y + startBox.height * .42);
+  await page.mouse.down();
+  await page.mouse.move(endBox.x + endBox.width / 2, endBox.y + endBox.height * .42, { steps: 16 });
+  await page.mouse.up();
+}
+
 try {
   browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`, { timeout: 10_000 });
   const renderer = browser.contexts().flatMap((context) => context.pages())
@@ -42,6 +53,13 @@ try {
   if ((await selectableCards.count()) === 0) throw new Error("当前可见列表没有可选择的删除卡片");
   await selectableCards.first().click();
   if (!(await batchBar.innerText()).includes("已选择 1 项")) throw new Error("单项选择计数未更新");
+  await selectableCards.first().click();
+  const dragTargetCount = Math.min(3, await selectableCards.count());
+  await dragAcross(renderer, selectableCards.first(), selectableCards.nth(dragTargetCount - 1));
+  const dragSelectedCount = await renderer.locator(".platform-library .selected-delete-card").count();
+  if (dragSelectedCount !== dragTargetCount) throw new Error(`虚拟人像拖选数量错误：${dragSelectedCount} / ${dragTargetCount}`);
+  await dragAcross(renderer, selectableCards.first(), selectableCards.nth(dragTargetCount - 1));
+  if ((await renderer.locator(".platform-library .selected-delete-card").count()) !== 0) throw new Error("虚拟人像从已选卡片拖动没有批量取消");
 
   await batchBar.getByRole("button", { name: "全选当前列表", exact: true }).click();
   const selectedCount = await renderer.locator(".platform-library .selected-delete-card").count();
@@ -69,6 +87,8 @@ try {
     deletable: deletable.length,
     newestName,
     oldestName,
+    dragSelectedCount,
+    dragDeselectChecked: true,
     selectedCount,
     confirmationChecked: false,
     deleteInvoked: false,

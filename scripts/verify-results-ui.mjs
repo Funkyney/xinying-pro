@@ -4,6 +4,17 @@ import { chromium } from "playwright-core";
 const projectId = process.env.XINYING_RESULTS_PROJECT_ID ?? "008677c8-228e-44c8-a8dc-a1512aa0cb39";
 const browser = await chromium.connectOverCDP(`http://127.0.0.1:${Number(process.env.XINYING_CDP_PORT ?? 9333)}`);
 let markedId = "";
+
+async function dragAcross(page, start, end) {
+  const startBox = await start.boundingBox();
+  const endBox = await end.boundingBox();
+  if (!startBox || !endBox) throw new Error("拖选测试卡片不在可见区域");
+  await page.mouse.move(startBox.x + startBox.width / 2, startBox.y + startBox.height * .42);
+  await page.mouse.down();
+  await page.mouse.move(endBox.x + endBox.width / 2, endBox.y + endBox.height * .42, { steps: 16 });
+  await page.mouse.up();
+}
+
 try {
   const page = browser.contexts().flatMap((context) => context.pages())
     .find((candidate) => candidate.url().startsWith("file:") || candidate.url().includes("127.0.0.1:5173"));
@@ -36,6 +47,15 @@ try {
   if (!marked) throw new Error("结果标记未持久化");
   await batchBar.getByRole("button", { name: "取消标记", exact: true }).click();
   await first.locator(".result-mark").waitFor({ state: "detached", timeout: 8_000 });
+
+  await first.locator(".result-select").click();
+  const dragTargetCount = Math.min(3, count);
+  await dragAcross(page, first, cards.nth(dragTargetCount - 1));
+  const dragSelectedCount = await page.locator(".result-card.selected-result").count();
+  if (dragSelectedCount !== dragTargetCount) throw new Error(`结果库拖选数量错误：${dragSelectedCount} / ${dragTargetCount}`);
+  if ((await page.locator(".result-viewer").count()) !== 0) throw new Error("结果库拖选后误打开了预览");
+  await dragAcross(page, first, cards.nth(dragTargetCount - 1));
+  if ((await page.locator(".result-card.selected-result").count()) !== 0) throw new Error("结果库从已选卡片拖动没有批量取消");
 
   await first.click();
   const viewer = page.locator(".result-viewer");
@@ -78,7 +98,7 @@ try {
   await page.waitForTimeout(100);
   const screenshot = path.resolve("test-results", "results-library-ui.png");
   await page.screenshot({ path: screenshot, fullPage: true });
-  process.stdout.write(`${JSON.stringify({ ok: true, projectId, personalResultCount: count, projectResultCount: projectItems.length, projectMediaKinds: [...new Set(projectItems.map((item) => item.mediaKind))], initialProjectCardCount, markRestored: true, viewerBefore: before, viewerAfter: after, previewFit, screenshot }, null, 2)}\n`);
+  process.stdout.write(`${JSON.stringify({ ok: true, projectId, personalResultCount: count, projectResultCount: projectItems.length, projectMediaKinds: [...new Set(projectItems.map((item) => item.mediaKind))], initialProjectCardCount, dragSelectedCount, dragDeselectChecked: true, markRestored: true, viewerBefore: before, viewerAfter: after, previewFit, screenshot }, null, 2)}\n`);
 } catch (error) {
   process.stderr.write(`${JSON.stringify({ ok: false, error: error instanceof Error ? error.message : String(error) }, null, 2)}\n`);
   process.exitCode = 1;

@@ -70,6 +70,7 @@ import { ReferenceBoard, type ReferenceAuthorizationState } from "./components/R
 import { SharedMaterialLibrary } from "./components/SharedMaterialLibrary";
 import { PlatformPanel } from "./components/PlatformPanel";
 import { InteractionGate, userFacingError } from "./interaction";
+import { useDragMultiSelect, withSelectionState } from "./use-drag-multi-select";
 import xinyingLogo from "./assets/xinying-logo.svg";
 
 type PageKey = "dashboard" | "projects" | "studio" | "portraits" | "jobs" | "results" | "codex" | "platform";
@@ -710,6 +711,11 @@ function PortraitsPage({ portraits, platformPortraits, projects, selectedProject
     .filter((portrait) => selectedDeleteIds.has(portrait.id) && portrait.canDelete)
     .sort((left, right) => portraitSort === "newest" ? (left.deleteSortOrder ?? left.sortOrder) - (right.deleteSortOrder ?? right.sortOrder) : (right.deleteSortOrder ?? right.sortOrder) - (left.deleteSortOrder ?? left.sortOrder));
   const allVisibleSelected = deletableVisiblePortraits.length > 0 && deletableVisiblePortraits.every((portrait) => selectedDeleteIds.has(portrait.id));
+  const portraitDragSelection = useDragMultiSelect({
+    enabled: manageMode,
+    isSelected: (id) => selectedDeleteIds.has(id),
+    setSelected: (id, selected) => setSelectedDeleteIds((current) => withSelectionState(current, id, selected)),
+  });
   useEffect(() => {
     setManageMode(false);
     setSelectedDeleteIds(new Set());
@@ -771,8 +777,8 @@ function PortraitsPage({ portraits, platformPortraits, projects, selectedProject
           <span className="library-count">{manageMode ? "可管理" : "显示"} {visiblePlatformPortraits.length} / {manageMode ? managedPlatformPortraits.length : availablePlatformPortraits.length}</span>
         </div>
       </div>
-      {manageMode && <div className="portrait-batch-bar" data-testid="portrait-batch-bar"><div><strong>已选择 {selectedDeletePortraits.length} 项</strong><span>当前列表中 {deletableVisiblePortraits.length} 项可删除；无权限的共享角色不会被选中。</span></div><div><button className="button ghost" disabled={!deletableVisiblePortraits.length} onClick={toggleAllVisible}>{allVisibleSelected ? "取消全选当前列表" : "全选当前列表"}</button><button className="button ghost" disabled={!selectedDeletePortraits.length} onClick={() => setSelectedDeleteIds(new Set())}>清空选择</button><button className="button danger" disabled={!selectedDeletePortraits.length} onClick={() => { setDeleteConsent(false); setDeleteConfirmOpen(true); }}><Trash2 size={15} />永久删除 {selectedDeletePortraits.length || ""} 项</button></div></div>}
-      <div className="portrait-grid platform-library">
+      {manageMode && <div className="portrait-batch-bar" data-testid="portrait-batch-bar"><div><strong>已选择 {selectedDeletePortraits.length} 项</strong><span>按住卡片拖过可连续多选；从已选卡片开始拖动可批量取消。当前列表中 {deletableVisiblePortraits.length} 项可删除。</span></div><div><button className="button ghost" disabled={!deletableVisiblePortraits.length} onClick={toggleAllVisible}>{allVisibleSelected ? "取消全选当前列表" : "全选当前列表"}</button><button className="button ghost" disabled={!selectedDeletePortraits.length} onClick={() => setSelectedDeleteIds(new Set())}>清空选择</button><button className="button danger" disabled={!selectedDeletePortraits.length} onClick={() => { setDeleteConsent(false); setDeleteConfirmOpen(true); }}><Trash2 size={15} />永久删除 {selectedDeletePortraits.length || ""} 项</button></div></div>}
+      <div className={`portrait-grid platform-library ${manageMode ? "drag-select-surface" : ""} ${portraitDragSelection.isDragging ? "drag-select-active" : ""}`} {...portraitDragSelection.dragProps}>
         {visiblePlatformPortraits.map((portrait) => {
           const selected = selectedProject?.portraitIds.includes(portrait.id) ?? false;
           const order = selectedProject?.materialOrder.indexOf(portraitMaterialKey(portrait.id)) ?? -1;
@@ -780,7 +786,8 @@ function PortraitsPage({ portraits, platformPortraits, projects, selectedProject
           return <article
             className={`portrait-card ${!manageMode && selected ? "selected-library-card" : ""} ${manageMode ? "manage-portrait-card" : ""} ${selectedForDelete ? "selected-delete-card" : ""} ${manageMode && !portrait.canDelete ? "delete-forbidden-card" : ""}`}
             key={portrait.id}
-            onClick={manageMode ? () => toggleDeleteSelection(portrait) : undefined}
+            data-drag-select-id={manageMode && portrait.canDelete ? portrait.id : undefined}
+            onClick={manageMode ? () => { if (!portraitDragSelection.consumeSuppressedClick()) toggleDeleteSelection(portrait); } : undefined}
             onKeyDown={manageMode ? (event) => { if (event.currentTarget === event.target && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); toggleDeleteSelection(portrait); } } : undefined}
             role={manageMode ? "checkbox" : undefined}
             aria-checked={manageMode ? selectedForDelete : undefined}
@@ -826,6 +833,10 @@ function ResultsPage({ results, projects, selectedProject, onSelectProject, run 
   const viewer = viewerIndex >= 0 ? currentResults[viewerIndex] : null;
   const selected = currentResults.filter((result) => selectedIds.has(result.id));
   const allSelected = currentResults.length > 0 && currentResults.every((result) => selectedIds.has(result.id));
+  const resultDragSelection = useDragMultiSelect({
+    isSelected: (id) => selectedIds.has(id),
+    setSelected: (id, selected) => setSelectedIds((current) => withSelectionState(current, id, selected)),
+  });
 
   useEffect(() => {
     setSelectedIds(new Set());
@@ -884,14 +895,14 @@ function ResultsPage({ results, projects, selectedProject, onSelectProject, run 
     </div>
     <p className="result-source-note">{source === "personal" ? "读取当前登录账号在这个项目中的生成会话。" : "读取心影网页“素材库”中当前项目所有成员可见的图片与视频。"}</p>
     {currentResults.length > 0 && <section className="result-batch-bar panel">
-      <div><button className="button ghost" onClick={() => setSelectedIds(allSelected ? new Set() : new Set(currentResults.map((result) => result.id)))}>{allSelected ? <CheckSquare2 size={16} /> : <Square size={16} />}{allSelected ? "取消全选" : "全选"}</button><strong>已选择 {selected.length} / {currentResults.length}</strong></div>
+      <div><button className="button ghost" onClick={() => setSelectedIds(allSelected ? new Set() : new Set(currentResults.map((result) => result.id)))}>{allSelected ? <CheckSquare2 size={16} /> : <Square size={16} />}{allSelected ? "取消全选" : "全选"}</button><span className="batch-selection-summary"><strong>已选择 {selected.length} / {currentResults.length}</strong><small>按住卡片拖过可连续多选；从已选卡片开始拖动可批量取消</small></span></div>
       <div><button className="button ghost" disabled={!selected.length} onClick={() => run(() => window.xinying.results.mark(selected.map((result) => result.id), true), `已标记 ${selected.length} 个素材`)}><CheckCircle2 size={16} />标记</button><button className="button ghost" disabled={!selected.length} onClick={() => run(() => window.xinying.results.mark(selected.map((result) => result.id), false), `已取消 ${selected.length} 个标记`)}>取消标记</button><button className="button secondary" disabled={!selected.length} onClick={() => run(() => window.xinying.results.batchDownload(selected.map((result) => result.id)), `已保存 ${selected.length} 个原片`)}><Download size={16} />批量下载原片</button></div>
     </section>}
-    <div className="result-grid">{visibleResults.map((result) => {
+    <div className={`result-grid drag-select-surface ${resultDragSelection.isDragging ? "drag-select-active" : ""}`} {...resultDragSelection.dragProps}>{visibleResults.map((result) => {
       const preview = mediaUrl(result);
       const projectName = projects.find((project) => project.id === result.projectId)?.name ?? "心影项目";
       const checked = selectedIds.has(result.id);
-      return <article ref={(node) => { if (node) cardRefs.current.set(result.id, node); else cardRefs.current.delete(result.id); }} className={`result-card ${lastViewedId === result.id ? "last-viewed" : ""} ${checked ? "selected-result" : ""}`} key={result.id} onClick={() => setViewerId(result.id)}>
+      return <article ref={(node) => { if (node) cardRefs.current.set(result.id, node); else cardRefs.current.delete(result.id); }} className={`result-card ${lastViewedId === result.id ? "last-viewed" : ""} ${checked ? "selected-result" : ""}`} key={result.id} data-drag-select-id={result.id} onClick={() => { if (!resultDragSelection.consumeSuppressedClick()) setViewerId(result.id); }}>
         <button className={`result-select ${checked ? "checked" : ""}`} onClick={(event) => { event.stopPropagation(); toggleSelected(result.id); }} aria-label={checked ? "取消选择" : "选择素材"}>{checked ? <CheckSquare2 size={19} /> : <Square size={19} />}</button>
         {result.marked && <span className="result-mark">已标记</span>}
         <span className={`result-kind result-kind-${result.mediaKind}`}>{result.mediaKind === "image" ? <ImageIcon size={12} /> : <Video size={12} />}{result.mediaKind === "image" ? "图片" : "视频"}</span>
