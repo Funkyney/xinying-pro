@@ -98,6 +98,20 @@ describe("drag multi-selection", () => {
     expect(host.querySelector("[data-testid='opened']")?.textContent).toBe("0");
   });
 
+  it("does not capture an ordinary click before the pointer becomes a drag", () => {
+    act(() => root.render(createElement(DragHarness)));
+    const first = host.querySelector<HTMLElement>("[data-drag-select-id='one']")!;
+
+    act(() => {
+      dispatchPointer(first, "pointerdown", 10);
+      dispatchPointer(first, "pointerup", 10);
+      first.click();
+    });
+
+    expect(HTMLElement.prototype.setPointerCapture).not.toHaveBeenCalled();
+    expect(host.querySelector("[data-testid='opened']")?.textContent).toBe("1");
+  });
+
   it("deselects every crossed card when the drag begins on a selected card", () => {
     act(() => root.render(createElement(DragHarness, { initial: cardIds })));
     const grid = host.querySelector<HTMLElement>("[data-testid='grid']")!;

@@ -122,7 +122,6 @@ export function useDragMultiSelect({ enabled = true, isSelected, setSelected }: 
       dragging: false,
       touched: new Set(),
     };
-    event.currentTarget.setPointerCapture(event.pointerId);
   }, [enabled, isSelected]);
 
   const onPointerMove = useCallback((event: ReactPointerEvent<HTMLElement>) => {
@@ -132,6 +131,7 @@ export function useDragMultiSelect({ enabled = true, isSelected, setSelected }: 
       if (Math.hypot(event.clientX - session.startX, event.clientY - session.startY) < DRAG_THRESHOLD_PX) return;
       session.dragging = true;
       setIsDragging(true);
+      event.currentTarget.setPointerCapture(event.pointerId);
       const startCard = [...event.currentTarget.querySelectorAll<HTMLElement>(`[${CARD_ATTRIBUTE}]`)]
         .find((card) => card.dataset.dragSelectId === session.startId) ?? null;
       applyCard(startCard, session);
