@@ -999,6 +999,57 @@ describe("XinyingService", () => {
     expect(() => service.submitGenerationBatch(project.id, 0)).toThrow(/1 到 20/);
   });
 
+  it("creates editable generation jobs from a reusable personal result", () => {
+    const project = service.createProject({ name: "结果复用", prompt: "原提示词 @图1", mode: "reference-to-video" });
+    service.addReferences(project.id, [fixture("reuse-reference.png", "image")]);
+    const sourceJob = service.submitGeneration(project.id);
+    service.updateJob(sourceJob.id, { status: "running", platformTaskId: "chat:platform-project:test-session:3" });
+    const [result] = service.syncPlatformResults(project.id, [{
+      id: "remote-result",
+      projectId: project.id,
+      platformProjectId: project.platformProjectId,
+      platformTaskId: "chat:platform-project:test-session:3",
+      jobId: null,
+      source: "personal",
+      mediaKind: "video",
+      name: "result.mp4",
+      prompt: "原提示词 @图1",
+      outputUrl: "https://media.example/result.mp4",
+      previewUrl: "https://media.example/preview.jpg",
+      outputPath: null,
+      marked: false,
+      available: true,
+      createdAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    }]);
+
+    expect(result.references).toHaveLength(1);
+    const batch = service.submitResultReuse(result.id, {
+      prompt: "修改后的提示词 @图1",
+      modelName: "Seedance 2.5 全能参考",
+      mode: "reference-to-video",
+      aspectRatio: "9:16",
+      duration: 8,
+      resolution: "1080p",
+      audioEnabled: true,
+      count: 2,
+    });
+
+    expect(batch.jobs).toHaveLength(2);
+    expect(batch.jobs[0].promptSnapshot).toBe("修改后的提示词 @图1");
+    expect(batch.jobs[0].references).toHaveLength(1);
+    expect(batch.jobs[0].parameters).toMatchObject({
+      reuseFromPlatformTaskId: "chat:platform-project:test-session:3",
+      reuseSourcePrompt: "原提示词 @图1",
+      reuseUnknownMaterials: false,
+      takeNumber: 1,
+      takeCount: 2,
+      aspectRatio: "9:16",
+      duration: 8,
+    });
+    expect(batch.jobs[1].parameters.reuseFromPlatformTaskId).toBeUndefined();
+  });
+
   it("prevents duplicate portrait reviews and deletion while work is active", () => {
     const portrait = service.addPortraits([fixture("authorized.png", "portrait")], true)[0];
     const renamed = service.updatePortraitMetadata(portrait.id, { displayName: "自动角色", applicationScope: "both" });

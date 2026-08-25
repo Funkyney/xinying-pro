@@ -143,8 +143,11 @@ app.whenReady().then(() => {
       UNION ALL SELECT file_path FROM portrait_assets WHERE file_path = ?
       UNION ALL SELECT output_path AS file_path FROM jobs WHERE output_path = ?
       UNION ALL SELECT output_path AS file_path FROM platform_results WHERE output_path = ?
+      UNION ALL SELECT json_extract(value, '$.filePath') AS file_path
+        FROM jobs, json_each(jobs.references_json)
+        WHERE json_extract(value, '$.filePath') = ?
       LIMIT 1
-    `).get(filePath, filePath, filePath, filePath, filePath);
+    `).get(filePath, filePath, filePath, filePath, filePath, filePath);
     if (!permitted) return new Response("Media path is not registered in the local project database", { status: 403 });
     return net.fetch(pathToFileURL(filePath).toString());
   });

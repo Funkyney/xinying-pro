@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { BrowserWindow, dialog, ipcMain, shell } from "electron";
 import { IPC } from "../shared/ipc";
-import type { PlatformPortraitDeleteProgress, PlatformProjectCreateInput, PlatformResult, PlatformResultSource, PlatformViewBounds, PortraitMetadataInput, ProjectInput, ReferenceRole } from "../shared/contracts";
+import type { PlatformPortraitDeleteProgress, PlatformProjectCreateInput, PlatformResult, PlatformResultSource, PlatformViewBounds, PortraitMetadataInput, ProjectInput, ReferenceRole, ResultReuseInput } from "../shared/contracts";
 import type { XinyingService } from "../core/service";
 import type { PlatformViewManager } from "./platform-view";
 import type { PlaywrightXinyingAdapter } from "./playwright-adapter";
@@ -259,6 +259,7 @@ export function registerIpcHandlers(
     return service.syncPlatformResults(projectId, remote, source);
   });
   handle(IPC.resultsMark, (_event, ids: string[], marked: boolean) => service.markResults(ids, marked));
+  handle(IPC.resultsReuse, (_event, id: string, input: ResultReuseInput) => service.submitResultReuse(id, input));
   const ensureResultDownloadable = async (id: string) => {
     const result = service.getResult(id);
     if (result.jobId && !result.outputPath && !result.outputUrl) {

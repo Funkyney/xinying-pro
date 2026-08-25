@@ -22,8 +22,11 @@ import {
   LogIn,
   Plus,
   RefreshCw,
+  Repeat2,
   Save,
+  SlidersHorizontal,
   Square,
+  Star,
   Send,
   Settings2,
   ShieldAlert,
@@ -816,19 +819,47 @@ function JobsPage({ jobs, projects, portraits, run }: { jobs: Job[]; projects: P
   </div>;
 }
 
+type ResultFilter = "all" | "video" | "image" | "marked";
+
+interface ResultReuseDraft {
+  prompt: string;
+  modelName: string;
+  mode: Project["mode"];
+  aspectRatio: string;
+  duration: number;
+  resolution: string;
+  audioEnabled: boolean;
+  count: number;
+}
+
 function ResultsPage({ results, projects, selectedProject, onSelectProject, run }: { results: PlatformResult[]; projects: Project[]; selectedProject: Project | null; onSelectProject: (id: string) => void; run: (action: () => Promise<unknown>, success?: string) => Promise<void> }) {
   const [source, setSource] = useState<PlatformResultSource>("personal");
+  const [filter, setFilter] = useState<ResultFilter>("all");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
   const [viewerId, setViewerId] = useState<string | null>(null);
   const [lastViewedId, setLastViewedId] = useState<string | null>(null);
+  const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [visibleLimit, setVisibleLimit] = useState(120);
+  const [cardWidth, setCardWidth] = useState(245);
+  const [markOverrides, setMarkOverrides] = useState<Record<string, boolean>>({});
+  const [reuseEditing, setReuseEditing] = useState(false);
+  const [reuseDraft, setReuseDraft] = useState<ResultReuseDraft | null>(null);
   const cardRefs = useRef(new Map<string, HTMLElement>());
+  const markPending = useRef(new Set<string>());
   const projectResults = results.filter((result) => !selectedProject || result.projectId === selectedProject.id);
-  const currentResults = projectResults.filter((result) => result.source === source);
+  const sourceResults = projectResults.filter((result) => result.source === source);
+  const isMarked = useCallback((result: PlatformResult) => markOverrides[result.id] ?? result.marked, [markOverrides]);
+  const currentResults = sourceResults.filter((result) => filter === "all" || filter === result.mediaKind || (filter === "marked" && isMarked(result)));
   const visibleResults = currentResults.slice(0, visibleLimit);
   const sourceCounts = {
     personal: projectResults.filter((result) => result.source === "personal").length,
     project: projectResults.filter((result) => result.source === "project").length,
+  };
+  const mediaCounts = {
+    all: sourceResults.length,
+    video: sourceResults.filter((result) => result.mediaKind === "video").length,
+    image: sourceResults.filter((result) => result.mediaKind === "image").length,
+    marked: sourceResults.filter(isMarked).length,
   };
   const viewerIndex = currentResults.findIndex((result) => result.id === viewerId);
   const viewer = viewerIndex >= 0 ? currentResults[viewerIndex] : null;
@@ -836,7 +867,7 @@ function ResultsPage({ results, projects, selectedProject, onSelectProject, run 
   const allSelected = currentResults.length > 0 && currentResults.every((result) => selectedIds.has(result.id));
   const resultDragSelection = useDragMultiSelect({
     isSelected: (id) => selectedIds.has(id),
-    setSelected: (id, selected) => setSelectedIds((current) => withSelectionState(current, id, selected)),
+    setSelected: (id, selectedState) => setSelectedIds((current) => withSelectionState(current, id, selectedState)),
   });
 
   useEffect(() => {
@@ -844,7 +875,31 @@ function ResultsPage({ results, projects, selectedProject, onSelectProject, run 
     setViewerId(null);
     setLastViewedId(null);
     setVisibleLimit(120);
-  }, [selectedProject?.id, source]);
+  }, [selectedProject?.id, source, filter]);
+
+  useEffect(() => {
+    if (!viewer) {
+      setReuseDraft(null);
+      setReuseEditing(false);
+      return;
+    }
+    const parameters = viewer.parameters ?? {};
+    const project = projects.find((item) => item.id === viewer.projectId) ?? selectedProject;
+    const text = (key: string, fallback: string) => typeof parameters[key] === "string" && String(parameters[key]).trim() ? String(parameters[key]) : fallback;
+    const number = (key: string, fallback: number) => Number.isInteger(parameters[key]) ? Number(parameters[key]) : fallback;
+    const mode = text("mode", project?.mode ?? "reference-to-video") as Project["mode"];
+    setReuseDraft({
+      prompt: viewer.prompt || viewer.name,
+      modelName: text("modelName", project?.modelName ?? XINYING_MODEL_PROFILES[0].name),
+      mode,
+      aspectRatio: text("aspectRatio", project?.aspectRatio ?? "16:9"),
+      duration: number("duration", project?.duration ?? 5),
+      resolution: text("resolution", project?.resolution ?? "auto"),
+      audioEnabled: typeof parameters.audioEnabled === "boolean" ? parameters.audioEnabled : (project?.audioEnabled ?? true),
+      count: 1,
+    });
+    setReuseEditing(false);
+  }, [viewer?.id]);
 
   const moveViewer = useCallback((offset: number) => {
     if (!currentResults.length || viewerIndex < 0) return;
@@ -860,16 +915,42 @@ function ResultsPage({ results, projects, selectedProject, onSelectProject, run 
     window.setTimeout(() => cardRefs.current.get(id)?.scrollIntoView({ behavior: "smooth", block: "center" }), 40);
   }, [viewerId]);
 
+  const setResultMarked = useCallback(async (id: string, forced?: boolean) => {
+    if (markPending.current.has(id)) return;
+    const result = results.find((item) => item.id === id);
+    if (!result) return;
+    const previous = markOverrides[id] ?? result.marked;
+    const next = forced ?? !previous;
+    markPending.current.add(id);
+    setMarkOverrides((current) => ({ ...current, [id]: next }));
+    try {
+      await window.xinying.results.mark([id], next);
+    } catch {
+      setMarkOverrides((current) => ({ ...current, [id]: previous }));
+    } finally {
+      markPending.current.delete(id);
+    }
+  }, [results, markOverrides]);
+
   useEffect(() => {
-    if (!viewer) return;
     const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      const editingText = Boolean(target?.matches("textarea, select, [contenteditable='true']") || (target instanceof HTMLInputElement && target.type !== "range"));
+      if (!editingText && !event.repeat && !event.ctrlKey && !event.metaKey && !event.altKey && (event.key === "1" || event.code === "Digit1")) {
+        const id = viewer?.id ?? hoveredId;
+        if (id) {
+          event.preventDefault();
+          void setResultMarked(id);
+        }
+      }
+      if (!viewer || editingText) return;
       if (event.key === "Escape") closeViewer();
       if (event.key === "ArrowLeft") moveViewer(-1);
       if (event.key === "ArrowRight") moveViewer(1);
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [viewer, closeViewer, moveViewer]);
+  }, [viewer, hoveredId, closeViewer, moveViewer, setResultMarked]);
 
   const toggleSelected = (id: string) => setSelectedIds((current) => {
     const next = new Set(current);
@@ -878,13 +959,24 @@ function ResultsPage({ results, projects, selectedProject, onSelectProject, run 
   });
   const mediaUrl = (result: PlatformResult) => result.outputPath ? window.xinying.references.mediaUrl(result.outputPath) : result.outputUrl;
   const posterUrl = (result: PlatformResult) => result.previewUrl ?? undefined;
-
   const tabText = source === "personal" ? "我的生成" : "项目素材库（全员）";
   const syncSuccess = source === "personal" ? "我的生成已同步" : "项目全员图片与视频已同步";
+  const filterItems: Array<{ key: ResultFilter; label: string; count: number }> = [
+    { key: "all", label: "全部素材", count: mediaCounts.all },
+    { key: "video", label: "视频", count: mediaCounts.video },
+    { key: "image", label: "图片", count: mediaCounts.image },
+    { key: "marked", label: "已标记", count: mediaCounts.marked },
+  ];
+  const viewerReferences = viewer?.references ?? [];
+  const viewerPortraits = Array.isArray(viewer?.parameters?.platformPortraits)
+    ? (viewer!.parameters!.platformPortraits as PlatformPortrait[]).filter((item) => item && typeof item.previewUrl === "string")
+    : [];
+  const canReuse = Boolean(viewer && viewer.source === "personal" && viewer.mediaKind === "video" && viewer.platformTaskId.startsWith("chat:"));
+  const reuseProfile = modelProfile(reuseDraft?.modelName);
 
   return <div className="results-page">
     <div className="page-heading">
-      <div><span className="eyebrow">OUTPUT LIBRARY</span><h1>结果库</h1><p>分别查看个人账号生成记录与心影项目素材库；界面使用轻量预览，下载始终保存心影原片。</p></div>
+      <div><span className="eyebrow">OUTPUT LIBRARY</span><h1>结果库</h1><p>按来源、媒体类型与标记状态审阅心影素材；悬停视频即可播放，按键盘 1 快速标记。</p></div>
       <div className="heading-actions">
         {projects.length > 0 && <select value={selectedProject?.id ?? ""} onChange={(event) => onSelectProject(event.target.value)}>{projects.filter((project) => project.platformProjectId).map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select>}
         <button className="button primary" disabled={!selectedProject} onClick={() => selectedProject && run(() => window.xinying.results.sync(selectedProject.id, source), syncSuccess)}><RefreshCw size={16} />同步{tabText}</button>
@@ -894,28 +986,41 @@ function ResultsPage({ results, projects, selectedProject, onSelectProject, run 
       <button role="tab" aria-selected={source === "personal"} className={source === "personal" ? "active" : ""} onClick={() => setSource("personal")}><CircleUserRound size={17} /><span>我的生成</span><strong>{sourceCounts.personal}</strong></button>
       <button role="tab" aria-selected={source === "project"} className={source === "project" ? "active" : ""} onClick={() => setSource("project")}><UsersRound size={17} /><span>项目素材库（全员）</span><strong>{sourceCounts.project}</strong></button>
     </div>
-    <p className="result-source-note">{source === "personal" ? "读取当前登录账号在这个项目中的生成会话。" : "读取心影网页“素材库”中当前项目所有成员可见的图片与视频。"}</p>
+    <p className="result-source-note">{source === "personal" ? "当前账号的生成会话：可查看提示词、参考素材并复用编辑。" : "心影网页项目素材库：汇总全员可见的图片和视频原片。"}</p>
+    <section className="result-review-toolbar panel" aria-label="素材分类与显示大小">
+      <div className="result-filter-chips">{filterItems.map((item) => <button key={item.key} className={filter === item.key ? "active" : ""} onClick={() => setFilter(item.key)}>{item.key === "marked" && <Star size={13} fill="currentColor" />}<span>{item.label}</span><b>{item.count}</b></button>)}</div>
+      <div className="result-size-control"><SlidersHorizontal size={15} /><span>卡片大小</span><input aria-label="结果卡片大小" type="range" min="170" max="390" step="5" value={cardWidth} onChange={(event) => setCardWidth(Number(event.target.value))} /><small>{cardWidth}px</small></div>
+    </section>
     {currentResults.length > 0 && <section className="result-batch-bar panel">
-      <div><button className="button ghost" onClick={() => setSelectedIds(allSelected ? new Set() : new Set(currentResults.map((result) => result.id)))}>{allSelected ? <CheckSquare2 size={16} /> : <Square size={16} />}{allSelected ? "取消全选" : "全选"}</button><span className="batch-selection-summary"><strong>已选择 {selected.length} / {currentResults.length}</strong><small>按住卡片拖过可连续多选；从已选卡片开始拖动可批量取消</small></span></div>
-      <div><button className="button ghost" disabled={!selected.length} onClick={() => run(() => window.xinying.results.mark(selected.map((result) => result.id), true), `已标记 ${selected.length} 个素材`)}><CheckCircle2 size={16} />标记</button><button className="button ghost" disabled={!selected.length} onClick={() => run(() => window.xinying.results.mark(selected.map((result) => result.id), false), `已取消 ${selected.length} 个标记`)}>取消标记</button><button className="button secondary" disabled={!selected.length} onClick={() => run(() => window.xinying.results.batchDownload(selected.map((result) => result.id)), `已保存 ${selected.length} 个原片`)}><Download size={16} />批量下载原片</button></div>
+      <div><button className="button ghost" onClick={() => setSelectedIds(allSelected ? new Set() : new Set(currentResults.map((result) => result.id)))}>{allSelected ? <CheckSquare2 size={16} /> : <Square size={16} />}{allSelected ? "取消全选" : "全选当前分类"}</button><span className="batch-selection-summary"><strong>已选择 {selected.length} / {currentResults.length}</strong><small>拖动扫选 · 鼠标悬停卡片后按 1 标记</small></span></div>
+      <div><button className="button ghost" disabled={!selected.length} onClick={() => { const ids = selected.map((result) => result.id); setMarkOverrides((current) => Object.fromEntries([...Object.entries(current), ...ids.map((id) => [id, true])])); void run(() => window.xinying.results.mark(ids, true), `已标记 ${ids.length} 个素材`); }}><Star size={16} />标记</button><button className="button ghost" disabled={!selected.length} onClick={() => { const ids = selected.map((result) => result.id); setMarkOverrides((current) => Object.fromEntries([...Object.entries(current), ...ids.map((id) => [id, false])])); void run(() => window.xinying.results.mark(ids, false), `已取消 ${ids.length} 个标记`); }}>取消标记</button><button className="button secondary" disabled={!selected.length} onClick={() => run(() => window.xinying.results.batchDownload(selected.map((result) => result.id)), `已保存 ${selected.length} 个原片`)}><Download size={16} />批量下载原片</button>{mediaCounts.marked > 0 && <button className="button secondary" onClick={() => run(() => window.xinying.results.batchDownload(sourceResults.filter(isMarked).map((result) => result.id)), `已保存 ${mediaCounts.marked} 个已标记原片`)}><Download size={16} />下载全部已标记</button>}</div>
     </section>}
-    <div className={`result-grid drag-select-surface ${resultDragSelection.isDragging ? "drag-select-active" : ""}`} {...resultDragSelection.dragProps}>{visibleResults.map((result) => {
+    <div className={`result-grid drag-select-surface ${resultDragSelection.isDragging ? "drag-select-active" : ""}`} style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${cardWidth}px, 1fr))` }} {...resultDragSelection.dragProps}>{visibleResults.map((result) => {
       const preview = mediaUrl(result);
       const projectName = projects.find((project) => project.id === result.projectId)?.name ?? "心影项目";
       const checked = selectedIds.has(result.id);
-      return <article ref={(node) => { if (node) cardRefs.current.set(result.id, node); else cardRefs.current.delete(result.id); }} className={`result-card ${lastViewedId === result.id ? "last-viewed" : ""} ${checked ? "selected-result" : ""}`} key={result.id} data-drag-select-id={result.id} onClick={() => { if (!resultDragSelection.consumeSuppressedClick()) setViewerId(result.id); }}>
+      const marked = isMarked(result);
+      return <article ref={(node) => { if (node) cardRefs.current.set(result.id, node); else cardRefs.current.delete(result.id); }} className={`result-card ${lastViewedId === result.id ? "last-viewed" : ""} ${checked ? "selected-result" : ""} ${marked ? "marked-result" : ""}`} key={result.id} data-drag-select-id={result.id} onMouseEnter={(event) => { setHoveredId(result.id); const video = event.currentTarget.querySelector<HTMLVideoElement>("video.result-hover-video"); if (video) void video.play().catch(() => undefined); }} onMouseLeave={(event) => { setHoveredId((current) => current === result.id ? null : current); const video = event.currentTarget.querySelector<HTMLVideoElement>("video.result-hover-video"); if (video) { video.pause(); video.currentTime = 0; } }} onClick={() => { if (!resultDragSelection.consumeSuppressedClick()) setViewerId(result.id); }}>
         <button className={`result-select ${checked ? "checked" : ""}`} onClick={(event) => { event.stopPropagation(); toggleSelected(result.id); }} aria-label={checked ? "取消选择" : "选择素材"}>{checked ? <CheckSquare2 size={19} /> : <Square size={19} />}</button>
-        {result.marked && <span className="result-mark">已标记</span>}
+        {marked && <span className="result-mark"><Star size={11} fill="currentColor" />已标记</span>}
+        <span className="result-shortcut-hint">按 1 标记</span>
         <span className={`result-kind result-kind-${result.mediaKind}`}>{result.mediaKind === "image" ? <ImageIcon size={12} /> : <Video size={12} />}{result.mediaKind === "image" ? "图片" : "视频"}</span>
-        <div className="result-preview">{result.mediaKind === "image" && preview ? <img src={preview} alt={result.name || "心影图片素材"} /> : result.mediaKind === "video" && result.previewUrl ? <img src={result.previewUrl} alt={result.name || "心影视频封面"} /> : result.mediaKind === "video" && preview ? <video src={preview} muted preload="metadata" /> : <div>{result.mediaKind === "image" ? <ImageIcon size={32} /> : <Film size={32} />}<span>暂无预览</span></div>}{result.mediaKind === "video" && <span className="result-play">▶</span>}</div>
-        <div className="result-body"><div><strong>{projectName}</strong><span>{formatDate(result.createdAt)}</span></div><p title={result.name}>{result.name || result.prompt || "心影历史素材"}</p><button className="button secondary full" onClick={(event) => { event.stopPropagation(); void run(() => window.xinying.results.download(result.id), "原片已保存"); }}><Download size={16} />下载原片</button></div>
+        <div className="result-preview">{result.mediaKind === "image" && preview ? <img src={preview} alt={result.name || "心影图片素材"} /> : result.mediaKind === "video" && preview ? <video className="result-hover-video" src={preview} poster={posterUrl(result)} muted loop playsInline preload="metadata" /> : result.mediaKind === "video" && result.previewUrl ? <img src={result.previewUrl} alt={result.name || "心影视频封面"} /> : <div>{result.mediaKind === "image" ? <ImageIcon size={32} /> : <Film size={32} />}<span>暂无预览</span></div>}{result.mediaKind === "video" && <span className="result-play">▶</span>}</div>
+        <div className="result-body"><div><strong>{projectName}</strong><span>{formatDate(result.createdAt)}</span></div><p title={result.prompt || result.name}>{result.prompt || result.name || "心影历史素材"}</p><button className="button secondary full" onClick={(event) => { event.stopPropagation(); void run(() => window.xinying.results.download(result.id), "原片已保存"); }}><Download size={16} />下载原片</button></div>
       </article>;
-    })}{!currentResults.length && <EmptyState title={selectedProject ? `${tabText}还没有同步素材` : "请先选择项目"} description={selectedProject ? `点击“同步${tabText}”，APP 会读取对应的心影素材。` : "选择一个已绑定的心影项目后同步。"} />}</div>
+    })}{!currentResults.length && <EmptyState title={selectedProject ? (filter === "marked" ? "当前分类还没有已标记素材" : `${tabText}还没有这类素材`) : "请先选择项目"} description={selectedProject ? (filter === "marked" ? "审片时把鼠标放在卡片上按 1，即可快速加入这里。" : `点击“同步${tabText}”，APP 会读取对应的心影素材。`) : "选择一个已绑定的心影项目后同步。"} />}</div>
     {visibleResults.length < currentResults.length && <div className="result-load-more"><span>已显示 {visibleResults.length} / {currentResults.length}</span><button className="button secondary" onClick={() => setVisibleLimit((current) => current + 120)}>继续加载 120 个</button></div>}
-    {viewer && <div className="modal-backdrop result-viewer-backdrop" onMouseDown={(event) => { if (event.currentTarget === event.target) closeViewer(); }}><section className="result-viewer">
-      <header><div><strong>{viewer.name || projects.find((project) => project.id === viewer.projectId)?.name || "心影素材"}</strong><span>{viewerIndex + 1} / {currentResults.length} · {formatDate(viewer.createdAt)}</span></div><div><button className="button secondary" onClick={() => run(() => window.xinying.results.download(viewer.id), "原片已保存")}><Download size={16} />下载当前原{viewer.mediaKind === "image" ? "图" : "视频"}</button><button className="icon-button" onClick={closeViewer} title="关闭"><X size={19} /></button></div></header>
-      <div className="result-viewer-stage"><button className="viewer-nav previous" onClick={() => moveViewer(-1)} title="上一个"><ChevronLeft size={30} /></button>{mediaUrl(viewer) ? viewer.mediaKind === "image" ? <img key={viewer.id} src={mediaUrl(viewer)!} alt={viewer.name || "心影图片素材"} /> : <video key={viewer.id} src={mediaUrl(viewer)!} poster={posterUrl(viewer)} controls autoPlay /> : <div className="viewer-missing"><Film size={42} /><span>请重新同步后查看</span></div>}<button className="viewer-nav next" onClick={() => moveViewer(1)} title="下一个"><ChevronRightIcon size={30} /></button></div>
-      <footer><p>{viewer.prompt || viewer.name || "无提示词记录"}</p><span>{viewer.marked ? "已标记" : "未标记"}</span></footer>
+    {viewer && reuseDraft && <div className="modal-backdrop result-viewer-backdrop" onMouseDown={(event) => { if (event.currentTarget === event.target) closeViewer(); }}><section className="result-viewer">
+      <header><div><strong>{viewer.name || projects.find((project) => project.id === viewer.projectId)?.name || "心影素材"}</strong><span>{viewerIndex + 1} / {currentResults.length} · {formatDate(viewer.createdAt)}</span></div><div><button className={`button ${isMarked(viewer) ? "marked-action" : "ghost"}`} onClick={() => void setResultMarked(viewer.id)}><Star size={16} fill={isMarked(viewer) ? "currentColor" : "none"} />{isMarked(viewer) ? "已标记" : "按 1 标记"}</button><button className="button secondary" onClick={() => run(() => window.xinying.results.download(viewer.id), "原片已保存")}><Download size={16} />下载原{viewer.mediaKind === "image" ? "图" : "视频"}</button><button className="icon-button" onClick={closeViewer} title="关闭"><X size={19} /></button></div></header>
+      <div className="result-viewer-body">
+        <div className="result-viewer-stage"><button className="viewer-nav previous" onClick={() => moveViewer(-1)} title="上一个"><ChevronLeft size={30} /></button>{mediaUrl(viewer) ? viewer.mediaKind === "image" ? <img key={viewer.id} src={mediaUrl(viewer)!} alt={viewer.name || "心影图片素材"} /> : <video key={viewer.id} src={mediaUrl(viewer)!} poster={posterUrl(viewer)} controls autoPlay /> : <div className="viewer-missing"><Film size={42} /><span>请重新同步后查看</span></div>}<button className="viewer-nav next" onClick={() => moveViewer(1)} title="下一个"><ChevronRightIcon size={30} /></button></div>
+        <aside className="result-viewer-inspector">
+          <section className="result-detail-section"><span className="eyebrow">PROMPT</span><h3>生成提示词</h3>{reuseEditing ? <textarea value={reuseDraft.prompt} onChange={(event) => setReuseDraft((current) => current && ({ ...current, prompt: event.target.value }))} /> : <p className="result-full-prompt">{viewer.prompt || viewer.name || "没有同步到提示词记录"}</p>}</section>
+          <section className="result-detail-section"><span className="eyebrow">REFERENCES</span><h3>参考素材 <small>{viewerPortraits.length + viewerReferences.length} 项</small></h3>{viewerPortraits.length + viewerReferences.length > 0 ? <div className="result-reference-list">{viewerPortraits.map((portrait, index) => <div className="result-reference-item" key={`portrait:${portrait.id}`}><img src={portrait.previewUrl} alt={portrait.displayName} /><span><b>@角色 {index + 1}</b><small>{portrait.displayName}</small></span></div>)}{viewerReferences.map((reference, index) => <div className="result-reference-item" key={reference.id}>{reference.mimeType.startsWith("image/") ? <img src={window.xinying.references.mediaUrl(reference.filePath)} alt={reference.name} /> : reference.mimeType.startsWith("video/") ? <video src={window.xinying.references.mediaUrl(reference.filePath)} muted /> : <div className="result-audio-reference">音频</div>}<span><b>@素材 {viewerPortraits.length + index + 1}</b><small>{reference.name}</small></span></div>)}</div> : <p className="result-detail-empty">较早从网页同步的结果没有本地参考快照；复用时仍会由心影原生“重新编辑”还原素材。</p>}</section>
+          <section className="result-detail-section"><span className="eyebrow">PARAMETERS</span><h3>生成参数</h3>{reuseEditing ? <div className="result-reuse-form"><label>模型<select value={reuseDraft.modelName} onChange={(event) => { const profile = modelProfile(event.target.value); setReuseDraft((current) => current && ({ ...current, modelName: event.target.value, mode: profile?.modes.includes(current.mode) ? current.mode : (profile?.modes[0] ?? current.mode), aspectRatio: profile?.aspectRatios.includes(current.aspectRatio) ? current.aspectRatio : (profile?.aspectRatios[0] ?? current.aspectRatio), resolution: current.resolution === "auto" || profile?.resolutions.includes(current.resolution) ? current.resolution : "auto", duration: profile ? Math.min(profile.maxDuration, Math.max(profile.minDuration, current.duration)) : current.duration })); }}> {XINYING_MODEL_PROFILES.map((profile) => <option key={profile.name} value={profile.name}>{profile.name}</option>)}</select></label><label>模式<select value={reuseDraft.mode} onChange={(event) => setReuseDraft((current) => current && ({ ...current, mode: event.target.value as Project["mode"] }))}>{(reuseProfile?.modes ?? [reuseDraft.mode]).map((mode) => <option key={mode} value={mode}>{mode === "text-to-video" ? "文生视频" : mode === "reference-to-video" ? "全能参考" : mode === "first-last-frame" ? "首尾帧" : "图生视频"}</option>)}</select></label><label>比例<select value={reuseDraft.aspectRatio} onChange={(event) => setReuseDraft((current) => current && ({ ...current, aspectRatio: event.target.value }))}>{(reuseProfile?.aspectRatios ?? [reuseDraft.aspectRatio]).map((ratio) => <option key={ratio} value={ratio}>{ratio}</option>)}</select></label><label>分辨率<select value={reuseDraft.resolution} onChange={(event) => setReuseDraft((current) => current && ({ ...current, resolution: event.target.value }))}><option value="auto">自动</option>{(reuseProfile?.resolutions ?? []).map((resolution) => <option key={resolution} value={resolution}>{resolutionLabel(resolution)}</option>)}</select></label><label>时长（秒）<input type="number" min={reuseProfile?.minDuration ?? 4} max={reuseProfile?.maxDuration ?? 30} value={reuseDraft.duration} onChange={(event) => setReuseDraft((current) => current && ({ ...current, duration: Number(event.target.value) }))} /></label><label>生成条数<input type="number" min="1" max="20" value={reuseDraft.count} onChange={(event) => setReuseDraft((current) => current && ({ ...current, count: Number(event.target.value) }))} /></label><label className="result-audio-toggle"><input type="checkbox" checked={reuseDraft.audioEnabled} onChange={(event) => setReuseDraft((current) => current && ({ ...current, audioEnabled: event.target.checked }))} />生成声音</label></div> : <div className="result-parameter-chips"><span>{reuseDraft.modelName}</span><span>{reuseDraft.aspectRatio}</span><span>{reuseDraft.resolution === "auto" ? "自动分辨率" : resolutionLabel(reuseDraft.resolution)}</span><span>{reuseDraft.duration} 秒</span><span>{reuseDraft.audioEnabled ? "有声" : "无声"}</span></div>}</section>
+          <div className="result-reuse-actions">{canReuse ? !reuseEditing ? <button className="button primary full" onClick={() => setReuseEditing(true)}><Repeat2 size={16} />复用并编辑</button> : <><button className="button ghost" onClick={() => setReuseEditing(false)}>取消编辑</button><button className="button primary" disabled={!reuseDraft.prompt.trim() || reuseDraft.count < 1 || reuseDraft.count > 20} onClick={() => void run(async () => { await window.xinying.results.reuse(viewer.id, reuseDraft); closeViewer(); }, `已复用提交 ${reuseDraft.count} 条，任务进入生成中`)}><Send size={16} />提交生成 {reuseDraft.count} 条</button></> : <p>项目素材库中的全员素材没有对应生成会话，不能直接复用提交。</p>}</div>
+        </aside>
+      </div>
     </section></div>}
   </div>;
 }

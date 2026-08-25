@@ -44,6 +44,7 @@ export const IPC = {
   resultsMark: "results:mark",
   resultsDownload: "results:download",
   resultsBatchDownload: "results:batch-download",
+  resultsReuse: "results:reuse",
   sessionStatus: "session:status",
   sessionOpenLogin: "session:open-login",
   sessionLoginCompleted: "session:login-completed",

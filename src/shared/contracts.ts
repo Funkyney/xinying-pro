@@ -183,6 +183,17 @@ export interface GenerationBatch {
   jobs: Job[];
 }
 
+export interface ResultReuseInput {
+  prompt: string;
+  modelName: string;
+  mode: ProjectMode;
+  aspectRatio: string;
+  duration: number;
+  resolution: string;
+  audioEnabled: boolean;
+  count: number;
+}
+
 export interface ReferenceAsset {
   id: string;
   projectId: string;
@@ -262,6 +273,8 @@ export interface PlatformResult {
   available: boolean;
   createdAt: string;
   lastSeenAt: string;
+  parameters?: Record<string, unknown>;
+  references?: ReferenceAsset[];
 }
 
 export interface PlatformPortraitDeleteResult {
@@ -481,6 +494,7 @@ export interface XinyingApi {
     mark(ids: string[], marked: boolean): Promise<PlatformResult[]>;
     download(id: string): Promise<PlatformResult>;
     batchDownload(ids: string[]): Promise<PlatformResult[]>;
+    reuse(id: string, input: ResultReuseInput): Promise<GenerationBatch>;
   };
   session: {
     status(): Promise<SessionState>;

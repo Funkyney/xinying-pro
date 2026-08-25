@@ -1782,13 +1782,16 @@ export class PlaywrightXinyingAdapter {
     if (!prompt) return { reason: "page-changed", message: "找不到心影提示词输入框，无法复用上一条生成" };
     await prompt.fill("");
 
+    const sourcePrompt = stringParameter(job, "reuseSourcePrompt") || job.promptSnapshot;
+    const unknownMaterials = job.parameters.reuseUnknownMaterials === true;
+    const sourceMaterialLabelCount = new Set(promptMaterialLabels(sourcePrompt)).size;
     let source: Awaited<ReturnType<PlaywrightXinyingAdapter["userForTask"]>> = null;
     const sourceDeadline = Date.now() + 12_000;
     while (Date.now() < sourceDeadline && !source) {
-      source = await this.userForTask(page, sourceRef, job.promptSnapshot);
+      source = await this.userForTask(page, sourceRef, sourcePrompt);
       if (!source) await page.waitForTimeout(250);
     }
-    if (!source) return { reason: "page-changed", message: "找不到批次上一条心影消息，无法使用“重新编辑”复用提交" };
+    if (!source) return { reason: "page-changed", message: "找不到待复用的心影消息，无法使用“重新编辑”继续提交" };
 
     const edit = source.user.locator("a.edit-btn").filter({ visible: true }).first();
     if ((await edit.count()) === 0) {
@@ -1801,33 +1804,44 @@ export class PlaywrightXinyingAdapter {
     while (Date.now() < hydrateDeadline) {
       promptForPlatform = (await prompt.innerText().catch(() => "")).trim();
       const materialCount = await this.uploadedMaterialCount(page);
-      const promptReady = normalizeReusablePrompt(promptForPlatform) === normalizeReusablePrompt(job.promptSnapshot);
-      const materialsReady = firstLastMode || materialCount === expectedMaterialCount;
+      const promptReady = normalizeReusablePrompt(promptForPlatform) === normalizeReusablePrompt(sourcePrompt);
+      const materialsReady = firstLastMode || (unknownMaterials ? materialCount >= sourceMaterialLabelCount : materialCount === expectedMaterialCount);
       if (promptReady && materialsReady) break;
       await page.waitForTimeout(250);
     }
-    if (normalizeReusablePrompt(promptForPlatform) !== normalizeReusablePrompt(job.promptSnapshot)) {
+    if (normalizeReusablePrompt(promptForPlatform) !== normalizeReusablePrompt(sourcePrompt)) {
       await this.clearUploadedMaterials(page).catch(() => undefined);
       await prompt.fill("").catch(() => undefined);
       return { reason: "page-changed", message: "心影“重新编辑”还原的提示词与本批次快照不一致，已安全停止" };
     }
 
     if (!firstLastMode) {
+      if (unknownMaterials) {
+        let previousCount = -1;
+        let stableChecks = 0;
+        const settleDeadline = Date.now() + 5_000;
+        while (Date.now() < settleDeadline && stableChecks < 3) {
+          const currentCount = await this.uploadedMaterialCount(page);
+          stableChecks = currentCount === previousCount ? stableChecks + 1 : 0;
+          previousCount = currentCount;
+          await page.waitForTimeout(250);
+        }
+      }
       const materials = await this.uploadedMaterialSnapshots(page);
-      if (materials.length !== expectedMaterialCount || new Set(materials.map((material) => material.label)).size !== expectedMaterialCount) {
+      if (!unknownMaterials && (materials.length !== expectedMaterialCount || new Set(materials.map((material) => material.label)).size !== expectedMaterialCount)) {
         await this.clearUploadedMaterials(page).catch(() => undefined);
         await prompt.fill("").catch(() => undefined);
         return { reason: "page-changed", message: `心影“重新编辑”只还原了 ${materials.length}/${expectedMaterialCount} 项素材，已安全停止` };
       }
       const actualLabels = new Set(materials.map((material) => `@${material.label}`));
-      const invalidLabels = [...new Set(promptMaterialLabels(promptForPlatform).filter((label) => !actualLabels.has(label)))];
+      const invalidLabels = [...new Set(promptMaterialLabels(job.promptSnapshot).filter((label) => !actualLabels.has(label)))];
       if (invalidLabels.length) {
         await this.clearUploadedMaterials(page).catch(() => undefined);
         await prompt.fill("").catch(() => undefined);
         return { reason: "page-changed", message: `心影“重新编辑”后的提示词引用了未还原素材：${invalidLabels.join("、")}` };
       }
     }
-    return { promptForPlatform };
+    return { promptForPlatform: job.promptSnapshot };
   }
 
   private async referenceUploadInput(page: Page, mimeType: string): Promise<Locator | null> {
@@ -2058,7 +2072,7 @@ export class PlaywrightXinyingAdapter {
       .filter((item): item is { kind: "reference"; id: string } => item?.kind === "reference")
       .map((item) => referencesById.get(item.id))
       .filter((reference): reference is Job["references"][number] => Boolean(reference));
-    if (orderedReferences.some((reference) => !fs.existsSync(reference.filePath))) {
+    if (!reuseFromPlatformTaskId && orderedReferences.some((reference) => !fs.existsSync(reference.filePath))) {
       throw new AppError("REFERENCE_FILE_MISSING", "至少一项参考素材文件已丢失");
     }
     const firstLastMode = stringParameter(job, "mode") === "first-last-frame";
@@ -2193,7 +2207,7 @@ export class PlaywrightXinyingAdapter {
       }
       promptForPlatform = remapPromptLabels(job.promptSnapshot, new Map(expectedLabels.map((label, index) => [label, actualLabels[index]])));
     }
-    if (!firstLastMode && (await this.uploadedMaterialCount(page)) !== materialOrder.length) {
+    if (!firstLastMode && !(reuseFromPlatformTaskId && job.parameters.reuseUnknownMaterials === true) && (await this.uploadedMaterialCount(page)) !== materialOrder.length) {
       return { status: "needs-human", checkpoint: { reason: "page-changed", message: "心影素材槽位数量与本地参考顺序不一致，已暂停提交" } };
     }
 

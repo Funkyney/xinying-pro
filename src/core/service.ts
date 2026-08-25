@@ -22,6 +22,7 @@ import type {
   ProjectInput,
   ReferenceAsset,
   ReferenceRole,
+  ResultReuseInput,
   SharedMediaAsset,
   SubmissionPreview,
 } from "../shared/contracts";
@@ -1204,14 +1205,97 @@ export class XinyingService {
     this.upsertCompletedJobResults();
     return this.database.rows.platformResults(projectId)
       .map((row) => this.database.mapPlatformResult(row))
-      .filter((result) => result.available);
+      .filter((result) => result.available)
+      .map((result) => this.enrichResultSnapshot(result));
+  }
+
+  private enrichResultSnapshot(result: PlatformResult): PlatformResult {
+    if (!result.jobId) return result;
+    const row = this.database.rows.job(result.jobId);
+    if (!row) return result;
+    const job = this.database.mapJob(row);
+    return { ...result, parameters: job.parameters, references: job.references };
   }
 
   getResult(id: string): PlatformResult {
     this.upsertCompletedJobResults();
     const row = this.database.rows.platformResult(id);
     if (!row) throw new AppError("RESULT_NOT_FOUND", `结果不存在：${id}`);
-    return this.database.mapPlatformResult(row);
+    return this.enrichResultSnapshot(this.database.mapPlatformResult(row));
+  }
+
+  submitResultReuse(resultId: string, input: ResultReuseInput): GenerationBatch {
+    const result = this.getResult(resultId);
+    if (result.source !== "personal" || result.mediaKind !== "video" || !result.platformTaskId.startsWith("chat:")) {
+      throw new AppError("RESULT_NOT_REUSABLE", "只有“我的生成”中的心影视频支持复用编辑");
+    }
+    const prompt = input.prompt.trim();
+    if (!prompt) throw new AppError("PROMPT_REQUIRED", "复用生成前请填写提示词");
+    if (!Number.isInteger(input.count) || input.count < 1 || input.count > 20) {
+      throw new AppError("INVALID_GENERATION_COUNT", "单次批量生成数量必须是 1 到 20 的整数");
+    }
+    const project = this.getProject(result.projectId);
+    const settings = {
+      modelName: input.modelName.trim() || project.modelName,
+      mode: input.mode,
+      aspectRatio: input.aspectRatio,
+      duration: input.duration,
+      resolution: input.resolution,
+    };
+    validateProjectSettings(settings);
+    const sourceJobRow = result.jobId ? this.database.rows.job(result.jobId) : undefined;
+    const sourceJob = sourceJobRow ? this.database.mapJob(sourceJobRow) : null;
+    const sourceParameters = sourceJob?.parameters ?? result.parameters ?? {};
+    const references = sourceJob?.references ?? result.references ?? [];
+    const batchId = crypto.randomUUID();
+    const timestamp = now();
+    const jobIds: string[] = [];
+    this.database.transaction(() => {
+      const insert = this.database.db.prepare(`INSERT INTO jobs
+        (id, kind, project_id, portrait_id, status, platform_task_id, prompt_snapshot,
+         parameters_json, references_json, output_path, output_url, error_code, error_message,
+         requires_human_reason, retry_count, created_at, submitted_at, completed_at, updated_at)
+        VALUES (?, 'generation', ?, NULL, 'queued', NULL, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, 0, ?, NULL, NULL, ?)`);
+      for (let takeIndex = 0; takeIndex < input.count; takeIndex += 1) {
+        const id = crypto.randomUUID();
+        jobIds.push(id);
+        insert.run(
+          id,
+          project.id,
+          prompt,
+          JSON.stringify({
+            ...sourceParameters,
+            mode: settings.mode,
+            modelName: settings.modelName,
+            platformUrl: project.platformUrl,
+            platformWorkspaceId: project.platformWorkspaceId,
+            platformProjectId: project.platformProjectId,
+            aspectRatio: settings.aspectRatio,
+            duration: settings.duration,
+            resolution: settings.resolution,
+            audioEnabled: Boolean(input.audioEnabled),
+            batchId,
+            takeNumber: takeIndex + 1,
+            takeCount: input.count,
+            reuseFromPlatformTaskId: takeIndex === 0 ? result.platformTaskId : undefined,
+            reuseSourcePrompt: sourceJob?.promptSnapshot || result.prompt,
+            reuseUnknownMaterials: !sourceJob,
+            reuseResultId: result.id,
+          }),
+          JSON.stringify(references),
+          timestamp,
+          timestamp,
+        );
+      }
+    });
+    jobIds.forEach((id, index) => this.addJobEvent(
+      id,
+      "info",
+      "RESULT_REUSE_QUEUED",
+      `已从结果库复用并加入队列（第 ${index + 1}/${input.count} 条）`,
+      { resultId: result.id, sourcePlatformTaskId: result.platformTaskId, batchId },
+    ));
+    return { batchId, count: input.count, jobs: jobIds.map((id) => this.getJob(id)) };
   }
 
   syncPlatformResults(projectId: string, results: PlatformResult[], source: PlatformResultSource = "personal"): PlatformResult[] {

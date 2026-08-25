@@ -64,6 +64,7 @@ export class JobWorker {
     try {
       let reuseFromPlatformTaskId: string | undefined;
       if (job.kind === "generation") {
+        reuseFromPlatformTaskId = stringJobParameter(job, "reuseFromPlatformTaskId") || undefined;
         const batchId = stringJobParameter(job, "batchId");
         const takeNumber = integerJobParameter(job, "takeNumber");
         if (batchId && takeNumber && takeNumber > 1) {

@@ -376,6 +376,11 @@ p { color: var(--muted); }
   background: linear-gradient(135deg, rgba(235, 196, 122, .3), rgba(235, 196, 122, .12));
 }
 .result-source-tabs button strong { color: #99671d; background: rgba(201, 149, 56, .12); }
+.result-review-toolbar { background: rgba(255, 255, 255, .9); }
+.result-filter-chips button { color: #7f7a73; background: rgba(70, 61, 49, .025); }
+.result-filter-chips button:hover { color: #5e5a54; border-color: rgba(201, 149, 56, .32); }
+.result-filter-chips button.active { color: #945f16; border-color: rgba(201, 149, 56, .45); background: rgba(235, 196, 122, .17); }
+.result-size-control { color: #77716a; }
 .result-select { color: #fff; background: rgba(45, 42, 37, .7); }
 .result-select.checked { border-color: #e1b35f; background: #c38a30; }
 .result-body p { color: #817c75; }
@@ -385,7 +390,13 @@ p { color: var(--muted); }
   background: #fff;
   box-shadow: 0 30px 100px rgba(57, 47, 34, .22);
 }
-.result-viewer footer p { color: #575550; }
+.result-viewer-inspector { border-color: rgba(70, 61, 49, .11); background: #fbfaf7; }
+.result-detail-section + .result-detail-section { border-color: rgba(70, 61, 49, .1); }
+.result-full-prompt { color: #575550; }
+.result-detail-empty { color: #817b73; background: rgba(70, 61, 49, .025); }
+.result-reference-item { border-color: rgba(70, 61, 49, .11); background: #fff; }
+.result-reference-item > img, .result-reference-item > video, .result-audio-reference { background: #f2efe9; }
+.result-reuse-actions { border-color: rgba(70, 61, 49, .1); background: rgba(251, 250, 247, .96); }
 
 table { color: #4a4946; }
 th { color: #8d8881; border-color: rgba(70, 61, 49, .1); }

@@ -4,6 +4,7 @@ import { chromium } from "playwright-core";
 const projectId = process.env.XINYING_RESULTS_PROJECT_ID ?? "008677c8-228e-44c8-a8dc-a1512aa0cb39";
 const browser = await chromium.connectOverCDP(`http://127.0.0.1:${Number(process.env.XINYING_CDP_PORT ?? 9333)}`);
 let markedId = "";
+let reuseEditorChecked = false;
 
 async function dragAcross(page, start, end) {
   const startBox = await start.boundingBox();
@@ -35,8 +36,36 @@ try {
   const count = await cards.count();
   if (!count) throw new Error("结果库没有显示已同步视频");
   const first = cards.first();
-  markedId = await page.evaluate((id) => window.xinying.results.list(id).then((items) => items.find((item) => item.source === "personal")?.id ?? ""), projectId);
+  markedId = await first.getAttribute("data-drag-select-id") ?? "";
   if (!markedId) throw new Error("结果库 API 没有返回首个视频");
+
+  const filterButtons = page.locator(".result-filter-chips button");
+  if ((await filterButtons.count()) !== 4) throw new Error("结果库没有显示全部/视频/图片/已标记四类筛选");
+  const grid = page.locator(".result-grid");
+  const sizeSlider = page.getByRole("slider", { name: "结果卡片大小" });
+  const gridBeforeResize = await grid.getAttribute("style");
+  await sizeSlider.fill("360");
+  const gridAfterResize = await grid.getAttribute("style");
+  if (gridBeforeResize === gridAfterResize || !gridAfterResize?.includes("360px")) throw new Error("结果卡片大小滑块没有改变网格排列");
+
+  const hoverVideo = first.locator("video.result-hover-video");
+  if ((await hoverVideo.count()) !== 1) throw new Error("视频结果卡片没有使用可悬停播放的视频预览");
+  await first.hover();
+  await page.waitForTimeout(350);
+  const hoverPlayback = await hoverVideo.evaluate((video) => ({ paused: video.paused, muted: video.muted, loop: video.loop }));
+  if (!hoverPlayback.muted || !hoverPlayback.loop) throw new Error("悬停视频预览没有静音循环配置");
+
+  await page.keyboard.press("1");
+  await first.locator(".result-mark").waitFor({ state: "visible", timeout: 8_000 });
+  const keyboardMarked = await page.evaluate((id) => window.xinying.results.list().then((items) => items.find((item) => item.id === id)?.marked), markedId);
+  if (!keyboardMarked) throw new Error("鼠标悬停后按 1 没有持久化标记");
+  await page.locator(".result-filter-chips button").filter({ hasText: "已标记" }).click();
+  if ((await page.locator(".result-card .result-mark").count()) < 1) throw new Error("已标记筛选没有显示标记素材");
+  if ((await page.getByRole("button", { name: /下载全部已标记/ }).count()) !== 1) throw new Error("已标记素材没有批量下载入口");
+  await page.locator(".result-filter-chips button").filter({ hasText: "全部素材" }).click();
+  await first.hover();
+  await page.keyboard.press("1");
+  await first.locator(".result-mark").waitFor({ state: "detached", timeout: 8_000 });
 
   await first.locator(".result-select").click();
   const batchBar = page.locator(".result-batch-bar");
@@ -60,6 +89,26 @@ try {
   await first.click();
   const viewer = page.locator(".result-viewer");
   await viewer.waitFor({ state: "visible", timeout: 8_000 });
+  const inspector = viewer.locator(".result-viewer-inspector");
+  if ((await inspector.count()) !== 1) throw new Error("结果查看器没有可滚动详情栏");
+  const inspectorOverflow = await inspector.evaluate((element) => getComputedStyle(element).overflowY);
+  if (!/auto|scroll/.test(inspectorOverflow)) throw new Error(`结果详情栏不能向下滚动：${inspectorOverflow}`);
+  if ((await viewer.getByRole("heading", { name: "生成提示词" }).count()) !== 1) throw new Error("结果详情没有显示完整提示词区");
+  if ((await viewer.getByRole("heading", { name: /参考素材/ }).count()) !== 1) throw new Error("结果详情没有显示参考素材区");
+  const referenceImage = viewer.locator(".result-reference-item img").first();
+  if ((await referenceImage.count()) > 0) {
+    await referenceImage.waitFor({ state: "visible", timeout: 5_000 });
+    if ((await referenceImage.evaluate((image) => image.naturalWidth)) === 0) throw new Error("结果详情中的历史参考图无法读取");
+  }
+  const reuseButton = viewer.getByRole("button", { name: "复用并编辑", exact: true });
+  if ((await reuseButton.count()) !== 1) throw new Error(`个人视频结果没有复用入口：${(await viewer.locator(".result-reuse-actions").innerText()).trim()}`);
+  await reuseButton.click();
+  if ((await viewer.locator(".result-detail-section textarea").count()) !== 1) throw new Error("复用按钮没有进入提示词编辑状态");
+  if ((await viewer.getByRole("button", { name: /提交生成/ }).count()) !== 1) throw new Error("复用编辑没有提交入口");
+  await viewer.getByRole("button", { name: "取消编辑", exact: true }).click();
+  reuseEditorChecked = true;
+  const viewerScreenshot = path.resolve("test-results", "results-viewer-ui.png");
+  await page.screenshot({ path: viewerScreenshot, fullPage: true });
   const before = (await viewer.locator("header span").innerText()).trim();
   await viewer.locator(".viewer-nav.next").click();
   const after = (await viewer.locator("header span").innerText()).trim();
@@ -98,7 +147,7 @@ try {
   await page.waitForTimeout(100);
   const screenshot = path.resolve("test-results", "results-library-ui.png");
   await page.screenshot({ path: screenshot, fullPage: true });
-  process.stdout.write(`${JSON.stringify({ ok: true, projectId, personalResultCount: count, projectResultCount: projectItems.length, projectMediaKinds: [...new Set(projectItems.map((item) => item.mediaKind))], initialProjectCardCount, dragSelectedCount, dragDeselectChecked: true, markRestored: true, viewerBefore: before, viewerAfter: after, previewFit, screenshot }, null, 2)}\n`);
+  process.stdout.write(`${JSON.stringify({ ok: true, projectId, personalResultCount: count, projectResultCount: projectItems.length, projectMediaKinds: [...new Set(projectItems.map((item) => item.mediaKind))], initialProjectCardCount, dragSelectedCount, dragDeselectChecked: true, keyboardMarkChecked: true, markedFilterChecked: true, hoverPlayback, gridBeforeResize, gridAfterResize, inspectorOverflow, reuseEditorChecked, markRestored: true, viewerBefore: before, viewerAfter: after, previewFit, viewerScreenshot, screenshot }, null, 2)}\n`);
 } catch (error) {
   process.stderr.write(`${JSON.stringify({ ok: false, error: error instanceof Error ? error.message : String(error) }, null, 2)}\n`);
   process.exitCode = 1;

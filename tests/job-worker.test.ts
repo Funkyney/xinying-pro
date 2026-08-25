@@ -120,6 +120,55 @@ describe("JobWorker", () => {
     expect(service.listJobEvents(batch.jobs[1].id).some((event) => event.code === "REUSING_PREVIOUS_TAKE")).toBe(true);
   });
 
+  it("starts a result-library reuse batch from the selected Heart task", async () => {
+    const project = service.createProject({ name: "结果复用队列", prompt: "原提示词", mode: "text-to-video" });
+    const sourceJob = service.submitGeneration(project.id);
+    service.updateJob(sourceJob.id, { status: "running", platformTaskId: "chat:platform-project:test-session:5" });
+    const [result] = service.syncPlatformResults(project.id, [{
+      id: "remote-result",
+      projectId: project.id,
+      platformProjectId: project.platformProjectId,
+      platformTaskId: "chat:platform-project:test-session:5",
+      jobId: null,
+      source: "personal",
+      mediaKind: "video",
+      name: "result.mp4",
+      prompt: "原提示词",
+      outputUrl: "https://media.example/result.mp4",
+      previewUrl: null,
+      outputPath: null,
+      marked: false,
+      available: true,
+      createdAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    }]);
+    const batch = service.submitResultReuse(result.id, {
+      prompt: "新提示词",
+      modelName: "Seedance 2.5 全能参考",
+      mode: "text-to-video",
+      aspectRatio: "16:9",
+      duration: 5,
+      resolution: "720p",
+      audioEnabled: true,
+      count: 2,
+    });
+    const adapter = {
+      submitGeneration: vi.fn().mockImplementation(async (job: { parameters: Record<string, unknown> }, reuseFrom?: string) => ({
+        status: "running",
+        platformTaskId: `chat:platform-project:test-session:${Number(job.parameters.takeNumber) + 5}`,
+        message: "已复用提交",
+      })),
+      submitPortraitReview: vi.fn(),
+    } as unknown as PlaywrightXinyingAdapter;
+    const worker = new JobWorker(service, adapter);
+
+    await (worker as unknown as { processQueue(): Promise<void> }).processQueue();
+    await (worker as unknown as { processQueue(): Promise<void> }).processQueue();
+
+    expect(adapter.submitGeneration).toHaveBeenNthCalledWith(1, expect.objectContaining({ id: batch.jobs[0].id }), "chat:platform-project:test-session:5");
+    expect(adapter.submitGeneration).toHaveBeenNthCalledWith(2, expect.objectContaining({ id: batch.jobs[1].id }), "chat:platform-project:test-session:6");
+  });
+
   it("stops a later take when the previous take was not confirmed as submitted", async () => {
     const project = service.createProject({ name: "复用前置失败", prompt: "固定机位", mode: "text-to-video" });
     const batch = service.submitGenerationBatch(project.id, 2);
