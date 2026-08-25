@@ -39,6 +39,8 @@
     "verify:results-ui": "node scripts/verify-results-ui.mjs",
     "verify:results-fixture-ui": "npm run build && node scripts/verify-results-fixture-ui.mjs",
     "verify:jobs-ui": "node scripts/verify-job-ledger-ui.mjs",
+    "verify:jobs-fixture-ui": "npm run build && node scripts/verify-jobs-fixture-ui.mjs",
+    "verify:task-status-api": "npm run build && node scripts/verify-task-status-api.mjs",
     "verify:login-lifecycle": "node scripts/verify-login-lifecycle.mjs",
     "verify:concurrent-sync": "node scripts/verify-concurrent-sync.mjs",
     "verify:update-ui": "node scripts/verify-update-ui.mjs",

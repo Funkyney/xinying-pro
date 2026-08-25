@@ -2,6 +2,7 @@ import path from "node:path";
 import { chromium } from "playwright-core";
 
 const projectId = process.env.XINYING_RESULTS_PROJECT_ID ?? "008677c8-228e-44c8-a8dc-a1512aa0cb39";
+const portraitFixtureId = process.env.XINYING_RESULTS_PORTRAIT_ID ?? "";
 const browser = await chromium.connectOverCDP(`http://127.0.0.1:${Number(process.env.XINYING_CDP_PORT ?? 9333)}`);
 let markedId = "";
 let reuseEditorChecked = false;
@@ -35,7 +36,7 @@ try {
   const cards = page.locator(".result-card");
   const count = await cards.count();
   if (!count) throw new Error("结果库没有显示已同步视频");
-  const first = cards.first();
+  const first = portraitFixtureId ? page.locator(`.result-card[data-drag-select-id="${portraitFixtureId}"]`) : cards.first();
   markedId = await first.getAttribute("data-drag-select-id") ?? "";
   if (!markedId) throw new Error("结果库 API 没有返回首个视频");
 
@@ -50,6 +51,12 @@ try {
 
   const hoverVideo = first.locator("video.result-hover-video");
   if ((await hoverVideo.count()) !== 1) throw new Error("视频结果卡片没有使用可悬停播放的视频预览");
+  await hoverVideo.evaluate((video) => video.readyState >= 1 ? true : new Promise((resolve) => video.addEventListener("loadedmetadata", () => resolve(true), { once: true })));
+  await first.waitFor({ state: "visible" });
+  if (portraitFixtureId && !(await first.getAttribute("class"))?.includes("portrait-result")) throw new Error("9:16 视频没有切换为竖屏结果卡片");
+  if (portraitFixtureId) await page.waitForTimeout(300);
+  const portraitPreviewBox = await first.locator(".result-preview").boundingBox();
+  if (portraitFixtureId && (!portraitPreviewBox || portraitPreviewBox.height <= portraitPreviewBox.width * 1.35)) throw new Error(`竖屏视频卡片比例不正确：${JSON.stringify(portraitPreviewBox)}`);
   await first.hover();
   await page.waitForTimeout(350);
   const hoverPlayback = await hoverVideo.evaluate((video) => ({ paused: video.paused, muted: video.muted, loop: video.loop }));
@@ -89,6 +96,7 @@ try {
   await first.click();
   const viewer = page.locator(".result-viewer");
   await viewer.waitFor({ state: "visible", timeout: 8_000 });
+  if (portraitFixtureId && !(await viewer.getAttribute("class"))?.includes("portrait-viewer")) throw new Error("打开 9:16 视频后查看器没有进入竖屏布局");
   const inspector = viewer.locator(".result-viewer-inspector");
   if ((await inspector.count()) !== 1) throw new Error("结果查看器没有可滚动详情栏");
   const inspectorOverflow = await inspector.evaluate((element) => getComputedStyle(element).overflowY);
@@ -129,6 +137,8 @@ try {
   if (previewFit !== "contain") throw new Error(`结果卡片仍在裁切素材：object-fit=${previewFit}`);
 
   const imageCard = projectCards.filter({ has: page.locator(".result-kind-image") }).first();
+  await imageCard.locator(".result-preview img").evaluate((image) => image.complete ? true : new Promise((resolve) => image.addEventListener("load", () => resolve(true), { once: true })));
+  if (portraitFixtureId && !(await imageCard.getAttribute("class"))?.includes("portrait-result")) throw new Error("9:16 图片没有切换为竖屏结果卡片");
   await imageCard.click();
   await viewer.waitFor({ state: "visible", timeout: 8_000 });
   const viewerImage = viewer.locator(".result-viewer-stage img");

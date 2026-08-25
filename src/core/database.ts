@@ -118,6 +118,10 @@ interface JobRow {
   portrait_id: string | null;
   status: JobStatus;
   platform_task_id: string | null;
+  platform_execution_id: string | null;
+  progress: number | null;
+  progress_label: string;
+  last_checked_at: string | null;
   prompt_snapshot: string;
   parameters_json: string;
   references_json: string;
@@ -287,6 +291,10 @@ export class XinyingDatabase {
         portrait_id TEXT REFERENCES portrait_assets(id) ON DELETE SET NULL,
         status TEXT NOT NULL,
         platform_task_id TEXT,
+        platform_execution_id TEXT,
+        progress INTEGER,
+        progress_label TEXT NOT NULL DEFAULT '',
+        last_checked_at TEXT,
         prompt_snapshot TEXT NOT NULL DEFAULT '',
         parameters_json TEXT NOT NULL DEFAULT '{}',
         references_json TEXT NOT NULL DEFAULT '[]',
@@ -397,6 +405,22 @@ export class XinyingDatabase {
       this.db.exec("ALTER TABLE platform_results ADD COLUMN name TEXT NOT NULL DEFAULT ''");
     }
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_platform_results_source ON platform_results(project_id, source, available, created_at DESC)");
+
+    const jobColumns = new Set(
+      (this.db.prepare("PRAGMA table_info(jobs)").all() as Array<{ name: string }>).map((column) => column.name),
+    );
+    if (!jobColumns.has("platform_execution_id")) {
+      this.db.exec("ALTER TABLE jobs ADD COLUMN platform_execution_id TEXT");
+    }
+    if (!jobColumns.has("progress")) {
+      this.db.exec("ALTER TABLE jobs ADD COLUMN progress INTEGER");
+    }
+    if (!jobColumns.has("progress_label")) {
+      this.db.exec("ALTER TABLE jobs ADD COLUMN progress_label TEXT NOT NULL DEFAULT ''");
+    }
+    if (!jobColumns.has("last_checked_at")) {
+      this.db.exec("ALTER TABLE jobs ADD COLUMN last_checked_at TEXT");
+    }
   }
 
   mapProject(row: ProjectRow): Project {
@@ -519,6 +543,10 @@ export class XinyingDatabase {
       portraitId: row.portrait_id,
       status: row.status,
       platformTaskId: row.platform_task_id,
+      platformExecutionId: row.platform_execution_id,
+      progress: row.progress,
+      progressLabel: row.progress_label,
+      lastCheckedAt: row.last_checked_at,
       promptSnapshot: row.prompt_snapshot,
       parameters: parseJson(row.parameters_json, {}),
       references: parseJson(row.references_json, []),

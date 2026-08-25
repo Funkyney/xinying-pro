@@ -325,6 +325,10 @@ export interface Job {
   portraitId: string | null;
   status: JobStatus;
   platformTaskId: string | null;
+  platformExecutionId: string | null;
+  progress: number | null;
+  progressLabel: string;
+  lastCheckedAt: string | null;
   promptSnapshot: string;
   parameters: Record<string, unknown>;
   references: ReferenceAsset[];
@@ -338,6 +342,12 @@ export interface Job {
   submittedAt: string | null;
   completedAt: string | null;
   updatedAt: string;
+}
+
+export interface JobDeleteResult {
+  requestedIds: string[];
+  removedIds: string[];
+  skipped: Array<{ id: string; status: JobStatus }>;
 }
 
 export interface JobEvent {
@@ -486,6 +496,9 @@ export interface XinyingApi {
     events(id: string): Promise<JobEvent[]>;
     resume(id: string): Promise<Job>;
     cancel(id: string): Promise<Job>;
+    refresh(ids?: string[]): Promise<Job[]>;
+    remove(id: string): Promise<JobDeleteResult>;
+    removeMany(ids: string[]): Promise<JobDeleteResult>;
     download(id: string): Promise<Job>;
   };
   results: {

@@ -7,6 +7,7 @@ import type { XinyingService } from "../core/service";
 import type { PlatformViewManager } from "./platform-view";
 import type { PlaywrightXinyingAdapter } from "./playwright-adapter";
 import type { CodexExtensionManager } from "./codex-extension";
+import type { JobWorker } from "./job-worker";
 
 export function registerIpcHandlers(
   window: BrowserWindow,
@@ -14,6 +15,7 @@ export function registerIpcHandlers(
   platform: PlatformViewManager,
   adapter: PlaywrightXinyingAdapter,
   codexExtension: CodexExtensionManager,
+  worker: JobWorker,
 ): void {
   const handle = (channel: string, listener: (...args: any[]) => unknown) => {
     ipcMain.removeHandler(channel);
@@ -229,6 +231,9 @@ export function registerIpcHandlers(
   handle(IPC.jobsEvents, (_event, id: string) => service.listJobEvents(id));
   handle(IPC.jobsResume, (_event, id: string) => service.resumeJob(id));
   handle(IPC.jobsCancel, (_event, id: string) => service.cancelJob(id));
+  handle(IPC.jobsRefresh, (_event, ids?: string[]) => worker.refreshGenerationJobs(ids));
+  handle(IPC.jobsRemove, (_event, id: string) => service.removeJob(id));
+  handle(IPC.jobsRemoveMany, (_event, ids: string[]) => service.removeJobs(ids));
   handle(IPC.jobsDownload, async (_event, id: string) => {
     const job = service.getJob(id);
     const defaultName = `${job.projectId ?? job.id}.mp4`;

@@ -32,12 +32,13 @@ describe("JobWorker", () => {
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
-  it("stops automating a video job once Heart confirms it is generating", async () => {
+  it("keeps a submitted video job synchronized until Heart confirms completion", async () => {
     const project = service.createProject({ name: "队列闭环", prompt: "固定机位", mode: "text-to-video" });
     const queued = service.submitGeneration(project.id);
     const adapter = {
-      submitGeneration: vi.fn().mockResolvedValue({ status: "running", platformTaskId: "chat:p:s:0", message: "已提交" }),
+      submitGeneration: vi.fn().mockResolvedValue({ status: "running", platformTaskId: "chat:p:s:0", platformExecutionId: "1001", progress: 0, message: "已提交" }),
       submitPortraitReview: vi.fn(),
+      inspectGenerationJobs: vi.fn().mockResolvedValue(new Map([["1001", { status: "completed", platformExecutionId: "1001", progress: 100, message: "已完成" }]])),
       inspectRunningJob: vi.fn().mockResolvedValue({ status: "completed", platformTaskId: "chat:p:s:0", outputUrl: "https://media.example/result.mp4", message: "已完成" }),
       inspectPortraitReview: vi.fn(),
     } as unknown as PlaywrightXinyingAdapter;
@@ -48,7 +49,8 @@ describe("JobWorker", () => {
     expect(service.getJob(queued.id).platformTaskId).toBe("chat:p:s:0");
 
     await (worker as unknown as { monitorRunning(): Promise<void> }).monitorRunning();
-    expect(service.getJob(queued.id).status).toBe("running");
+    expect(service.getJob(queued.id)).toMatchObject({ status: "completed", platformExecutionId: "1001", progress: 100 });
+    expect(adapter.inspectGenerationJobs).toHaveBeenCalledOnce();
     expect(adapter.inspectRunningJob).not.toHaveBeenCalled();
   });
 

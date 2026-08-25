@@ -1072,4 +1072,33 @@ describe("XinyingService", () => {
     expect(cancelled.requiresHumanReason).toBeNull();
     expect(() => service.removeProject(project.id)).not.toThrow();
   });
+
+  it("permanently removes only ended task records and keeps generated results", () => {
+    const project = service.createProject({ name: "任务记录清理", prompt: "固定机位", mode: "text-to-video" });
+    const active = service.submitGeneration(project.id);
+    const ended = service.submitGeneration(project.id);
+    service.updateJob(ended.id, {
+      status: "completed",
+      platformTaskId: "chat:platform-project:test-session:9",
+      platformExecutionId: "1687009",
+      progress: 100,
+      outputUrl: "https://media.example/final.mp4",
+      completedAt: new Date().toISOString(),
+    });
+    expect(service.listResults(project.id).some((result) => result.jobId === ended.id)).toBe(true);
+    const snapshotDir = path.join(service.paths.jobSnapshotsDir, ended.id);
+    fs.mkdirSync(snapshotDir, { recursive: true });
+    fs.writeFileSync(path.join(snapshotDir, "snapshot.txt"), "fixture");
+
+    const result = service.removeJobs([active.id, ended.id]);
+    expect(result).toEqual({
+      requestedIds: [active.id, ended.id],
+      removedIds: [ended.id],
+      skipped: [{ id: active.id, status: "queued" }],
+    });
+    expect(() => service.getJob(ended.id)).toThrow(/不存在/);
+    expect(service.getJob(active.id).status).toBe("queued");
+    expect(fs.existsSync(snapshotDir)).toBe(false);
+    expect(service.listResults(project.id).some((item) => item.platformTaskId === "chat:platform-project:test-session:9" && item.jobId === null)).toBe(true);
+  });
 });

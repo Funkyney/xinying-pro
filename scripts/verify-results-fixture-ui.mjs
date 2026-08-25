@@ -15,11 +15,22 @@ const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "xinying-results-review-")
 const paths = createAppPaths(dataDir);
 const imagePath = path.join(dataDir, "review-reference.png");
 const videoPath = path.join(dataDir, "review-result.mp4");
+const portraitImagePath = path.join(dataDir, "review-portrait.png");
+const portraitVideoPath = path.join(dataDir, "review-portrait.mp4");
 fs.copyFileSync(path.join(appDir, "build", "icon.png"), imagePath);
 execFileSync("ffmpeg", [
   "-loglevel", "error", "-f", "lavfi", "-i", "color=c=0x5f4b8b:s=960x540:d=2",
   "-vf", "drawtext=text='Xinying Pro Review':fontcolor=white:fontsize=48:x=(w-text_w)/2:y=(h-text_h)/2",
   "-c:v", "libx264", "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-y", videoPath,
+]);
+execFileSync("ffmpeg", [
+  "-loglevel", "error", "-f", "lavfi", "-i", "color=c=0x33275d:s=540x960:d=2",
+  "-vf", "drawtext=text='9x16 Portrait':fontcolor=white:fontsize=42:x=(w-text_w)/2:y=(h-text_h)/2",
+  "-c:v", "libx264", "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-y", portraitVideoPath,
+]);
+execFileSync("ffmpeg", [
+  "-loglevel", "error", "-f", "lavfi", "-i", "color=c=0x224c61:s=540x960",
+  "-frames:v", "1", "-threads", "1", "-y", portraitImagePath,
 ]);
 
 const database = new XinyingDatabase(paths.databasePath);
@@ -56,19 +67,21 @@ for (let index = 0; index < 4; index += 1) {
     prompt: index === 0 ? "@图1 作为角色参考，固定机位，人物缓慢转身。" : `第 ${index + 1} 条测试提示词`,
     outputUrl: null,
     previewUrl: null,
-    outputPath: videoPath,
+    outputPath: index === 0 ? portraitVideoPath : videoPath,
     marked: false,
     available: true,
-    createdAt,
+    createdAt: new Date(Date.parse(createdAt) - index * 1_000).toISOString(),
     lastSeenAt: createdAt,
   });
 }
 service.syncPlatformResults(project.id, personalResults, "personal");
 service.syncPlatformResults(project.id, [
   { ...personalResults[0], id: "review-project-video", platformTaskId: "project-video", jobId: null, source: "project", name: "团队视频.mp4" },
-  { ...personalResults[0], id: "review-project-image", platformTaskId: "project-image", jobId: null, source: "project", mediaKind: "image", name: "团队图片.png", outputPath: imagePath },
+  { ...personalResults[0], id: "review-project-image", platformTaskId: "project-image", jobId: null, source: "project", mediaKind: "image", name: "团队竖屏图片.png", outputPath: portraitImagePath },
 ], "project");
 const seededCounts = service.listResults(project.id).reduce((counts, result) => ({ ...counts, [result.source]: (counts[result.source] ?? 0) + 1 }), {});
+const portraitResultId = service.listResults(project.id).find((result) => result.source === "personal" && result.outputPath === portraitVideoPath)?.id;
+if (!portraitResultId) throw new Error("没有写入竖屏验收视频");
 database.close();
 
 const cdpPort = await new Promise((resolve, reject) => {
@@ -95,7 +108,7 @@ try {
   process.stdout.write(`${JSON.stringify({ seededCounts, rendererCounts })}\n`);
   const child = spawn(process.execPath, [path.join(scriptDir, "verify-results-ui.mjs")], {
     cwd: appDir,
-    env: { ...process.env, XINYING_CDP_PORT: String(cdpPort), XINYING_RESULTS_PROJECT_ID: project.id },
+    env: { ...process.env, XINYING_CDP_PORT: String(cdpPort), XINYING_RESULTS_PROJECT_ID: project.id, XINYING_RESULTS_PORTRAIT_ID: portraitResultId },
     stdio: ["ignore", "pipe", "pipe"],
   });
   let childOutput = "";

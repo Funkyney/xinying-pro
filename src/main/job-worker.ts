@@ -56,6 +56,55 @@ export class JobWorker {
     this.monitorTimer = null;
   }
 
+  async refreshGenerationJobs(ids?: string[]): Promise<Job[]> {
+    if (this.processing) return this.service.listJobs();
+    this.processing = true;
+    try {
+      await this.inspectGenerationJobs(ids, 20);
+      return this.service.listJobs();
+    } finally {
+      this.processing = false;
+    }
+  }
+
+  private async inspectGenerationJobs(ids?: string[], fallbackLimit = 2): Promise<void> {
+    const selectedIds = ids?.length ? new Set(ids) : null;
+    const running = this.service.listJobs().filter((job) =>
+      job.kind === "generation"
+      && job.status === "running"
+      && (!selectedIds || selectedIds.has(job.id)),
+    );
+    if (!running.length) return;
+    const results = await this.runWithBackgroundAutomation(async () => {
+      const byExecutionId = await this.adapter.inspectGenerationJobs(running).catch(() => new Map<string, AdapterOutcome>());
+      const inspected: Array<{ job: Job; outcome?: AdapterOutcome; error?: unknown }> = [];
+      const fallback: Job[] = [];
+      for (const job of running) {
+        const outcome = job.platformExecutionId ? byExecutionId.get(job.platformExecutionId) : undefined;
+        if (outcome) inspected.push({ job, outcome });
+        else fallback.push(job);
+      }
+      for (const job of fallback.slice(0, fallbackLimit)) {
+        try {
+          inspected.push({ job, outcome: await this.adapter.inspectRunningJob(job) });
+        } catch (error) {
+          inspected.push({ job, error });
+        }
+      }
+      return inspected;
+    });
+    if (!results) return;
+    for (const { job, outcome, error } of results) {
+      if (error || !outcome) {
+        const appError = asAppError(error ?? new Error("心影任务状态查询未返回结果"));
+        this.service.updateJob(job.id, { lastCheckedAt: new Date().toISOString() });
+        this.service.addJobEvent(job.id, "warning", "GENERATION_MONITOR_RETRY", appError.message);
+        continue;
+      }
+      this.applyOutcome(job, outcome, false);
+    }
+  }
+
   private async processQueue(): Promise<void> {
     if (this.processing) return;
     const job = this.service.listQueuedJobs()[0];
@@ -114,9 +163,7 @@ export class JobWorker {
     if (this.processing) return;
     this.processing = true;
     try {
-      // A video-generation run is complete for automation as soon as Heart
-      // confirms it is generating. Do not keep taking over the shared page to
-      // poll or download it; the user can inspect/sync results when desired.
+      await this.inspectGenerationJobs();
       // Portrait authorization still needs monitoring because later reference
       // submission depends on its approved/rejected state.
       const now = Date.now();
@@ -198,6 +245,10 @@ export class JobWorker {
       this.service.updateJob(job.id, {
         status: "failed",
         platformTaskId: outcome.platformTaskId ?? job.platformTaskId,
+        platformExecutionId: outcome.platformExecutionId ?? job.platformExecutionId,
+        progress: outcome.progress ?? job.progress,
+        progressLabel: outcome.progressLabel ?? outcome.message,
+        lastCheckedAt: new Date().toISOString(),
         errorCode: outcome.code,
         errorMessage: outcome.message,
         requiresHumanReason: null,
@@ -213,6 +264,10 @@ export class JobWorker {
       this.service.updateJob(job.id, {
         status: "completed",
         platformTaskId: outcome.platformTaskId ?? job.platformTaskId,
+        platformExecutionId: outcome.platformExecutionId ?? job.platformExecutionId,
+        progress: outcome.progress ?? 100,
+        progressLabel: outcome.progressLabel ?? "心影生成完成",
+        lastCheckedAt: new Date().toISOString(),
         outputUrl: outcome.outputPath ? null : outcome.outputUrl ?? null,
         outputPath: outcome.outputPath ?? null,
         completedAt: new Date().toISOString(),
@@ -228,6 +283,10 @@ export class JobWorker {
     this.service.updateJob(job.id, {
       status: "running",
       platformTaskId: outcome.platformTaskId ?? job.platformTaskId,
+      platformExecutionId: outcome.platformExecutionId ?? job.platformExecutionId,
+      progress: outcome.progress ?? job.progress,
+      progressLabel: outcome.progressLabel ?? outcome.message,
+      lastCheckedAt: job.kind === "generation" ? new Date().toISOString() : job.lastCheckedAt,
       requiresHumanReason: null,
     });
     if (job.kind === "generation" && job.projectId) {

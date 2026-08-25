@@ -36,9 +36,9 @@ import {
 import { canonicalPlatformOutputUrl, originalPlatformVideoUrlFromPoster } from "../shared/platform-results";
 
 export type AdapterOutcome =
-  | { status: "running"; platformTaskId?: string; generationUrl?: string; message: string }
-  | { status: "completed"; platformTaskId?: string; outputUrl?: string; outputPath?: string; platformPortrait?: PlatformPortrait; message: string }
-  | { status: "failed"; platformTaskId?: string; code: string; message: string }
+  | { status: "running"; platformTaskId?: string; platformExecutionId?: string; generationUrl?: string; progress?: number; progressLabel?: string; message: string }
+  | { status: "completed"; platformTaskId?: string; platformExecutionId?: string; outputUrl?: string; outputPath?: string; platformPortrait?: PlatformPortrait; progress?: number; progressLabel?: string; message: string }
+  | { status: "failed"; platformTaskId?: string; platformExecutionId?: string; code: string; progress?: number; progressLabel?: string; message: string }
   | { status: "needs-human"; platformTaskId?: string; checkpoint: HumanCheckpoint }
   | { status: "needs-login"; message: string };
 
@@ -56,6 +56,14 @@ interface MatchedChatResponse {
 interface UploadedMaterialSnapshot {
   label: string;
   previewText: string;
+}
+
+interface PlatformGenerationTaskRecord {
+  task_id?: string | number;
+  task_name?: string;
+  status?: string;
+  progress?: number;
+  project_id?: string;
 }
 
 interface PlatformPortraitApiRecord {
@@ -459,6 +467,32 @@ function classifyGenerationCard(text: string, className: string, hasOutputContro
   if (/生成失败|审核不通过|任务失败|任务创建失败|限流状态|限流|操作频繁|系统繁忙|稍后再试|已超额打工|余额不足|积分不足|算力不足/.test(text)) return "failed";
   if (className.includes("_isLoading") || /生成中|排队中|处理中|等待生成/.test(text) || !hasOutputControl) return "running";
   return "completed";
+}
+
+function extractBaseTaskId(value: unknown): string | null {
+  if (!value || typeof value !== "object") return null;
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = extractBaseTaskId(item);
+      if (found) return found;
+    }
+    return null;
+  }
+  const record = value as Record<string, unknown>;
+  const direct = record.base_task_id;
+  if ((typeof direct === "string" && direct.trim()) || typeof direct === "number") return String(direct);
+  for (const nested of Object.values(record)) {
+    const found = extractBaseTaskId(nested);
+    if (found) return found;
+  }
+  return null;
+}
+
+function taskListRecords(value: unknown): PlatformGenerationTaskRecord[] {
+  if (!value || typeof value !== "object") return [];
+  const root = value as Record<string, unknown>;
+  const data = root.data && typeof root.data === "object" ? root.data as Record<string, unknown> : root;
+  return Array.isArray(data.tasks_list) ? data.tasks_list as PlatformGenerationTaskRecord[] : [];
 }
 
 function encodeChatTaskRef(ref: ChatTaskRef): string {
@@ -2229,6 +2263,10 @@ export class PlaywrightXinyingAdapter {
 
     const pendingTaskId = encodePendingTaskRef(taskRef);
     this.persistPendingTaskRef?.(job.id, pendingTaskId);
+    const creationResponsePromise = page.waitForResponse(
+      (response) => response.url().includes("contentChat/createGenerationTask") && response.request().method() === "POST",
+      { timeout: 5_000 },
+    ).catch(() => null);
     await clickDom(submit);
     let submitted = false;
     const deadline = Date.now() + 15_000;
@@ -2267,9 +2305,16 @@ export class PlaywrightXinyingAdapter {
       ...taskRef,
       sessionId: submittedUrl?.searchParams.get("sessionId") ?? taskRef.sessionId,
     });
+    const creationResponse = await creationResponsePromise;
+    const platformExecutionId = creationResponse
+      ? extractBaseTaskId(await creationResponse.json().catch(() => null)) ?? undefined
+      : undefined;
     return {
       status: "running",
       platformTaskId,
+      platformExecutionId,
+      progress: 0,
+      progressLabel: "已提交到心影，等待生成",
       generationUrl: submittedUrl?.toString(),
       message: reusedDraft
         ? "已通过心影“重新编辑”复用上一条的提示词、素材与参数并再次提交生成"
@@ -2477,6 +2522,73 @@ export class PlaywrightXinyingAdapter {
       platformTaskId: job.platformTaskId ?? undefined,
       message: `虚拟人像“${portrait.displayName}”已提交，正在等待心影角色库更新`,
     };
+  }
+
+  async inspectGenerationJobs(jobs: Job[]): Promise<Map<string, AdapterOutcome>> {
+    const tracked = jobs.filter((job) => job.kind === "generation" && job.platformExecutionId);
+    const outcomes = new Map<string, AdapterOutcome>();
+    if (!tracked.length) return outcomes;
+    const page = await this.page();
+    const targetIds = new Set(tracked.map((job) => job.platformExecutionId!));
+    const taskButton = page.getByText("\u4efb\u52a1\u7ba1\u7406", { exact: true }).filter({ visible: true }).first();
+    if ((await taskButton.count()) === 0) return outcomes;
+    const content = page.locator(".taskManagerContent").filter({ visible: true }).first();
+    if ((await content.count()) > 0) {
+      await clickDom(taskButton).catch(() => undefined);
+      await page.waitForTimeout(180);
+    }
+
+    const responseForStatus = (status: string, pageIndex?: number) => page.waitForResponse((response) => {
+      if (!response.url().includes("/api/v3/task/list") || response.url().includes("/total")) return false;
+      try {
+        const payload = response.request().postDataJSON() as Record<string, unknown>;
+        return payload.task_status === status && (pageIndex === undefined || payload.page_index === pageIndex);
+      } catch {
+        return false;
+      }
+    }, { timeout: 8_000 }).catch(() => null);
+
+    const collect = async (status: "PROCESS" | "FAIL" | "SUCCESS", open: () => Promise<void>) => {
+      const firstResponsePromise = responseForStatus(status, 1);
+      await open();
+      let response = await firstResponsePromise;
+      for (let pageIndex = 1; response && pageIndex <= 3; pageIndex += 1) {
+        const payload = await response.json().catch(() => null);
+        const records = taskListRecords(payload);
+        for (const record of records) {
+          const executionId = record.task_id === undefined ? "" : String(record.task_id);
+          if (!targetIds.has(executionId)) continue;
+          const progress = Number.isFinite(Number(record.progress)) ? Math.max(0, Math.min(100, Number(record.progress))) : status === "SUCCESS" ? 100 : undefined;
+          const taskName = String(record.task_name ?? "").trim();
+          const progressLabel = taskName || (status === "PROCESS" ? "心影正在生成" : status === "SUCCESS" ? "心影生成完成" : "心影生成失败");
+          if (status === "SUCCESS") {
+            outcomes.set(executionId, { status: "completed", platformExecutionId: executionId, progress: 100, progressLabel, message: "心影任务管理已确认生成完成" });
+          } else if (status === "FAIL") {
+            outcomes.set(executionId, { status: "failed", platformExecutionId: executionId, code: "PLATFORM_TASK_FAILED", progress, progressLabel, message: "心影任务管理显示生成失败" });
+          } else {
+            outcomes.set(executionId, { status: "running", platformExecutionId: executionId, progress, progressLabel, message: progress === undefined ? "心影任务仍在生成" : `心影任务正在生成：${progress}%` });
+          }
+        }
+        const data = payload && typeof payload === "object" && (payload as Record<string, unknown>).data;
+        const pageInfo = data && typeof data === "object" ? (data as Record<string, unknown>).page_info as Record<string, unknown> | undefined : undefined;
+        const totalPage = Number(pageInfo?.total_page ?? 1);
+        if (pageIndex >= totalPage || pageIndex >= 3 || [...targetIds].every((id) => outcomes.has(id))) break;
+        const nextResponsePromise = responseForStatus(status, pageIndex + 1);
+        await page.locator(".taskManagerContent").filter({ visible: true }).first().evaluate((element) => element.scrollTo({ top: element.scrollHeight })).catch(() => undefined);
+        response = await nextResponsePromise;
+      }
+    };
+
+    await collect("PROCESS", () => clickDom(taskButton));
+    await page.waitForTimeout(120);
+    for (const [status, label] of [["FAIL", "\u5931\u8d25\u4efb\u52a1"], ["SUCCESS", "\u5df2\u6210\u529f"]] as const) {
+      const tab = page.getByText(label, { exact: true }).filter({ visible: true }).last();
+      if ((await tab.count()) > 0) await collect(status, () => clickDom(tab));
+    }
+    if ((await page.locator(".taskManagerContent").filter({ visible: true }).count()) > 0) {
+      await clickDom(taskButton).catch(() => undefined);
+    }
+    return outcomes;
   }
 
   async inspectRunningJob(job: Job): Promise<AdapterOutcome> {
@@ -2959,6 +3071,8 @@ export const adapterInternals = {
   normalizeReusablePrompt,
   classifyPortraitCardText,
   classifyGenerationCard,
+  extractBaseTaskId,
+  taskListRecords,
   platformPortraitIdentity,
   platformWorkspaceIdentity,
   platformProjectIdentity,

@@ -55,6 +55,14 @@ describe("Playwright adapter task references", () => {
     expect(adapterInternals.classifyGenerationCard("系统繁忙，请稍后再试", "content-item _video", false)).toBe("failed");
   });
 
+  it("binds Heart's numeric generation id and reads task-manager progress records", () => {
+    expect(adapterInternals.extractBaseTaskId({ code: 0, data: { task_data: { base_task_id: 1687009 } } })).toBe("1687009");
+    expect(adapterInternals.taskListRecords({
+      code: 0,
+      data: { tasks_list: [{ task_id: 1687009, status: "PROCESS", progress: 63 }] },
+    })).toEqual([{ task_id: 1687009, status: "PROCESS", progress: 63 }]);
+  });
+
   it("keeps a stable Heart portrait identity when preview processing changes", () => {
     const first = adapterInternals.platformPortraitIdentity("角色A", "https://cdn.bluemediacdn.com/team/asset-1.png?x-tos-process=image/quality,q_40", "team-a");
     const second = adapterInternals.platformPortraitIdentity("角色A", "https://cdn.bluemediacdn.com/team/asset-1.png?x-tos-process=image/quality,q_80", "team-a");

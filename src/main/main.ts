@@ -97,7 +97,7 @@ function createWindow(): void {
     cliEntry,
     bundledSkillPath,
   });
-  registerIpcHandlers(mainWindow, service, platformManager, adapter, codexExtension);
+  registerIpcHandlers(mainWindow, service, platformManager, adapter, codexExtension, worker);
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     try {

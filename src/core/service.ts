@@ -10,6 +10,7 @@ import type {
   DirectorRunValidation,
   GenerationBatch,
   Job,
+  JobDeleteResult,
   JobEvent,
   PlatformCatalogSnapshot,
   PlatformProjectBinding,
@@ -1724,12 +1725,39 @@ export class XinyingService {
     const current = this.getJob(id);
     const next = { ...current, ...patch, updatedAt: now() };
     this.database.db.prepare(`UPDATE jobs SET
-      status = @status, platform_task_id = @platformTaskId, output_path = @outputPath,
+      status = @status, platform_task_id = @platformTaskId,
+      platform_execution_id = @platformExecutionId, progress = @progress,
+      progress_label = @progressLabel, last_checked_at = @lastCheckedAt,
+      output_path = @outputPath,
       output_url = @outputUrl, error_code = @errorCode, error_message = @errorMessage,
       requires_human_reason = @requiresHumanReason, retry_count = @retryCount,
       submitted_at = @submittedAt, completed_at = @completedAt, updated_at = @updatedAt
       WHERE id = @id`).run(next);
     return this.getJob(id);
+  }
+
+  removeJobs(ids: string[]): JobDeleteResult {
+    const requestedIds = [...new Set(ids.filter(Boolean))];
+    const existing = requestedIds.map((id) => this.database.rows.job(id)).filter(Boolean).map((row) => this.database.mapJob(row!));
+    const removable = existing.filter((job) => TERMINAL_JOB_STATUSES.has(job.status));
+    const skipped = existing
+      .filter((job) => !TERMINAL_JOB_STATUSES.has(job.status))
+      .map((job) => ({ id: job.id, status: job.status }));
+    if (removable.length) {
+      this.database.transaction(() => {
+        const statement = this.database.db.prepare("DELETE FROM jobs WHERE id = ?");
+        for (const job of removable) statement.run(job.id);
+      });
+      for (const job of removable) {
+        fs.rmSync(path.join(this.paths.jobSnapshotsDir, job.id), { recursive: true, force: true });
+      }
+    }
+    return { requestedIds, removedIds: removable.map((job) => job.id), skipped };
+  }
+
+  removeJob(id: string): JobDeleteResult {
+    this.getJob(id);
+    return this.removeJobs([id]);
   }
 
   cancelJob(id: string): Job {
