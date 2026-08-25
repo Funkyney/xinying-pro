@@ -28,7 +28,7 @@ const commanderMessages: string[] = [];
 function runtime() {
   const paths = createAppPaths();
   database = new XinyingDatabase(paths.databasePath);
-  return { paths, service: new XinyingService(database, paths) };
+  return { paths, database, service: new XinyingService(database, paths) };
 }
 
 function envelope<T>(ok: boolean, data?: T, error?: CliEnvelope["error"]): CliEnvelope<T> {
@@ -482,13 +482,17 @@ director.command("submit")
   });
 
 program.command("doctor").description("检查本地数据和 APP 队列状态").action(() => {
-  const { paths, service } = runtime();
+  const { paths, database: activeDatabase, service } = runtime();
   output({
     dataDir: paths.dataDir,
     databasePath: paths.databasePath,
+    databaseHealth: activeDatabase.db.pragma("quick_check", { simple: true }),
+    databasePages: activeDatabase.db.pragma("page_count", { simple: true }),
+    reclaimablePages: activeDatabase.db.pragma("freelist_count", { simple: true }),
     projects: service.listProjects().length,
+    jobs: service.listJobs().length,
     queuedJobs: service.listQueuedJobs().length,
-    note: "CLI 负责写入共享 SQLite 队列；需要启动心影Pro APP 才会执行网页任务。",
+    note: "databaseHealth 应为 ok；CLI 负责写入共享 SQLite 队列，需要启动心影Pro APP 才会执行网页任务。",
   });
 });
 

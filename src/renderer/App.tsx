@@ -20,6 +20,7 @@ import {
   LayoutDashboard,
   ListTree,
   LogIn,
+  Moon,
   Plus,
   RefreshCw,
   Repeat2,
@@ -27,6 +28,7 @@ import {
   SlidersHorizontal,
   Square,
   Star,
+  Sun,
   Send,
   Settings2,
   ShieldAlert,
@@ -74,7 +76,7 @@ import { SharedMaterialLibrary } from "./components/SharedMaterialLibrary";
 import { PlatformPanel } from "./components/PlatformPanel";
 import { InteractionGate, userFacingError } from "./interaction";
 import { useDragMultiSelect, withSelectionState } from "./use-drag-multi-select";
-import dashboardDirector from "./assets/dashboard-director.png";
+import dashboardDirector from "./assets/dashboard-director.webp";
 import xinyingLogo from "./assets/xinying-logo.svg";
 
 type PageKey = "dashboard" | "projects" | "studio" | "portraits" | "jobs" | "results" | "codex" | "platform";
@@ -153,6 +155,7 @@ function EmptyState({ title, description, action }: { title: string; description
 
 export function App() {
   const [page, setPage] = useState<PageKey>("dashboard");
+  const [theme, setTheme] = useState<"light" | "dark">(() => document.documentElement.dataset.theme === "dark" ? "dark" : "light");
   const [snapshot, setSnapshot] = useState<DashboardSnapshot | null>(null);
   const [platformPortraits, setPlatformPortraits] = useState<PlatformPortrait[]>([]);
   const [results, setResults] = useState<PlatformResult[]>([]);
@@ -171,6 +174,11 @@ export function App() {
   const resultLoadSequenceRef = useRef(0);
   const [libraryRevision, setLibraryRevision] = useState(0);
 
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    localStorage.setItem("xinying:theme", theme);
+  }, [theme]);
+
   const refresh = useCallback(async (clearPreviousError = false) => {
     const sequence = ++refreshSequenceRef.current;
     try {
@@ -186,11 +194,19 @@ export function App() {
 
   useEffect(() => {
     void refresh(true);
+    const delay = page === "jobs" ? 6_000 : page === "dashboard" ? 12_000 : 20_000;
     const timer = window.setInterval(() => {
       if (document.visibilityState === "visible" && !actionGateRef.current.isActive) void refresh();
-    }, 4_000);
-    return () => window.clearInterval(timer);
-  }, [refresh]);
+    }, delay);
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible" && !actionGateRef.current.isActive) void refresh();
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [page, refresh]);
 
   useEffect(() => {
     const sequence = ++portraitLoadSequenceRef.current;
@@ -198,7 +214,6 @@ export function App() {
       setPlatformPortraits([]);
       return;
     }
-    setPlatformPortraits([]);
     void window.xinying.portraits.platformList(selectedProjectId).then((items) => {
       if (sequence === portraitLoadSequenceRef.current) setPlatformPortraits(items);
     }).catch((cause) => {
@@ -212,7 +227,6 @@ export function App() {
       setResults([]);
       return;
     }
-    setResults([]);
     void window.xinying.results.list(selectedProjectId).then((items) => {
       if (sequence === resultLoadSequenceRef.current) setResults(items);
     }).catch((cause) => {
@@ -313,6 +327,7 @@ export function App() {
         <header className="topbar">
           <div className="breadcrumb"><span>心影Pro</span><ChevronRight size={14} /><strong>{navigation.find((item) => item.key === page)?.label}</strong></div>
           <div className="topbar-actions">
+            <button className="icon-button theme-toggle" onClick={() => setTheme((current) => current === "light" ? "dark" : "light")} title={theme === "light" ? "切换到夜间模式" : "切换到日间模式"} aria-label={theme === "light" ? "切换到夜间模式" : "切换到日间模式"}>{theme === "light" ? <Moon size={16} /> : <Sun size={16} />}</button>
             <UpdateControl state={updateState} onClick={() => void handleUpdate()} />
             <button className="platform-context-button" onClick={() => setPage("projects")} title="切换个人/团队空间或心影项目"><Building2 size={15} /><span><small>{selectedPlatformWorkspace?.kind === "personal" ? "个人空间" : selectedPlatformWorkspace?.name ?? "尚未选择心影空间"}</small><strong>{selectedPlatformProject?.name ?? (selectedProject?.platformProjectId ? selectedProject.name : "选择项目后开始生成")}</strong></span><ChevronRight size={14} /></button>
             {selectedProject && <select value={selectedProjectId} onChange={(event) => setSelectedProjectId(event.target.value)}>{snapshot?.projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select>}
@@ -1071,7 +1086,7 @@ function ResultsPage({ results, projects, selectedProject, onSelectProject, run 
         <button className={`result-select ${checked ? "checked" : ""}`} onClick={(event) => { event.stopPropagation(); toggleSelected(result.id); }} aria-label={checked ? "取消选择" : "选择素材"}>{checked ? <CheckSquare2 size={19} /> : <Square size={19} />}</button>
         {marked && <span className="result-mark"><Star size={11} fill="currentColor" />已标记</span>}
         <span className="result-shortcut-hint">按 1 标记</span>
-        <div className="result-preview" style={{ aspectRatio: String(ratio) }}><span className={`result-kind result-kind-${result.mediaKind}`}>{result.mediaKind === "image" ? <ImageIcon size={12} /> : <Video size={12} />}{result.mediaKind === "image" ? "图片" : "视频"}</span>{result.mediaKind === "image" && preview ? <img src={preview} alt={result.name || "心影图片素材"} onLoad={(event) => rememberMediaRatio(result.id, event.currentTarget.naturalWidth, event.currentTarget.naturalHeight)} /> : result.mediaKind === "video" && preview ? <video className="result-hover-video" src={preview} poster={posterUrl(result)} muted loop playsInline preload="metadata" onLoadedMetadata={(event) => rememberMediaRatio(result.id, event.currentTarget.videoWidth, event.currentTarget.videoHeight)} /> : result.mediaKind === "video" && result.previewUrl ? <img src={result.previewUrl} alt={result.name || "心影视频封面"} onLoad={(event) => rememberMediaRatio(result.id, event.currentTarget.naturalWidth, event.currentTarget.naturalHeight)} /> : <div>{result.mediaKind === "image" ? <ImageIcon size={32} /> : <Film size={32} />}<span>暂无预览</span></div>}{result.mediaKind === "video" && <span className="result-play">▶</span>}</div>
+        <div className="result-preview" style={{ aspectRatio: String(ratio) }}><span className={`result-kind result-kind-${result.mediaKind}`}>{result.mediaKind === "image" ? <ImageIcon size={12} /> : <Video size={12} />}{result.mediaKind === "image" ? "图片" : "视频"}</span>{result.mediaKind === "image" && preview ? <img loading="lazy" decoding="async" src={preview} alt={result.name || "心影图片素材"} onLoad={(event) => rememberMediaRatio(result.id, event.currentTarget.naturalWidth, event.currentTarget.naturalHeight)} /> : result.mediaKind === "video" && preview ? <video className="result-hover-video" src={preview} poster={posterUrl(result)} muted loop playsInline preload="none" onLoadedMetadata={(event) => rememberMediaRatio(result.id, event.currentTarget.videoWidth, event.currentTarget.videoHeight)} /> : result.mediaKind === "video" && result.previewUrl ? <img loading="lazy" decoding="async" src={result.previewUrl} alt={result.name || "心影视频封面"} onLoad={(event) => rememberMediaRatio(result.id, event.currentTarget.naturalWidth, event.currentTarget.naturalHeight)} /> : <div>{result.mediaKind === "image" ? <ImageIcon size={32} /> : <Film size={32} />}<span>暂无预览</span></div>}{result.mediaKind === "video" && <span className="result-play">▶</span>}</div>
         <div className="result-body"><div><strong>{projectName}</strong><span>{formatDate(result.createdAt)}</span></div><p title={result.prompt || result.name}>{result.prompt || result.name || "心影历史素材"}</p><button className="button secondary full" onClick={(event) => { event.stopPropagation(); void run(() => window.xinying.results.download(result.id), "原片已保存"); }}><Download size={16} />下载原片</button></div>
       </article>;
     })}{!currentResults.length && <EmptyState title={selectedProject ? (filter === "marked" ? "当前分类还没有已标记素材" : `${tabText}还没有这类素材`) : "请先选择项目"} description={selectedProject ? (filter === "marked" ? "审片时把鼠标放在卡片上按 1，即可快速加入这里。" : `点击“同步${tabText}”，APP 会读取对应的心影素材。`) : "选择一个已绑定的心影项目后同步。"} />}</div>

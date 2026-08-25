@@ -51,13 +51,14 @@ try {
 
   const hoverVideo = first.locator("video.result-hover-video");
   if ((await hoverVideo.count()) !== 1) throw new Error("视频结果卡片没有使用可悬停播放的视频预览");
+  if ((await hoverVideo.getAttribute("preload")) !== "none") throw new Error("结果库视频仍会在进入页面时批量预加载");
+  await first.hover();
   await hoverVideo.evaluate((video) => video.readyState >= 1 ? true : new Promise((resolve) => video.addEventListener("loadedmetadata", () => resolve(true), { once: true })));
   await first.waitFor({ state: "visible" });
   if (portraitFixtureId && !(await first.getAttribute("class"))?.includes("portrait-result")) throw new Error("9:16 视频没有切换为竖屏结果卡片");
   if (portraitFixtureId) await page.waitForTimeout(300);
   const portraitPreviewBox = await first.locator(".result-preview").boundingBox();
   if (portraitFixtureId && (!portraitPreviewBox || portraitPreviewBox.height <= portraitPreviewBox.width * 1.35)) throw new Error(`竖屏视频卡片比例不正确：${JSON.stringify(portraitPreviewBox)}`);
-  await first.hover();
   await page.waitForTimeout(350);
   const hoverPlayback = await hoverVideo.evaluate((video) => ({ paused: video.paused, muted: video.muted, loop: video.loop }));
   if (!hoverPlayback.muted || !hoverPlayback.loop) throw new Error("悬停视频预览没有静音循环配置");

@@ -1421,7 +1421,7 @@ export class PlaywrightXinyingAdapter {
       if (!cards) throw new AppError("PORTRAIT_LIBRARY_EMPTY", "心影认证角色库没有可同步的人像卡片");
       // “全部人像”会持续按约 45 张一批追加，实际不是一个可穷尽的快照。
       // 读取最新的一段窗口并由本地增量合并；不能因本轮未滚到旧角色而将其失效。
-      await this.loadPortraitCards(page, cards, 30, 6, 400);
+      await this.loadPortraitCards(cards, 30, 6, 400);
       const syncedAt = new Date().toISOString();
       const entries = await this.readPortraitCardEntries(cards);
       const unique = new Map<string, PlatformPortrait>();
@@ -1443,7 +1443,7 @@ export class PlaywrightXinyingAdapter {
       await this.setPortraitSourceFilter(page, dialog, "上传人像");
       const uploadedCards = await waitForCollectionWithin(dialog, this.selectors.generation.portraitCards, 20_000);
       if (!uploadedCards) throw new AppError("PORTRAIT_LIBRARY_EMPTY", "心影上传人像筛选结果为空");
-      await this.loadPortraitCards(page, uploadedCards, 30, 6, 400);
+      await this.loadPortraitCards(uploadedCards, 30, 6, 400);
       const uploadedEntries = await this.readPortraitCardEntries(uploadedCards);
       for (const [index, item] of uploadedEntries.entries()) {
         const identity = platformPortraitIdentity(item.displayName, item.previewUrl, workspaceId);
@@ -1519,13 +1519,16 @@ export class PlaywrightXinyingAdapter {
     })).filter((item) => item.displayName && item.previewUrl));
   }
 
-  private async loadPortraitCards(page: Page, cards: Locator, maxRounds: number, stableThreshold: number, delayMs: number): Promise<void> {
+  private async loadPortraitCards(cards: Locator, maxRounds: number, stableThreshold: number, delayMs: number): Promise<void> {
     let stableRounds = 0;
     let highestCount = -1;
     for (let round = 0; round < maxRounds && stableRounds < stableThreshold; round += 1) {
       const count = await cards.count();
       if (count > 0) await cards.last().scrollIntoViewIfNeeded().catch(() => undefined);
-      await page.waitForTimeout(delayMs);
+      // The list normally appends a new card batch well before the old fixed delay.
+      // Wait for the first new card and return immediately when it appears; only pay
+      // the full delay while confirming that the list is actually stable.
+      await cards.nth(count).waitFor({ state: "attached", timeout: delayMs }).catch(() => undefined);
       const nextCount = await cards.count();
       if (nextCount > highestCount) {
         highestCount = nextCount;
@@ -1596,7 +1599,7 @@ export class PlaywrightXinyingAdapter {
       await this.setPortraitSourceFilter(page, dialog, "上传人像");
       const initialCards = await waitForCollectionWithin(dialog, this.selectors.generation.portraitCards, 20_000);
       if (!initialCards) throw new AppError("PORTRAIT_LIBRARY_EMPTY", "心影认证角色库没有可管理的人像卡片");
-      await this.loadPortraitCards(page, initialCards, 30, 6, 400);
+      await this.loadPortraitCards(initialCards, 30, 6, 400);
 
       for (const [index, portrait] of portraits.entries()) {
         try {

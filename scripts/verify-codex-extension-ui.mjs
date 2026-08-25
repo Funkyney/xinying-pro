@@ -20,7 +20,7 @@ try {
   await page.getByRole("button", { name: "Codex扩展", exact: true }).click();
   await page.getByRole("heading", { name: "让 Codex 直接指挥心影Pro" }).waitFor();
   const initialStatus = await page.evaluate(() => window.xinying.codexExtension.status());
-  if (process.env.XINYING_INSTALL_CODEX_EXTENSION === "1" && !initialStatus.installed) {
+  if (process.env.XINYING_INSTALL_CODEX_EXTENSION === "1" && (!initialStatus.installed || initialStatus.needsUpdate)) {
     await page.locator(".codex-extension-actions .button.primary").click();
     await page.locator(".extension-state.extension-installed").waitFor();
   }

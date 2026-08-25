@@ -1,8 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
-import { BrowserWindow, dialog, ipcMain, shell } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import { IPC } from "../shared/ipc";
-import type { PlatformPortraitDeleteProgress, PlatformProjectCreateInput, PlatformResult, PlatformResultSource, PlatformViewBounds, PortraitMetadataInput, ProjectInput, ReferenceRole, ResultReuseInput } from "../shared/contracts";
+import type { PlatformPortraitDeleteProgress, PlatformProjectCreateInput, PlatformResult, PlatformResultSource, PlatformViewBounds, PortraitMetadataInput, ProjectInput, ReferenceRole, ResultReuseInput, SessionState } from "../shared/contracts";
+import { projectDownloadName } from "../shared/download-naming";
 import type { XinyingService } from "../core/service";
 import type { PlatformViewManager } from "./platform-view";
 import type { PlaywrightXinyingAdapter } from "./playwright-adapter";
@@ -22,6 +23,29 @@ export function registerIpcHandlers(
     ipcMain.handle(channel, listener);
   };
 
+  let cachedSession: SessionState | null = null;
+  let cachedSessionExpiresAt = 0;
+  const readSessionState = async (force = false): Promise<SessionState> => {
+    if (!force && cachedSession && Date.now() < cachedSessionExpiresAt) return cachedSession;
+    cachedSession = await adapter.sessionState();
+    cachedSessionExpiresAt = Date.now() + 12_000;
+    return cachedSession;
+  };
+  const invalidateSessionState = () => {
+    cachedSession = null;
+    cachedSessionExpiresAt = 0;
+  };
+  const availableDownloadPath = (candidate: string): string => {
+    if (!fs.existsSync(candidate)) return candidate;
+    const extension = path.extname(candidate);
+    const base = candidate.slice(0, -extension.length);
+    for (let index = 2; index < 10_000; index += 1) {
+      const next = `${base}-${index}${extension}`;
+      if (!fs.existsSync(next)) return next;
+    }
+    return `${base}-${Date.now()}${extension}`;
+  };
+
   handle(IPC.dashboard, async (_event, options?: { includeLibraries?: boolean }) => {
     const includeLibraries = options?.includeLibraries !== false;
     return {
@@ -30,11 +54,11 @@ export function registerIpcHandlers(
       portraits: service.listPortraits(),
       platformPortraits: includeLibraries ? service.listPlatformPortraits() : [],
       platformPortraitCount: service.countAvailablePlatformPortraits(),
-      sharedMedia: service.listSharedMedia(),
+      sharedMedia: includeLibraries ? service.listSharedMedia() : [],
       results: includeLibraries ? service.listResults() : [],
       platformCatalog: service.getPlatformCatalog(),
       platformAutomation: platform.getAutomationState(),
-      session: await adapter.sessionState(),
+      session: await readSessionState(),
     };
   });
   handle(IPC.projectsList, () => service.listProjects());
@@ -236,10 +260,11 @@ export function registerIpcHandlers(
   handle(IPC.jobsRemoveMany, (_event, ids: string[]) => service.removeJobs(ids));
   handle(IPC.jobsDownload, async (_event, id: string) => {
     const job = service.getJob(id);
-    const defaultName = `${job.projectId ?? job.id}.mp4`;
+    const projectName = job.projectId ? service.getProject(job.projectId).name : "心影生成";
+    const defaultName = projectDownloadName(projectName, ".mp4", { createdAt: job.completedAt ?? job.createdAt });
     const result = await dialog.showSaveDialog(window, {
       title: "保存生成结果",
-      defaultPath: path.join(service.paths.outputsDir, defaultName),
+      defaultPath: path.join(app.getPath("downloads"), defaultName),
       filters: [{ name: "视频", extensions: ["mp4", "mov", "webm"] }],
     });
     if (result.canceled || !result.filePath) return job;
@@ -290,9 +315,10 @@ export function registerIpcHandlers(
   handle(IPC.resultsDownload, async (_event, id: string) => {
     const result = await ensureResultDownloadable(id);
     const extension = resultExtension(result);
+    const projectName = service.getProject(result.projectId).name;
     const selected = await dialog.showSaveDialog(window, {
       title: `保存心影${result.mediaKind === "image" ? "图片" : "视频"}素材`,
-      defaultPath: path.join(service.paths.outputsDir, `${result.id.replace(/[^a-zA-Z0-9_-]/g, "-")}${extension}`),
+      defaultPath: path.join(app.getPath("downloads"), projectDownloadName(projectName, extension, { createdAt: result.createdAt })),
       filters: [result.mediaKind === "image" ? { name: "图片", extensions: ["png", "jpg", "jpeg", "webp"] } : { name: "视频", extensions: ["mp4", "mov", "webm"] }],
     });
     return selected.canceled || !selected.filePath ? result : service.exportResult(id, selected.filePath);
@@ -300,24 +326,37 @@ export function registerIpcHandlers(
   handle(IPC.resultsBatchDownload, async (_event, ids: string[]) => {
     const normalized = [...new Set(ids.map((id) => id.trim()).filter(Boolean))];
     if (!normalized.length) throw new Error("请至少选择一个要下载的素材");
-    const selected = await dialog.showOpenDialog(window, { title: `选择 ${normalized.length} 个素材的保存文件夹`, properties: ["openDirectory", "createDirectory"] });
+    const selected = await dialog.showOpenDialog(window, { title: `选择 ${normalized.length} 个素材的保存文件夹`, defaultPath: app.getPath("downloads"), properties: ["openDirectory", "createDirectory"] });
     if (selected.canceled || !selected.filePaths[0]) return normalized.map((id) => service.getResult(id));
     const destination = selected.filePaths[0];
     const downloaded = [];
-    for (const [index, id] of normalized.entries()) {
+    const projectSequences = new Map<string, number>();
+    for (const id of normalized) {
       await ensureResultDownloadable(id);
       const result = service.getResult(id);
-      const filePath = path.join(destination, `${String(index + 1).padStart(3, "0")}-${id.replace(/[^a-zA-Z0-9_-]/g, "-")}${resultExtension(result)}`);
+      const project = service.getProject(result.projectId);
+      const sequence = (projectSequences.get(project.id) ?? 0) + 1;
+      projectSequences.set(project.id, sequence);
+      const filePath = availableDownloadPath(path.join(destination, projectDownloadName(project.name, resultExtension(result), { createdAt: result.createdAt, index: sequence })));
       downloaded.push(await service.exportResult(id, filePath));
     }
     return downloaded;
   });
 
-  handle(IPC.sessionStatus, () => adapter.sessionState());
-  handle(IPC.sessionOpenLogin, () => platform.openLogin());
-  handle(IPC.sessionOpenUrl, (_event, url: string) => platform.openUrl(url));
+  handle(IPC.sessionStatus, () => readSessionState(true));
+  handle(IPC.sessionOpenLogin, () => {
+    invalidateSessionState();
+    return platform.openLogin();
+  });
+  handle(IPC.sessionOpenUrl, (_event, url: string) => {
+    invalidateSessionState();
+    return platform.openUrl(url);
+  });
   handle(IPC.sessionShowPlatform, () => platform.openPlatform());
-  handle(IPC.sessionReload, () => platform.reload());
+  handle(IPC.sessionReload, () => {
+    invalidateSessionState();
+    return platform.reload();
+  });
   handle(IPC.platformVisible, (_event, visible: boolean) => {
     if (visible) platform.show();
     else {

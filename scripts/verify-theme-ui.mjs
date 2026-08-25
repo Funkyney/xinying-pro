@@ -10,6 +10,8 @@ const appDir = path.resolve(scriptDir, "..");
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "xinying-theme-ui-"));
 const outputs = {
   dashboard: path.join(appDir, "test-results", "theme-dashboard.png"),
+  dashboardDark: path.join(appDir, "test-results", "theme-dashboard-dark.png"),
+  dashboardCompact: path.join(appDir, "test-results", "theme-dashboard-compact.png"),
   studio: path.join(appDir, "test-results", "theme-studio.png"),
   projects: path.join(appDir, "test-results", "theme-projects.png"),
   portraits: path.join(appDir, "test-results", "theme-portraits.png"),
@@ -100,6 +102,60 @@ try {
 
   await page.screenshot({ path: outputs.dashboard, fullPage: true });
 
+  const projectCardLayout = await page.evaluate(() => {
+    const host = document.createElement("div");
+    host.className = "platform-project-grid";
+    host.style.cssText = "position:fixed;left:-10000px;top:0;width:430px";
+    host.innerHTML = '<article class="platform-project-card current"><div class="project-card-icon"></div><div><strong>TEST</strong><span>ID：0001lw</span><small>团队共享项目 · 尚未绑定对话 · 心影当前</small></div><button class="button secondary">选择项目与对话</button></article>';
+    document.body.appendChild(host);
+    const detail = host.querySelector(".platform-project-card > div:nth-child(2)");
+    const button = host.querySelector("button");
+    if (!(detail instanceof HTMLElement) || !(button instanceof HTMLElement)) throw new Error("项目卡片探针创建失败");
+    const detailRect = detail.getBoundingClientRect();
+    const buttonRect = button.getBoundingClientRect();
+    const result = { detailRight: detailRect.right, buttonLeft: buttonRect.left, cardWidth: host.getBoundingClientRect().width };
+    host.remove();
+    return result;
+  });
+  if (projectCardLayout.detailRight > projectCardLayout.buttonLeft) throw new Error(`项目说明仍然压住按钮：${JSON.stringify(projectCardLayout)}`);
+
+  await page.setViewportSize({ width: 1120, height: 900 });
+  const compactLayout = await page.evaluate(() => {
+    const hero = document.querySelector(".hero-panel");
+    const content = document.querySelector(".page-content");
+    const breadcrumb = document.querySelector(".breadcrumb");
+    const actions = document.querySelector(".topbar-actions");
+    if (!(hero instanceof HTMLElement) || !(content instanceof HTMLElement) || !(breadcrumb instanceof HTMLElement) || !(actions instanceof HTMLElement)) throw new Error("紧凑布局关键元素缺失");
+    const heroRect = hero.getBoundingClientRect();
+    const contentRect = content.getBoundingClientRect();
+    const breadcrumbRect = breadcrumb.getBoundingClientRect();
+    const actionRect = actions.getBoundingClientRect();
+    return { heroRight: heroRect.right, contentRight: contentRect.right, breadcrumbRight: breadcrumbRect.right, actionsLeft: actionRect.left, actionsRight: actionRect.right, viewportWidth: window.innerWidth };
+  });
+  if (compactLayout.heroRight > compactLayout.contentRight + 1) throw new Error(`1120px 下总览横向溢出：${JSON.stringify(compactLayout)}`);
+  if (compactLayout.actionsLeft < compactLayout.breadcrumbRight || compactLayout.actionsRight > compactLayout.viewportWidth) throw new Error(`1120px 下顶栏控件重叠：${JSON.stringify(compactLayout)}`);
+  await page.screenshot({ path: outputs.dashboardCompact, fullPage: true });
+  await page.setViewportSize({ width: 1536, height: 1024 });
+
+  await page.getByRole("button", { name: "切换到夜间模式", exact: true }).click();
+  await page.locator('html[data-theme="dark"]').waitFor();
+  const darkVisual = await page.evaluate(() => {
+    const sidebar = document.querySelector(".sidebar");
+    if (!(sidebar instanceof HTMLElement)) throw new Error("夜间模式侧栏缺失");
+    const numbers = getComputedStyle(sidebar).backgroundColor.match(/[\d.]+/g)?.slice(0, 3).map(Number) ?? [255, 255, 255];
+    return {
+      theme: document.documentElement.dataset.theme,
+      sidebarBackground: getComputedStyle(sidebar).backgroundColor,
+      sidebarLuminance: numbers.reduce((sum, channel) => sum + channel, 0) / 3,
+    };
+  });
+  if (darkVisual.sidebarLuminance > 60) throw new Error(`夜间模式没有切换为深色：${darkVisual.sidebarBackground}`);
+  await page.screenshot({ path: outputs.dashboardDark, fullPage: true });
+  await page.reload();
+  await page.locator('html[data-theme="dark"]').waitFor();
+  await page.getByRole("button", { name: "切换到日间模式", exact: true }).click();
+  await page.locator('html[data-theme="light"]').waitFor();
+
   const pages = [
     ["生成工作台", "NEWX4_第二段30秒_水晶钥匙与时间机器_T01", outputs.studio],
     ["空间与项目", "空间、项目与对话", outputs.projects],
@@ -113,7 +169,7 @@ try {
     await page.waitForTimeout(250);
     await page.screenshot({ path: screenshot, fullPage: true });
   }
-  process.stdout.write(`${JSON.stringify({ ok: true, outputs, visual, currentProjectStyle }, null, 2)}\n`);
+  process.stdout.write(`${JSON.stringify({ ok: true, outputs, visual, darkVisual, compactLayout, projectCardLayout, currentProjectStyle }, null, 2)}\n`);
 } catch (error) {
   process.stderr.write(`${JSON.stringify({ ok: false, error: error instanceof Error ? error.message : String(error) }, null, 2)}\n`);
   process.exitCode = 1;
