@@ -23,4 +23,11 @@ describe("xinying-pro-generate completion policy", () => {
     expect(source).toContain("含人图片或视频仍出现在最终 `preview.references`：停止提交");
     expect(source).toContain("绝不按普通图片或普通视频兜底");
   });
+
+  it("lets Heart review multi-person and imperfect portrait assets instead of pre-rejecting them", () => {
+    expect(source).toContain("不要在 Codex 侧预判审核失败");
+    expect(source).toContain("通过 `director authorize` 原样提交心影虚拟人像审核");
+    expect(source).toContain("只有心影表单、接口或审核任务明确返回失败后才暂停");
+    expect(source).not.toContain("暂停并请用户提供可审核的单人素材");
+  });
 });

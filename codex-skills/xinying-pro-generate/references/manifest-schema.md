@@ -60,4 +60,4 @@
 - `authorizeAsPortrait`：只用于图片或视频。`containsPerson: true`、`role: character` 或本字段为 `true`，任一条件都会被 APP 强制视为需要虚拟人像授权，不能按普通本地参考提交。
 - `kind: platform-portrait`：直接复用已同步到当前心影空间的虚拟人像。
 
-同一内容不能重复加入；提示词引用必须能在最终 `preview.orderedLabels` 中找到。图片、视频、音频分别独立编号，材料数组中的不同媒体类型可以穿插。含人图片/视频审核完成并执行 `director resolve` 后，该项必须显示 `referenceId: null` 和非空 `platformPortraitId`；否则不得提交生成。若含人素材不符合单人审核要求，必须更换合规素材，不能把 `containsPerson` 改为 `false` 绕过。
+同一内容不能重复加入；提示词引用必须能在最终 `preview.orderedLabels` 中找到。图片、视频、音频分别独立编号，材料数组中的不同媒体类型可以穿插。含人图片/视频审核完成并执行 `director resolve` 后，该项必须显示 `referenceId: null` 和非空 `platformPortraitId`；否则不得提交生成。多人、背脸、远景或人物不完整的素材仍必须写为 `containsPerson: true` 并原样提交心影虚拟人像审核，不能由 Codex 提前拒绝，也不能改为 `false` 绕过；只有心影实际返回失败时才停止并报告真实原因。

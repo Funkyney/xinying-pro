@@ -28,7 +28,7 @@ description: Use 心影Pro to execute a finished Seedance 2.0/2.5 prompt with or
 
 人物硬门禁：每个图片和视频文件都必须在清单中显式填写 `containsPerson`。任意画面/帧出现真人、虚拟人物或人形角色时写 `containsPerson: true`；只有确认整项素材完全无人时才能写 `containsPerson: false`。`containsPerson: true` 会由 APP 自动强制为 `role: "character"` 并进入虚拟人像授权，即使清单误写了其他 role 或漏写 `authorizeAsPortrait` 也不能按普通素材提交。
 
-只有确认没有任何人物的纯场景、纯物品、纯纹理素材，才可保持普通文件。背景路人、远景人群、人物剪影和视频中一闪而过的人物也不能作为普通素材上传。若含人素材不符合心影虚拟人像审核要求（例如多人合照、脸部过小或人物不完整），暂停并请用户提供可审核的单人素材，或改用完全无人的参考；不能退回普通本地上传。
+只有确认没有任何人物的纯场景、纯物品、纯纹理素材，才可保持普通文件。背景路人、远景人群、人物剪影和视频中一闪而过的人物也不能作为普通素材上传。多人合照、背脸、脸部过小或人物不完整仍属于含人素材：不要在 Codex 侧预判审核失败，也不要在上传前要求用户拆分、换图或改成无人场景；继续写入 `containsPerson: true` 和 `authorizeAsPortrait: true`，并通过 `director authorize` 原样提交心影虚拟人像审核。只有心影表单、接口或审核任务明确返回失败后才暂停，并原样报告心影的真实原因；不能退回普通本地上传。
 
 ### 2. 定位心影Pro CLI 与当前项目
 
@@ -123,6 +123,7 @@ director submit --manifest "<absolute-manifest-path>" --confirm
 
 - 授权已通过但清单仍显示本地参考图：运行 `director resolve`，不要重复授权。
 - `PORTRAIT_AUTHORIZATION_PENDING`：先完成审核并 resolve；不要去掉人物标记规避门禁。
+- 多人、背脸、远景或人物不完整：仍按含人素材执行 authorize；不得仅凭画面形态在 Codex 侧宣判不合格。只有心影实际拒绝后才报告失败。
 - 含人图片或视频仍出现在最终 `preview.references`：停止提交，确认清单为 `containsPerson: true` 并重新 authorize/resolve；绝不按普通图片或普通视频兜底。
 - `PROJECT_NOT_READY`：按 `preview.warnings` 修复提示词引用、模型、画幅、时长或项目绑定。
 - 心影素材编号变化：让 APP 的提交器处理；若它安全停止，检查任务事件，不手工猜编号后强行重提。
