@@ -2990,9 +2990,7 @@ export class PlaywrightXinyingAdapter {
   private async choosePortraitOption(page: Page, dialog: Locator, index: number, value: string): Promise<boolean> {
     const input = dialog.locator("input[role='combobox']").nth(index);
     if ((await input.count()) === 0) return false;
-    const control = await input.getAttribute("aria-controls");
-    if (!control) return false;
-    for (let attempt = 0; attempt < 3; attempt += 1) {
+    for (let attempt = 0; attempt < 5; attempt += 1) {
       const currentValue = (await input.inputValue()).trim();
       if (currentValue === value || (value === "其他" && currentValue)) return true;
       await page.waitForTimeout(attempt === 0 ? 500 : 750);
@@ -3000,7 +2998,16 @@ export class PlaywrightXinyingAdapter {
       if (!inputBox) return false;
       await page.mouse.click(inputBox.x + inputBox.width / 2, inputBox.y + inputBox.height / 2);
       await page.waitForTimeout(350);
-      const options = page.locator(`[id="${control}"] [role="option"]`);
+      const control = await input.getAttribute("aria-controls");
+      let options = control ? page.locator(`[id="${control}"] [role="option"]`) : page.locator("[role='option']:visible");
+      const optionsDeadline = Date.now() + 2_500;
+      while (Date.now() < optionsDeadline && (await options.count()) === 0) {
+        // Element Plus may mount the dropdown in a body-level portal after aria-controls is assigned.
+        // In that transient state, use only currently visible options from the open dropdown.
+        options = page.locator("[role='option']:visible");
+        if ((await options.count()) > 0) break;
+        await page.waitForTimeout(100);
+      }
       const candidates = await options.evaluateAll((elements) => elements.map((element) => ({
         value: (element.textContent ?? "").trim(),
         disabled: element.getAttribute("aria-disabled") === "true" || element.classList.contains("is-disabled"),
@@ -3017,7 +3024,7 @@ export class PlaywrightXinyingAdapter {
         await page.waitForTimeout(150);
         await clickDom(option);
       }
-      const deadline = Date.now() + 1_500;
+      const deadline = Date.now() + 3_000;
       while (Date.now() < deadline) {
         const chosenValue = (await input.inputValue()).trim();
         if (chosenValue === value || (value === "其他" && Boolean(chosenValue))) {

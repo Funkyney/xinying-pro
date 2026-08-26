@@ -14,7 +14,7 @@ description: Use 心影Pro to execute a finished Seedance 2.0/2.5 prompt with or
 - 将真人或虚拟人物素材标为 `authorizeAsPortrait: true` 前，确认它是用户有权使用的原创、公司或已授权素材。第三方真人、名人、来源不明或授权不清时暂停并询问。
 - 任何图片或视频只要任意画面/帧出现真人、虚拟人物或人形角色，无论人物是否清晰、是否在背景、是否只是动作/构图/服装参考，都必须先走心影虚拟人像审核；绝不能作为普通本地图片/视频参考直接提交，也不能为绕过审核而改成 `scene`、`style`、`motion` 或 `other`。
 - 不读取或导出 Cookie、Token、二维码、浏览器配置；不绕过登录、验证码、实名、审核、额度、付费确认或地域限制。
-- `needs-login` 或 `needs-human` 时报告原始原因，让用户在心影Pro“原网页模式”处理后再恢复。
+- `needs-login` 时报告原始原因，让用户扫码后再恢复。`needs-human` 先检查是否属于可自动恢复的默认资料选项错误；只有按“失败恢复”仍不能恢复或确实需要人工确认时，才让用户进入心影Pro“原网页模式”。
 
 ## 执行流程
 
@@ -86,7 +86,7 @@ director authorize --manifest "<absolute-manifest-path>" --confirm
 
 该命令会把清单中所有 `containsPerson: true` 的图片和视频上传到心影“虚拟人像”，创建或复用审核任务；名称带稳定短标识，性别、年龄、人种默认“其他”，应用范围默认国内，并由 APP 自动勾选心影合规承诺。这里的本地参考记录只用于定位原文件和审核状态，不是生成素材。
 
-对返回的每个审核任务使用 `job status <job-id>` 轮询。状态为 `queued/submitting/running` 时继续等待；`completed` 后再继续；`failed/needs-login/needs-human` 时停止自动提交并报告。不要因为等待审核而重复创建授权任务。
+对返回的每个审核任务使用 `job status <job-id>` 轮询。状态为 `queued/submitting/running` 时继续等待；`completed` 后再继续；`failed/needs-login` 时停止自动提交并报告；`needs-human` 按“失败恢复”先判断能否恢复原任务。不要因为等待审核而重复创建授权任务。
 
 所有审核完成后运行：
 
@@ -123,6 +123,7 @@ director submit --manifest "<absolute-manifest-path>" --confirm
 
 - 授权已通过但清单仍显示本地参考图：运行 `director resolve`，不要重复授权。
 - `PORTRAIT_AUTHORIZATION_PENDING`：先完成审核并 resolve；不要去掉人物标记规避门禁。
+- 审核任务因“性别/年龄/人种选项不可用：其他”进入 `needs-human`：这是 APP 默认资料选择的可恢复错误，不要让用户手工进网页，也不要重新创建审核。先确认用户本次生成授权仍有效，然后对原任务运行 `job resume <job-id> --confirm` 并继续轮询；同一任务在本次流程最多自动恢复 2 次，重复达到上限后才报告原始原因。
 - 多人、背脸、远景或人物不完整：仍按含人素材执行 authorize；不得仅凭画面形态在 Codex 侧宣判不合格。只有心影实际拒绝后才报告失败。
 - 含人图片或视频仍出现在最终 `preview.references`：停止提交，确认清单为 `containsPerson: true` 并重新 authorize/resolve；绝不按普通图片或普通视频兜底。
 - `PROJECT_NOT_READY`：按 `preview.warnings` 修复提示词引用、模型、画幅、时长或项目绑定。

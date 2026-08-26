@@ -30,4 +30,11 @@ describe("xinying-pro-generate completion policy", () => {
     expect(source).toContain("只有心影表单、接口或审核任务明确返回失败后才暂停");
     expect(source).not.toContain("暂停并请用户提供可审核的单人素材");
   });
+
+  it("resumes recoverable default portrait metadata failures without sending the user to the web page", () => {
+    expect(source).toContain("性别/年龄/人种选项不可用：其他");
+    expect(source).toContain("`job resume <job-id> --confirm`");
+    expect(source).toContain("同一任务在本次流程最多自动恢复 2 次");
+    expect(source).toContain("不要让用户手工进网页");
+  });
 });
