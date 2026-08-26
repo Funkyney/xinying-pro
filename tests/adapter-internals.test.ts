@@ -230,4 +230,20 @@ describe("Playwright adapter task references", () => {
     ]);
   });
 
+  it("falls back to a platform option when the unattended default other value is unavailable", () => {
+    const candidates = [
+      { value: "男", disabled: false },
+      { value: "女", disabled: false },
+      { value: "不可选", disabled: true },
+    ];
+    expect(adapterInternals.resolvePortraitOptionValue(candidates, "其他")).toBe("男");
+    expect(adapterInternals.resolvePortraitOptionValue([
+      ...candidates,
+      { value: "其他", disabled: false },
+    ], "其他")).toBe("其他");
+    expect(adapterInternals.resolvePortraitOptionValue(candidates, "女")).toBe("女");
+    expect(adapterInternals.resolvePortraitOptionValue(candidates, "青年（19-35）")).toBeNull();
+    expect(adapterInternals.resolvePortraitOptionValue([{ value: "男", disabled: true }], "其他")).toBeNull();
+  });
+
 });

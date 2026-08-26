@@ -206,6 +206,20 @@ function configurablePortraitOptions(portrait: PortraitAsset): Array<{ index: nu
     .filter((item) => item.value !== "");
 }
 
+interface PortraitOptionCandidate {
+  value: string;
+  disabled: boolean;
+}
+
+function resolvePortraitOptionValue(candidates: PortraitOptionCandidate[], requested: string): string | null {
+  const available = candidates.filter((candidate) => candidate.value && !candidate.disabled);
+  const exact = available.find((candidate) => candidate.value === requested);
+  if (exact) return exact.value;
+  // “其他”是 APP 为无人值守审核填写的默认元数据。心影部分表单没有该项时，
+  // 使用平台提供的第一个可用值继续提交；用户明确选择的具体值仍要求精确匹配。
+  return requested === "其他" ? available[0]?.value ?? null : null;
+}
+
 function platformPortraitIdentity(displayName: string, previewUrl: string, workspaceId = ""): { id: string; platformAssetId: string } {
   let platformAssetId = "";
   try {
@@ -2979,17 +2993,22 @@ export class PlaywrightXinyingAdapter {
     const control = await input.getAttribute("aria-controls");
     if (!control) return false;
     for (let attempt = 0; attempt < 3; attempt += 1) {
-      if ((await input.inputValue()) === value) return true;
+      const currentValue = (await input.inputValue()).trim();
+      if (currentValue === value || (value === "其他" && currentValue)) return true;
       await page.waitForTimeout(attempt === 0 ? 500 : 750);
       const inputBox = await input.boundingBox();
       if (!inputBox) return false;
       await page.mouse.click(inputBox.x + inputBox.width / 2, inputBox.y + inputBox.height / 2);
       await page.waitForTimeout(350);
       const options = page.locator(`[id="${control}"] [role="option"]`);
-      const matchingIndex = await options.evaluateAll((elements, requested) =>
-        elements.findIndex((element) => (element.textContent ?? "").trim() === requested), value);
-      if (matchingIndex >= 0) {
-        const option = options.nth(matchingIndex);
+      const candidates = await options.evaluateAll((elements) => elements.map((element) => ({
+        value: (element.textContent ?? "").trim(),
+        disabled: element.getAttribute("aria-disabled") === "true" || element.classList.contains("is-disabled"),
+      })));
+      const selectedValue = resolvePortraitOptionValue(candidates, value);
+      const selectedIndex = selectedValue ? candidates.findIndex((candidate) => candidate.value === selectedValue && !candidate.disabled) : -1;
+      if (selectedIndex >= 0 && selectedValue) {
+        const option = options.nth(selectedIndex);
         // The "其他" ethnicity option is below Element Plus' popover fold.
         await option.evaluate((element) => {
           const scroller = element.closest(".el-select-dropdown__wrap");
@@ -3000,7 +3019,8 @@ export class PlaywrightXinyingAdapter {
       }
       const deadline = Date.now() + 1_500;
       while (Date.now() < deadline) {
-        if ((await input.inputValue()) === value) {
+        const chosenValue = (await input.inputValue()).trim();
+        if (chosenValue === value || (value === "其他" && Boolean(chosenValue))) {
           await page.waitForTimeout(750);
           return true;
         }
@@ -3083,6 +3103,7 @@ export const adapterInternals = {
   platformCatalogFromApi,
   platformMaterialResult,
   configurablePortraitOptions,
+  resolvePortraitOptionValue,
   platformPortraitApiRecords,
   matchPlatformPortraitApiRecord,
   platformPortraitPendingTotal,
