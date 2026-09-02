@@ -1,4 +1,4 @@
-import type { ProjectMode } from "./contracts";
+import type { ProjectMode, VideoFormat } from "./contracts";
 
 export const DEFAULT_XINYING_MODEL = "Seedance 2.5 全能参考";
 
@@ -12,6 +12,8 @@ export interface XinyingModelProfile {
   minDuration: number;
   maxDuration: number;
   audioSupported: boolean;
+  networkSearchSupported: boolean;
+  videoFormats: VideoFormat[];
   materialLimits: {
     maxTotal: number;
     image: number;
@@ -35,6 +37,8 @@ export const XINYING_MODEL_PROFILES: XinyingModelProfile[] = [
     minDuration: 4,
     maxDuration: 30,
     audioSupported: true,
+    networkSearchSupported: true,
+    videoFormats: ["mp4", "mov"],
     materialLimits: {
       maxTotal: 50,
       image: 30,
@@ -54,6 +58,8 @@ export const XINYING_MODEL_PROFILES: XinyingModelProfile[] = [
     minDuration: 4,
     maxDuration: 15,
     audioSupported: true,
+    networkSearchSupported: false,
+    videoFormats: ["mp4"],
     materialLimits: {
       maxTotal: 15,
       image: 9,

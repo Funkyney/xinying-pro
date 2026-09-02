@@ -149,6 +149,8 @@ project.command("create")
   .option("--duration <seconds>", "时长", "5")
   .option("--resolution <value>", "分辨率；auto 表示沿用心影当前值", "auto")
   .option("--audio <boolean>", "是否生成声音", "true")
+  .option("--video-format <format>", "Seedance 2.5 输出格式：mp4 或 mov", "mp4")
+  .option("--network <boolean>", "Seedance 2.5 是否开启联网搜索", "true")
   .option("--portrait-ids <ids>", "心影已同步虚拟人像 ID，逗号分隔", "")
   .option("--material-order <keys>", "最终素材顺序，逗号分隔；使用 portrait:<id> 或 reference:<id>", "")
   .action((options) => {
@@ -165,6 +167,8 @@ project.command("create")
       duration: Number(options.duration),
       resolution: options.resolution,
       audioEnabled: parseBoolean(options.audio),
+      videoFormat: options.videoFormat.toLowerCase() as ProjectInput["videoFormat"],
+      networkEnabled: parseBoolean(options.network),
       portraitIds: options.portraitIds.split(",").map((item: string) => item.trim()).filter(Boolean),
       materialOrder: options.materialOrder.split(",").map((item: string) => item.trim()).filter(Boolean),
     };
@@ -184,6 +188,8 @@ project.command("update")
   .option("--duration <seconds>")
   .option("--resolution <value>")
   .option("--audio <boolean>")
+  .option("--video-format <format>")
+  .option("--network <boolean>")
   .option("--portrait-ids <ids>", "心影已同步虚拟人像 ID，逗号分隔；传空字符串可清空")
   .option("--material-order <keys>", "最终素材顺序，逗号分隔；使用 portrait:<id> 或 reference:<id>")
   .action((id: string, options) => {
@@ -200,6 +206,8 @@ project.command("update")
       ...(options.duration !== undefined ? { duration: Number(options.duration) } : {}),
       ...(options.resolution !== undefined ? { resolution: options.resolution } : {}),
       ...(options.audio !== undefined ? { audioEnabled: parseBoolean(options.audio) } : {}),
+      ...(options.videoFormat !== undefined ? { videoFormat: options.videoFormat.toLowerCase() as ProjectInput["videoFormat"] } : {}),
+      ...(options.network !== undefined ? { networkEnabled: parseBoolean(options.network) } : {}),
       ...(options.portraitIds !== undefined ? { portraitIds: options.portraitIds.split(",").map((item: string) => item.trim()).filter(Boolean) } : {}),
       ...(options.materialOrder !== undefined ? { materialOrder: options.materialOrder.split(",").map((item: string) => item.trim()).filter(Boolean) } : {}),
     };

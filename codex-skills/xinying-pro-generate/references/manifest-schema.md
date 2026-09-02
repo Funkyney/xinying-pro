@@ -12,12 +12,14 @@
   "settings": {
     "name": "镜头 07",
     "description": "可选说明",
-    "modelName": "Seedance 2.0 全能参考",
+    "modelName": "Seedance 2.5 全能参考",
     "mode": "reference-to-video",
     "aspectRatio": "16:9",
     "duration": 8,
     "resolution": "1080p",
-    "audioEnabled": true
+    "audioEnabled": true,
+    "videoFormat": "mov",
+    "networkEnabled": true
   },
   "materials": [
     {
@@ -53,7 +55,7 @@
 - `prompt`：Seedance 最终提示词，不能为空。
 - `count`：1–20，默认 1。
 - `replaceMaterials`：默认 true；true 表示最终素材和顺序完全以本清单为准。
-- `settings`：可选。`mode` 为 `text-to-video`、`image-to-video`、`reference-to-video` 或 `first-last-frame`；其余值须符合当前心影模型能力。
+- `settings`：可选。`mode` 为 `text-to-video`、`image-to-video`、`reference-to-video` 或 `first-last-frame`；其余值须符合当前心影模型能力。Seedance 2.5 支持 `videoFormat: "mp4" | "mov"` 和 `networkEnabled: boolean`；未填写时心影Pro默认使用 MP4 并开启联网搜索。
 - `materials`：数组顺序就是 APP 的最终创作顺序。Seedance 2.5 最多 30 图 / 10 视频 / 10 音频、合计 50 项；Seedance 2.0 最多 9 图 / 3 视频 / 3 音频、合计 15 项。虚拟人像计入对应的图片或视频数量。
 - `kind: file`：本地图片、视频或音频。`role` 可为 `first-frame`、`last-frame`、`character`、`scene`、`product`、`style`、`motion`、`other`。
 - `containsPerson`：每个图片和视频都必须显式填写。任意画面/帧出现真人、虚拟人物或人形角色时为 `true`；确认整项素材完全无人时为 `false`。视频必须检查覆盖全片的关键帧，不能只看封面。音频不填写该字段。

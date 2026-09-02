@@ -1,6 +1,6 @@
 {
-  "version": 4,
-  "updatedAt": "2026-08-21",
+  "version": 5,
+  "updatedAt": "2026-09-03",
   "baseUrl": "https://blueaivideo.com/",
   "loginUrl": "https://blueaivideo.com/login?from=%252Fhome",
   "authenticatedUrlPatterns": ["/home", "/avpAgent", "/aiCharacter"],
@@ -59,6 +59,12 @@
     "audioToggle": [
       ".ContentChatInput .ContentChatOptionItem._toggle:has-text('有声')",
       ".ContentChatInput .ContentChatOptionItem._toggle:has-text('无声')"
+    ],
+    "advancedToggle": [
+      ".ContentChatInput .ContentChatOptionItem._toggle:has-text('高级配置')"
+    ],
+    "advancedPopover": [
+      ".AdvancedSettingPopover"
     ],
     "portraitEntry": [
       ".ContentChatInput .material-list .ContentChatUploadItem:has-text('+V角色') .characterWrapper"

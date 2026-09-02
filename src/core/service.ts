@@ -49,6 +49,7 @@ const PROJECT_MODES = new Set(["text-to-video", "image-to-video", "reference-to-
 const REFERENCE_ROLES = new Set(["first-frame", "last-frame", "character", "scene", "product", "style", "motion", "other"]);
 const ASPECT_RATIOS = new Set(["9:16", "16:9", "4:3", "1:1", "3:4", "21:9", "自适应"]);
 const RESOLUTIONS = new Set(["auto", "480p", "720p", "1080p", "1K", "2K", "4k"]);
+const VIDEO_FORMATS = new Set(["mp4", "mov"]);
 const PORTRAIT_GENDERS = new Set(["男", "女", "其他"]);
 const PORTRAIT_AGE_GROUPS = new Set(["儿童（0-12）", "少年（13-18）", "青年（19-35）", "中年（36-55）", "老年（55+）", "其他"]);
 const PORTRAIT_ETHNICITIES = new Set(["东亚裔", "东南亚裔", "南亚裔", "中亚裔", "中东/北非", "白人/西欧", "白人/东欧", "黑人/非洲", "西语/拉丁裔", "太平洋岛民", "其他"]);
@@ -178,13 +179,14 @@ function remoteProjectIdFromUrl(rawUrl: string): string {
   }
 }
 
-function validateProjectSettings(input: Pick<Project, "modelName" | "mode" | "aspectRatio" | "duration" | "resolution">): void {
+function validateProjectSettings(input: Pick<Project, "modelName" | "mode" | "aspectRatio" | "duration" | "resolution"> & Partial<Pick<Project, "videoFormat">>): void {
   if (!PROJECT_MODES.has(input.mode)) throw new AppError("INVALID_MODE", `不支持的生成模式：${input.mode}`);
   if (!ASPECT_RATIOS.has(input.aspectRatio)) throw new AppError("INVALID_ASPECT_RATIO", `不支持的画面比例：${input.aspectRatio}`);
   if (!Number.isInteger(input.duration) || input.duration < 4 || input.duration > 30) {
     throw new AppError("INVALID_DURATION", "心影当前视频时长必须是 4 到 30 秒的整数");
   }
   if (!RESOLUTIONS.has(input.resolution)) throw new AppError("INVALID_RESOLUTION", `不支持的分辨率：${input.resolution}`);
+  if (input.videoFormat && !VIDEO_FORMATS.has(input.videoFormat)) throw new AppError("INVALID_VIDEO_FORMAT", `不支持的视频格式：${input.videoFormat}`);
   const profile = modelProfile(input.modelName);
   if (!profile) return;
   if (!profile.modes.includes(input.mode)) {
@@ -198,6 +200,9 @@ function validateProjectSettings(input: Pick<Project, "modelName" | "mode" | "as
   }
   if (input.duration < profile.minDuration || input.duration > profile.maxDuration) {
     throw new AppError("MODEL_DURATION_MISMATCH", `${profile.shortName} 当前时长范围为 ${profile.minDuration} 到 ${profile.maxDuration} 秒`);
+  }
+  if (input.videoFormat && !profile.videoFormats.includes(input.videoFormat)) {
+    throw new AppError("MODEL_VIDEO_FORMAT_MISMATCH", `${profile.shortName} 不支持视频格式：${input.videoFormat.toUpperCase()}`);
   }
 }
 
@@ -406,6 +411,8 @@ export class XinyingService {
       duration: input.duration ?? 5,
       resolution: input.resolution ?? "auto",
       audioEnabled: input.audioEnabled ?? true,
+      videoFormat: input.videoFormat ?? "mp4",
+      networkEnabled: input.networkEnabled ?? true,
       portraitIds: normalizePortraitIds(input.portraitIds),
       materialOrder: [],
       status: "draft",
@@ -418,9 +425,9 @@ export class XinyingService {
     this.validatePlatformPortraitSelection(project.portraitIds);
     this.database.db
       .prepare(`INSERT INTO projects
-        (id, name, description, prompt, model_name, platform_url, platform_workspace_id, platform_project_id, mode, aspect_ratio, duration, resolution, audio_enabled, portrait_ids_json, material_order_json, status, created_at, updated_at)
-        VALUES (@id, @name, @description, @prompt, @modelName, @platformUrl, @platformWorkspaceId, @platformProjectId, @mode, @aspectRatio, @duration, @resolution, @audioEnabled, @portraitIdsJson, @materialOrderJson, @status, @createdAt, @updatedAt)`)
-      .run({ ...project, audioEnabled: project.audioEnabled ? 1 : 0, portraitIdsJson: JSON.stringify(project.portraitIds), materialOrderJson: JSON.stringify(project.materialOrder) });
+        (id, name, description, prompt, model_name, platform_url, platform_workspace_id, platform_project_id, mode, aspect_ratio, duration, resolution, audio_enabled, video_format, network_enabled, portrait_ids_json, material_order_json, status, created_at, updated_at)
+        VALUES (@id, @name, @description, @prompt, @modelName, @platformUrl, @platformWorkspaceId, @platformProjectId, @mode, @aspectRatio, @duration, @resolution, @audioEnabled, @videoFormat, @networkEnabled, @portraitIdsJson, @materialOrderJson, @status, @createdAt, @updatedAt)`)
+      .run({ ...project, audioEnabled: project.audioEnabled ? 1 : 0, networkEnabled: project.networkEnabled ? 1 : 0, portraitIdsJson: JSON.stringify(project.portraitIds), materialOrderJson: JSON.stringify(project.materialOrder) });
     return project;
   }
 
@@ -440,6 +447,8 @@ export class XinyingService {
       ...(input.duration !== undefined ? { duration: input.duration } : {}),
       ...(input.resolution !== undefined ? { resolution: input.resolution } : {}),
       ...(input.audioEnabled !== undefined ? { audioEnabled: input.audioEnabled } : {}),
+      ...(input.videoFormat !== undefined ? { videoFormat: input.videoFormat } : {}),
+      ...(input.networkEnabled !== undefined ? { networkEnabled: input.networkEnabled } : {}),
       ...(input.portraitIds !== undefined ? { portraitIds: normalizePortraitIds(input.portraitIds) } : {}),
       updatedAt: now(),
     };
@@ -457,9 +466,10 @@ export class XinyingService {
       name = @name, description = @description, prompt = @prompt, model_name = @modelName,
       platform_url = @platformUrl, platform_workspace_id = @platformWorkspaceId, platform_project_id = @platformProjectId, mode = @mode,
       aspect_ratio = @aspectRatio, duration = @duration, resolution = @resolution,
-      audio_enabled = @audioEnabled, portrait_ids_json = @portraitIdsJson, material_order_json = @materialOrderJson,
+      audio_enabled = @audioEnabled, video_format = @videoFormat, network_enabled = @networkEnabled,
+      portrait_ids_json = @portraitIdsJson, material_order_json = @materialOrderJson,
       status = @status, updated_at = @updatedAt
-      WHERE id = @id`).run({ ...next, audioEnabled: next.audioEnabled ? 1 : 0, portraitIdsJson: JSON.stringify(next.portraitIds), materialOrderJson: JSON.stringify(next.materialOrder) });
+      WHERE id = @id`).run({ ...next, audioEnabled: next.audioEnabled ? 1 : 0, networkEnabled: next.networkEnabled ? 1 : 0, portraitIdsJson: JSON.stringify(next.portraitIds), materialOrderJson: JSON.stringify(next.materialOrder) });
     if (input.materialOrder !== undefined) this.persistReferencePositions(id, next.materialOrder);
     return next;
   }
@@ -547,6 +557,7 @@ export class XinyingService {
       aspectRatio: settings.aspectRatio ?? project.aspectRatio,
       duration: settings.duration ?? project.duration,
       resolution: settings.resolution ?? project.resolution,
+      videoFormat: settings.videoFormat ?? project.videoFormat,
     });
     return {
       manifest,
@@ -1242,6 +1253,7 @@ export class XinyingService {
       aspectRatio: input.aspectRatio,
       duration: input.duration,
       resolution: input.resolution,
+      videoFormat: input.videoFormat,
     };
     validateProjectSettings(settings);
     const sourceJobRow = result.jobId ? this.database.rows.job(result.jobId) : undefined;
@@ -1275,6 +1287,8 @@ export class XinyingService {
             duration: settings.duration,
             resolution: settings.resolution,
             audioEnabled: Boolean(input.audioEnabled),
+            videoFormat: input.videoFormat,
+            networkEnabled: Boolean(input.networkEnabled),
             batchId,
             takeNumber: takeIndex + 1,
             takeCount: input.count,
@@ -1609,6 +1623,8 @@ export class XinyingService {
             duration: preview.project.duration,
             resolution: preview.project.resolution,
             audioEnabled: preview.project.audioEnabled,
+            videoFormat: preview.project.videoFormat,
+            networkEnabled: preview.project.networkEnabled,
             portraitIds: preview.project.portraitIds,
             materialOrder: preview.project.materialOrder,
             platformPortraits: preview.selectedPortraits,

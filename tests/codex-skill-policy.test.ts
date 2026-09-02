@@ -37,4 +37,10 @@ describe("xinying-pro-generate completion policy", () => {
     expect(source).toContain("同一任务在本次流程最多自动恢复 2 次");
     expect(source).toContain("不要让用户手工进网页");
   });
+
+  it("carries Seedance 2.5 MOV and network settings through the manifest", () => {
+    expect(source).toContain('videoFormat: "mp4"');
+    expect(source).toContain("networkEnabled: true");
+    expect(source).toContain("高级配置");
+  });
 });

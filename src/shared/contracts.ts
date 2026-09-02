@@ -1,4 +1,5 @@
 export type ProjectMode = "text-to-video" | "image-to-video" | "reference-to-video" | "first-last-frame";
+export type VideoFormat = "mp4" | "mov";
 export type ReferenceRole = "first-frame" | "last-frame" | "character" | "scene" | "product" | "style" | "motion" | "other";
 export type ProjectStatus = "draft" | "ready" | "archived";
 export type JobKind = "generation" | "portrait-review";
@@ -91,6 +92,8 @@ export interface Project {
   duration: number;
   resolution: string;
   audioEnabled: boolean;
+  videoFormat: VideoFormat;
+  networkEnabled: boolean;
   portraitIds: string[];
   materialOrder: string[];
   status: ProjectStatus;
@@ -111,6 +114,8 @@ export interface ProjectInput {
   duration?: number;
   resolution?: string;
   audioEnabled?: boolean;
+  videoFormat?: VideoFormat;
+  networkEnabled?: boolean;
   portraitIds?: string[];
   materialOrder?: string[];
 }
@@ -145,6 +150,8 @@ export interface DirectorManifest {
     duration?: number;
     resolution?: string;
     audioEnabled?: boolean;
+    videoFormat?: VideoFormat;
+    networkEnabled?: boolean;
   };
   materials: DirectorMaterialInput[];
 }
@@ -191,6 +198,8 @@ export interface ResultReuseInput {
   duration: number;
   resolution: string;
   audioEnabled: boolean;
+  videoFormat: VideoFormat;
+  networkEnabled: boolean;
   count: number;
 }
 

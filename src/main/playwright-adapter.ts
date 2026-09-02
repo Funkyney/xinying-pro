@@ -67,6 +67,7 @@ interface PlatformGenerationTaskRecord {
 }
 
 interface PlatformPortraitApiRecord {
+  portraitId: string;
   displayName: string;
   previewUrl: string;
   md5: string;
@@ -245,12 +246,47 @@ function recordValue(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
+function platformMutationResult(payload: unknown, httpOk = true): { ok: boolean; message: string } {
+  const root = recordValue(payload);
+  const rawCode = root.code;
+  const code = typeof rawCode === "number" ? rawCode : typeof rawCode === "string" && rawCode.trim() ? Number(rawCode) : null;
+  const explicitSuccess = typeof root.success === "boolean" ? root.success : null;
+  const ok = httpOk && (explicitSuccess ?? (code === null || code === 0 || code === 200));
+  const data = recordValue(root.data);
+  const message = nonEmptyString(root.message, root.msg, root.error_message, data.message, data.msg);
+  return { ok, message };
+}
+
+function submittedPortraitId(payload: unknown): string {
+  const root = recordValue(payload);
+  const data = recordValue(root.data);
+  const portraitIdValue = (...values: unknown[]) => {
+    const value = values.find((candidate) => (typeof candidate === "string" && Boolean(candidate.trim()))
+      || (typeof candidate === "number" && Number.isFinite(candidate)));
+    return value === undefined ? "" : String(value).trim();
+  };
+  const direct = portraitIdValue(root.portrait_id, root.portraitId, data.portrait_id, data.portraitId);
+  if (direct) return direct;
+  const arrays = [root.portrait_ids, data.portrait_ids, data.items, data.list];
+  for (const candidate of arrays) {
+    if (!Array.isArray(candidate)) continue;
+    for (const item of candidate) {
+      if (typeof item === "string" || typeof item === "number") return String(item);
+      const value = recordValue(item);
+      const id = portraitIdValue(value.portrait_id, value.portraitId);
+      if (id) return id;
+    }
+  }
+  return "";
+}
+
 function platformPortraitApiRecords(payload: unknown): PlatformPortraitApiRecord[] {
   const root = recordValue(payload);
   const data = recordValue(root.data);
   const portraits = Array.isArray(data.portraits) ? data.portraits : [];
   return portraits.map((value): PlatformPortraitApiRecord | null => {
     const portrait = recordValue(value);
+    const portraitId = nonEmptyString(portrait.portrait_id, portrait.portraitId);
     const sourceInfo = recordValue(recordValue(portrait.source_info).SourceInfo);
     const displayName = typeof portrait.display_name === "string" ? portrait.display_name.trim() : "";
     const previewUrl = [portrait.thumbnail_url, portrait.cdn_url, portrait.post_cdn_url]
@@ -262,7 +298,7 @@ function platformPortraitApiRecords(payload: unknown): PlatformPortraitApiRecord
       : assetType === "image" ? "image"
         : portraitMediaKindFromPreviewUrl(previewUrl);
     if (!displayName || !previewUrl) return null;
-    return { displayName, previewUrl, md5, size: Number.isFinite(size) ? size : 0, mediaKind };
+    return { portraitId, displayName, previewUrl, md5, size: Number.isFinite(size) ? size : 0, mediaKind };
   }).filter((record): record is PlatformPortraitApiRecord => Boolean(record));
 }
 
@@ -1638,9 +1674,29 @@ export class PlaywrightXinyingAdapter {
           if ((await confirmDelete.count()) === 0 || !(await confirmDelete.isEnabled())) {
             throw new AppError("PLATFORM_DELETE_CONFIRM_UNAVAILABLE", "心影删除确认按钮不可用");
           }
+          const deleteResponsePromise = page.waitForResponse((response) => {
+            try {
+              return response.request().method() === "POST" && new URL(response.url()).pathname === "/api/portraits/delete";
+            } catch {
+              return false;
+            }
+          }, { timeout: 20_000 }).catch(() => null);
           await clickDom(confirmDelete);
 
-          const deadline = Date.now() + 20_000;
+          const deleteResponse = await deleteResponsePromise;
+          let apiConfirmed = false;
+          if (deleteResponse) {
+            const payload = await deleteResponse.json().catch(() => null) as unknown;
+            const mutation = platformMutationResult(payload, deleteResponse.ok());
+            if (!mutation.ok) {
+              throw new AppError("PLATFORM_PORTRAIT_DELETE_REJECTED", mutation.message || `心影拒绝删除“${portrait.displayName}”`);
+            }
+            apiConfirmed = true;
+          }
+
+          // 心影接口成功后角色列表有时要延迟数秒才重绘。
+          // 优先信任权威删除回包，没捕到回包时才用卡片消失作为兼容降级。
+          const deadline = Date.now() + (apiConfirmed ? 3_000 : 20_000);
           let disappeared = false;
           while (Date.now() < deadline) {
             const currentCards = await firstCollectionWithin(dialog, this.selectors.generation.portraitCards);
@@ -1650,7 +1706,7 @@ export class PlaywrightXinyingAdapter {
             }
             await page.waitForTimeout(250);
           }
-          if (!disappeared) throw new AppError("PLATFORM_PORTRAIT_DELETE_UNCONFIRMED", `心影未确认删除“${portrait.displayName}”`);
+          if (!apiConfirmed && !disappeared) throw new AppError("PLATFORM_PORTRAIT_DELETE_UNCONFIRMED", `心影未确认删除“${portrait.displayName}”`);
           result.deletedIds.push(portrait.id);
           report("deleted", index + 1, portrait, `已删除 ${index + 1} / ${portraits.length}：${portrait.displayName}`);
         } catch (error) {
@@ -2013,6 +2069,48 @@ export class PlaywrightXinyingAdapter {
       if (confirmed !== requested) {
         return { reason: "page-changed", message: `心影未确认声音参数：${requested ? "有声" : "无声"}` };
       }
+    }
+
+    const modelName = stringParameter(job, "modelName");
+    if (modelName.includes("Seedance 2.5")) {
+      const advancedToggle = await firstVisible(page, this.selectors.generation.advancedToggle);
+      if (!advancedToggle) return { reason: "page-changed", message: "Seedance 2.5 未显示“高级配置”入口" };
+      const openAdvanced = async (): Promise<Locator | null> => {
+        const existing = await firstVisible(page, this.selectors.generation.advancedPopover);
+        if (existing) return existing;
+        await clickDom(advancedToggle);
+        return this.waitForVisible(page, this.selectors.generation.advancedPopover, 5_000);
+      };
+      const advanced = await openAdvanced();
+      if (!advanced) return { reason: "page-changed", message: "Seedance 2.5 高级配置面板未打开" };
+
+      const requestedNetwork = typeof job.parameters.networkEnabled === "boolean"
+        ? job.parameters.networkEnabled
+        : true;
+      const networkRow = advanced.locator(".adv-row").filter({ hasText: "联网搜索" }).first();
+      const networkInput = networkRow.locator("input[role='switch']").first();
+      if ((await networkInput.count()) === 0) return { reason: "page-changed", message: "找不到 Seedance 2.5 联网搜索开关" };
+      const networkEnabled = (await networkInput.getAttribute("aria-checked")) === "true";
+      if (networkEnabled !== requestedNetwork) {
+        const switchControl = networkRow.locator(".el-switch").first();
+        await clickDom((await switchControl.count()) > 0 ? switchControl : networkInput);
+        await page.waitForTimeout(150);
+      }
+      if (((await networkInput.getAttribute("aria-checked")) === "true") !== requestedNetwork) {
+        return { reason: "page-changed", message: `心影未确认联网搜索：${requestedNetwork ? "开启" : "关闭"}` };
+      }
+
+      const requestedFormat = stringParameter(job, "videoFormat").toLowerCase() || "mp4";
+      const formatChip = advanced.locator(".format-chip").filter({ hasText: new RegExp(`^${requestedFormat}$`, "i") }).first();
+      if ((await formatChip.count()) === 0) return { reason: "page-changed", message: `心影未提供视频格式：${requestedFormat.toUpperCase()}` };
+      if (!((await formatChip.getAttribute("class")) ?? "").includes("isActive")) {
+        await clickDom(formatChip);
+        await page.waitForTimeout(150);
+      }
+      if (!((await formatChip.getAttribute("class")) ?? "").includes("isActive")) {
+        return { reason: "page-changed", message: `心影未确认视频格式：${requestedFormat.toUpperCase()}` };
+      }
+      if (await advanced.isVisible().catch(() => false)) await clickDom(advancedToggle).catch(() => undefined);
     }
     return null;
   }
@@ -2386,15 +2484,18 @@ export class PlaywrightXinyingAdapter {
     const input = await firstExisting(page, this.selectors.portrait.uploadInput);
     if (!input) return { status: "needs-human", checkpoint: { reason: "page-changed", message: "找不到虚拟人像图片/视频上传控件" } };
     await input.setInputFiles(portrait.filePath);
-    await page.waitForTimeout(1_200);
-    const failure = dialog.getByText(/上传失败|文件不支持|素材解析失败/).filter({ visible: true }).first();
-    if ((await failure.count()) > 0) {
-      return { status: "failed", code: "PORTRAIT_UPLOAD_REJECTED", message: (await failure.innerText()).trim() };
+    const uploadDeadline = Date.now() + (portrait.mimeType.startsWith("video/") ? 180_000 : 90_000);
+    const failure = dialog.getByText(/上传失败|文件不支持|素材解析失败|图片校验失败|视频校验失败/).filter({ visible: true }).first();
+    let nameInput = dialog.locator("input[placeholder*='人像名称'], .image_card_wrapper input[type='text']").filter({ visible: true }).first();
+    while (Date.now() < uploadDeadline && (await nameInput.count()) === 0) {
+      if ((await failure.count()) > 0) {
+        return { status: "failed", code: "PORTRAIT_UPLOAD_REJECTED", message: (await failure.innerText()).trim() };
+      }
+      await page.waitForTimeout(250);
+      nameInput = dialog.locator("input[placeholder*='人像名称'], .image_card_wrapper input[type='text']").filter({ visible: true }).first();
     }
-    const nameInput = dialog.locator("input[placeholder='请输入人像名称']").first();
-    const nameReady = await nameInput.waitFor({ state: "visible", timeout: 30_000 }).then(() => true).catch(() => false);
-    if (!nameReady) {
-      return { status: "needs-human", checkpoint: { reason: "page-changed", message: "找不到虚拟人像名称输入框" } };
+    if ((await nameInput.count()) === 0) {
+      return { status: "failed", code: "PORTRAIT_UPLOAD_TIMEOUT", message: `心影未在规定时间内完成“${portrait.displayName}”的素材上传或解析` };
     }
     await nameInput.fill(portrait.displayName);
     for (const selection of configurablePortraitOptions(portrait)) {
@@ -2415,15 +2516,39 @@ export class PlaywrightXinyingAdapter {
     if (!submit || !(await submit.isEnabled())) {
       return { status: "needs-human", checkpoint: { reason: "approval", message: "心影虚拟人像表单尚未满足提交条件，请在原网页模式检查素材与合规承诺" } };
     }
+    const submitResponsePromise = page.waitForResponse((response) => {
+      try {
+        return response.request().method() === "POST" && new URL(response.url()).pathname === "/api/v2/portraits/upload";
+      } catch {
+        return false;
+      }
+    }, { timeout: 45_000 }).catch(() => null);
     await clickDom(submit);
-    await dialog.waitFor({ state: "hidden", timeout: 20_000 }).catch(() => undefined);
+    const submitResponse = await submitResponsePromise;
+    if (submitResponse) {
+      const payload = await submitResponse.json().catch(() => null) as unknown;
+      const mutation = platformMutationResult(payload, submitResponse.ok());
+      if (!mutation.ok) {
+        return { status: "failed", code: "PORTRAIT_UPLOAD_REJECTED", message: mutation.message || `心影拒绝了虚拟人像“${portrait.displayName}”的提交` };
+      }
+      const portraitId = submittedPortraitId(payload);
+      await dialog.waitFor({ state: "hidden", timeout: 5_000 }).catch(() => undefined);
+      this.portraitApiSnapshot = null;
+      return {
+        status: "running",
+        platformTaskId: portraitId ? `portrait:${portraitId}` : `portrait-staged:${job.id}`,
+        message: `虚拟人像“${portrait.displayName}”已自动勾选合规承诺并由心影接口确认提交`,
+      };
+    }
+    await dialog.waitFor({ state: "hidden", timeout: 10_000 }).catch(() => undefined);
     if (await dialog.isVisible().catch(() => false)) {
       const failureText = await dialog.getByText(/上传失败|文件不支持|素材解析失败|审核失败/).filter({ visible: true }).first().innerText().catch(() => "");
       return failureText
         ? { status: "failed", code: "PORTRAIT_UPLOAD_REJECTED", message: failureText.trim() }
         : { status: "needs-human", checkpoint: { reason: "approval", message: "心影未关闭虚拟人像提交表单，请人工检查页面提示" } };
     }
-    return { status: "running", platformTaskId: `portrait:${job.id}`, message: `虚拟人像“${portrait.displayName}”已自动勾选合规承诺并提交心影审核` };
+    this.portraitApiSnapshot = null;
+    return { status: "running", platformTaskId: `portrait-staged:${job.id}`, message: `虚拟人像“${portrait.displayName}”已自动勾选合规承诺并提交心影审核` };
   }
 
   async inspectPortraitReview(job: Job, portrait: PortraitAsset, options: { timeoutMs?: number } = {}): Promise<AdapterOutcome> {
@@ -2498,7 +2623,13 @@ export class PlaywrightXinyingAdapter {
       size: stat.size,
       mediaKind: (portrait.mimeType.startsWith("video/") ? "video" : "image") as PlatformPortrait["mediaKind"],
     };
-    const matched = matchPlatformPortraitApiRecord(snapshot.records, fingerprint);
+    const submittedId = job.platformTaskId?.startsWith("portrait:")
+      ? job.platformTaskId.slice("portrait:".length)
+      : "";
+    const exactNameMatches = snapshot.records.filter((record) => record.displayName === portrait.displayName);
+    const matched = (submittedId ? snapshot.records.find((record) => record.portraitId === submittedId) : null)
+      ?? matchPlatformPortraitApiRecord(snapshot.records, fingerprint)
+      ?? (exactNameMatches.length === 1 ? exactNameMatches[0] : null);
     if (matched) {
       const workspaceId = stringParameter(job, "platformWorkspaceId");
       const identity = platformPortraitIdentity(matched.displayName, matched.previewUrl, workspaceId);
@@ -2522,8 +2653,10 @@ export class PlaywrightXinyingAdapter {
     }
     const submittedAt = Date.parse(job.submittedAt ?? job.createdAt);
     const reviewAge = Number.isFinite(submittedAt) ? Date.now() - submittedAt : 0;
-    const queueFinishedWithoutResult = snapshot.pendingTotal === 0 && reviewAge >= 2 * 60_000;
-    const statusUnavailableTooLong = snapshot.pendingTotal === null && reviewAge >= 10 * 60_000;
+    // 心影的 batch-status 可能先变为 0，角色库索引再延迟数分钟出现。
+    // 不在 2 分钟时把正常的后台同步误报成人工介入。
+    const queueFinishedWithoutResult = snapshot.pendingTotal === 0 && reviewAge >= 30 * 60_000;
+    const statusUnavailableTooLong = snapshot.pendingTotal === null && reviewAge >= 60 * 60_000;
     if (queueFinishedWithoutResult || statusUnavailableTooLong) {
       return {
         status: "needs-human",
@@ -3015,14 +3148,11 @@ export class PlaywrightXinyingAdapter {
       const selectedValue = resolvePortraitOptionValue(candidates, value);
       const selectedIndex = selectedValue ? candidates.findIndex((candidate) => candidate.value === selectedValue && !candidate.disabled) : -1;
       if (selectedIndex >= 0 && selectedValue) {
-        const option = options.nth(selectedIndex);
-        // The "其他" ethnicity option is below Element Plus' popover fold.
-        await option.evaluate((element) => {
-          const scroller = element.closest(".el-select-dropdown__wrap");
-          if (scroller instanceof HTMLElement) scroller.scrollTop = (element as HTMLElement).offsetTop;
-        });
-        await page.waitForTimeout(150);
-        await clickDom(option);
+        // Element Plus 会在滚动时重建 option 节点，不持有旧节点；
+        // 每次点击前按文字重新定位，避免 locator.evaluate 等待失效节点 30 秒。
+        const option = page.getByRole("option", { name: selectedValue, exact: true }).filter({ visible: true }).last();
+        await option.scrollIntoViewIfNeeded({ timeout: 2_500 }).catch(() => undefined);
+        await option.click({ force: true, timeout: 3_000 }).catch(() => undefined);
       }
       const deadline = Date.now() + 3_000;
       while (Date.now() < deadline) {
@@ -3111,6 +3241,8 @@ export const adapterInternals = {
   platformMaterialResult,
   configurablePortraitOptions,
   resolvePortraitOptionValue,
+  platformMutationResult,
+  submittedPortraitId,
   platformPortraitApiRecords,
   matchPlatformPortraitApiRecord,
   platformPortraitPendingTotal,

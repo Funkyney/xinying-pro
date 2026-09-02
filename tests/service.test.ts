@@ -413,7 +413,24 @@ describe("XinyingService", () => {
     expect(job.promptSnapshot).toBe("固定机位，产品旋转");
     expect(job.parameters.modelName).toBe("Seedance 2.5 全能参考");
     expect(job.parameters.resolution).toBe("auto");
+    expect(job.parameters.videoFormat).toBe("mp4");
+    expect(job.parameters.networkEnabled).toBe(true);
     expect(service.listJobEvents(job.id)[0].code).toBe("JOB_QUEUED");
+  });
+
+  it("persists Seedance 2.5 MOV and network-search settings into queued jobs", () => {
+    const project = service.createProject({
+      name: "MOV 联网生成",
+      prompt: "查找当日天气后生成",
+      mode: "text-to-video",
+      videoFormat: "mov",
+      networkEnabled: true,
+    });
+    expect(service.getProject(project.id)).toMatchObject({ videoFormat: "mov", networkEnabled: true });
+    const job = service.submitGeneration(project.id);
+    expect(job.parameters).toMatchObject({ videoFormat: "mov", networkEnabled: true });
+    expect(service.updateProject(project.id, { videoFormat: "mp4", networkEnabled: false }))
+      .toMatchObject({ videoFormat: "mp4", networkEnabled: false });
   });
 
   it("keeps immutable per-job reference files after project assets change", () => {

@@ -50,6 +50,8 @@ const manifestSchema = z.object({
     duration: z.number().int().optional(),
     resolution: z.string().trim().min(1).optional(),
     audioEnabled: z.boolean().optional(),
+    videoFormat: z.enum(["mp4", "mov"]).optional(),
+    networkEnabled: z.boolean().optional(),
   }).strict().optional(),
   materials: z.array(z.discriminatedUnion("kind", [fileMaterialSchema, platformPortraitMaterialSchema])).max(50),
 }).strict();

@@ -31,6 +31,8 @@ export interface SelectorPack {
     parameterToggle: string[];
     parameterPopover: string[];
     audioToggle: string[];
+    advancedToggle: string[];
+    advancedPopover: string[];
     portraitEntry: string[];
     portraitDialog: string[];
     portraitCards: string[];

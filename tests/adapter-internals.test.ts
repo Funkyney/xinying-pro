@@ -246,4 +246,12 @@ describe("Playwright adapter task references", () => {
     expect(adapterInternals.resolvePortraitOptionValue([{ value: "男", disabled: true }], "其他")).toBeNull();
   });
 
+  it("trusts successful Heart mutation envelopes and captures the submitted portrait id", () => {
+    expect(adapterInternals.platformMutationResult({ code: 0, data: { portrait_ids: ["portrait-9"] } }, true)).toEqual({ ok: true, message: "" });
+    expect(adapterInternals.submittedPortraitId({ code: 0, data: { portrait_ids: ["portrait-9"] } })).toBe("portrait-9");
+    expect(adapterInternals.submittedPortraitId({ data: { items: [{ portrait_id: 88 }] } })).toBe("88");
+    expect(adapterInternals.platformMutationResult({ code: 500, message: "任务进行中" }, true)).toEqual({ ok: false, message: "任务进行中" });
+    expect(adapterInternals.platformMutationResult({ code: 0 }, false).ok).toBe(false);
+  });
+
 });

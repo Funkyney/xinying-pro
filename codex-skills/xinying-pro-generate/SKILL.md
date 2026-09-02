@@ -76,6 +76,8 @@ director prepare --manifest "<absolute-manifest-path>"
 
 检查输出：素材数量与顺序正确；每个图片/视频都有明确的 `containsPerson` 检查结果；`preview.orderedLabels` 覆盖提示词中的所有引用；参数与最终提示词一致；所有 `containsPerson: true` 的图片/视频都出现在 `authorizationReferenceIds` 或已经解析为 `platformPortraitId`。`prepare` 只在 APP 本地暂存源文件以建立审核任务，不会把人物源文件上传到生成输入框，也不会扣费。
 
+Seedance 2.5 的默认高级参数为 `videoFormat: "mp4"` 和 `networkEnabled: true`。用户明确要 MOV 时写入 `videoFormat: "mov"`；只有用户明确要关闭联网时才写 `networkEnabled: false`。提交器会在心影“高级配置”中逐项确认这两个值。
+
 ### 4. 自动授权人物素材
 
 仅在安全门禁已满足时运行：
@@ -86,7 +88,7 @@ director authorize --manifest "<absolute-manifest-path>" --confirm
 
 该命令会把清单中所有 `containsPerson: true` 的图片和视频上传到心影“虚拟人像”，创建或复用审核任务；名称带稳定短标识，性别、年龄、人种默认“其他”，应用范围默认国内，并由 APP 自动勾选心影合规承诺。这里的本地参考记录只用于定位原文件和审核状态，不是生成素材。
 
-对返回的每个审核任务使用 `job status <job-id>` 轮询。状态为 `queued/submitting/running` 时继续等待；`completed` 后再继续；`failed/needs-login` 时停止自动提交并报告；`needs-human` 按“失败恢复”先判断能否恢复原任务。不要因为等待审核而重复创建授权任务。
+对返回的每个审核任务使用 `job status <job-id>` 轮询。状态为 `queued/submitting/running` 时继续等待；心影官方说明审核预计约 5 分钟，接口队列数先变为 0 也不代表失败，不要在 2 分钟时误判为卡住或重复创建任务。`completed` 后再继续；`failed/needs-login` 时停止自动提交并报告；`needs-human` 按“失败恢复”先判断能否恢复原任务。
 
 所有审核完成后运行：
 

@@ -27,6 +27,8 @@ interface ProjectRow {
   duration: number;
   resolution: string;
   audio_enabled: number;
+  video_format: Project["videoFormat"];
+  network_enabled: number;
   portrait_ids_json: string;
   material_order_json: string;
   status: Project["status"];
@@ -190,6 +192,8 @@ export class XinyingDatabase {
         duration INTEGER NOT NULL DEFAULT 5,
         resolution TEXT NOT NULL DEFAULT 'auto',
         audio_enabled INTEGER NOT NULL DEFAULT 1,
+        video_format TEXT NOT NULL DEFAULT 'mp4',
+        network_enabled INTEGER NOT NULL DEFAULT 1,
         portrait_ids_json TEXT NOT NULL DEFAULT '[]',
         material_order_json TEXT NOT NULL DEFAULT '[]',
         status TEXT NOT NULL DEFAULT 'draft',
@@ -349,6 +353,12 @@ export class XinyingDatabase {
     if (!projectColumns.has("platform_project_id")) {
       this.db.exec("ALTER TABLE projects ADD COLUMN platform_project_id TEXT NOT NULL DEFAULT ''");
     }
+    if (!projectColumns.has("video_format")) {
+      this.db.exec("ALTER TABLE projects ADD COLUMN video_format TEXT NOT NULL DEFAULT 'mp4'");
+    }
+    if (!projectColumns.has("network_enabled")) {
+      this.db.exec("ALTER TABLE projects ADD COLUMN network_enabled INTEGER NOT NULL DEFAULT 1");
+    }
 
     const referenceColumns = new Set(
       (this.db.prepare("PRAGMA table_info(reference_assets)").all() as Array<{ name: string }>).map((column) => column.name),
@@ -438,6 +448,8 @@ export class XinyingDatabase {
       duration: row.duration,
       resolution: row.resolution,
       audioEnabled: Boolean(row.audio_enabled),
+      videoFormat: row.video_format === "mov" ? "mov" : "mp4",
+      networkEnabled: Boolean(row.network_enabled),
       portraitIds: parseJson(row.portrait_ids_json, []),
       materialOrder: parseJson(row.material_order_json, []),
       status: row.status,

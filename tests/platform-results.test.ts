@@ -3,6 +3,7 @@ import {
   canonicalPlatformOutputUrl,
   isPlatformPreviewOutputUrl,
   originalPlatformVideoUrlFromPoster,
+  platformPlaybackVideoUrl,
 } from "../src/shared/platform-results";
 
 describe("Heart original result URLs", () => {
@@ -26,5 +27,14 @@ describe("Heart original result URLs", () => {
     const external = "https://media.example/render_720p.mp4";
     expect(canonicalPlatformOutputUrl(external)).toBe(external);
     expect(isPlatformPreviewOutputUrl(external)).toBe(false);
+  });
+
+  it("plays Heart MOV originals through the browser-compatible MP4 rendition", () => {
+    const output = "https://blueai-video-global.bluemediacdn.com/vlc-toc/task/img2video/seedance_v2/abc.mov";
+    const poster = "https://blueai-video-global.bluemediacdn.com/vlc-toc/task/img2video/seedance_v2/abc_cover.jpg?x-tos-process=image/quality,q_50";
+    expect(platformPlaybackVideoUrl(output, poster)).toBe(
+      "https://blueai-video-global.bluemediacdn.com/vlc-toc/task/img2video/seedance_v2/abc_720p.mp4",
+    );
+    expect(platformPlaybackVideoUrl("https://media.example/abc.mov", poster)).toBe("https://media.example/abc.mov");
   });
 });

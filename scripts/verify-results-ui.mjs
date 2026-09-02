@@ -98,6 +98,20 @@ try {
   const viewer = page.locator(".result-viewer");
   await viewer.waitFor({ state: "visible", timeout: 8_000 });
   if (portraitFixtureId && !(await viewer.getAttribute("class"))?.includes("portrait-viewer")) throw new Error("打开 9:16 视频后查看器没有进入竖屏布局");
+  const viewerVideo = viewer.locator(".result-viewer-stage video");
+  if ((await viewerVideo.count()) !== 1) throw new Error("视频详情没有创建可播放的 video 元素");
+  await viewerVideo.evaluate((video) => video.readyState >= 1 ? true : new Promise((resolve, reject) => {
+    video.addEventListener("loadedmetadata", () => resolve(true), { once: true });
+    video.addEventListener("error", () => reject(new Error("竖屏详情视频加载失败")), { once: true });
+  }));
+  const viewerVideoState = await viewerVideo.evaluate((video) => ({
+    width: video.videoWidth,
+    height: video.videoHeight,
+    objectFit: getComputedStyle(video).objectFit,
+    playsInline: video.playsInline,
+  }));
+  if (portraitFixtureId && viewerVideoState.height <= viewerVideoState.width) throw new Error(`竖屏详情读取到了错误尺寸：${JSON.stringify(viewerVideoState)}`);
+  if (viewerVideoState.objectFit !== "contain" || !viewerVideoState.playsInline) throw new Error(`竖屏详情播放器配置错误：${JSON.stringify(viewerVideoState)}`);
   const inspector = viewer.locator(".result-viewer-inspector");
   if ((await inspector.count()) !== 1) throw new Error("结果查看器没有可滚动详情栏");
   const inspectorOverflow = await inspector.evaluate((element) => getComputedStyle(element).overflowY);
@@ -114,6 +128,8 @@ try {
   await reuseButton.click();
   if ((await viewer.locator(".result-detail-section textarea").count()) !== 1) throw new Error("复用按钮没有进入提示词编辑状态");
   if ((await viewer.getByRole("button", { name: /提交生成/ }).count()) !== 1) throw new Error("复用编辑没有提交入口");
+  if ((await viewer.locator("label").filter({ hasText: "视频格式" }).locator("select").count()) !== 1) throw new Error("Seedance 2.5 复用编辑没有 MOV/MP4 选择");
+  if ((await viewer.locator("label").filter({ hasText: "联网搜索" }).locator("input[type='checkbox']").count()) !== 1) throw new Error("Seedance 2.5 复用编辑没有联网开关");
   await viewer.getByRole("button", { name: "取消编辑", exact: true }).click();
   reuseEditorChecked = true;
   const viewerScreenshot = path.resolve("test-results", "results-viewer-ui.png");
@@ -158,7 +174,7 @@ try {
   await page.waitForTimeout(100);
   const screenshot = path.resolve("test-results", "results-library-ui.png");
   await page.screenshot({ path: screenshot, fullPage: true });
-  process.stdout.write(`${JSON.stringify({ ok: true, projectId, personalResultCount: count, projectResultCount: projectItems.length, projectMediaKinds: [...new Set(projectItems.map((item) => item.mediaKind))], initialProjectCardCount, dragSelectedCount, dragDeselectChecked: true, keyboardMarkChecked: true, markedFilterChecked: true, hoverPlayback, gridBeforeResize, gridAfterResize, inspectorOverflow, reuseEditorChecked, markRestored: true, viewerBefore: before, viewerAfter: after, previewFit, viewerScreenshot, screenshot }, null, 2)}\n`);
+  process.stdout.write(`${JSON.stringify({ ok: true, projectId, personalResultCount: count, projectResultCount: projectItems.length, projectMediaKinds: [...new Set(projectItems.map((item) => item.mediaKind))], initialProjectCardCount, dragSelectedCount, dragDeselectChecked: true, keyboardMarkChecked: true, markedFilterChecked: true, hoverPlayback, viewerVideoState, gridBeforeResize, gridAfterResize, inspectorOverflow, reuseEditorChecked, markRestored: true, viewerBefore: before, viewerAfter: after, previewFit, viewerScreenshot, screenshot }, null, 2)}\n`);
 } catch (error) {
   process.stderr.write(`${JSON.stringify({ ok: false, error: error instanceof Error ? error.message : String(error) }, null, 2)}\n`);
   process.exitCode = 1;

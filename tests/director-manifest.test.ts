@@ -64,4 +64,22 @@ describe("director manifest", () => {
       materials: [...materials, { kind: "file", path: "overflow.png" }],
     })).toThrow(/格式无效/);
   });
+
+  it("accepts Seedance 2.5 output format and network settings", () => {
+    const manifest = parseDirectorManifest({
+      version: 1,
+      projectId: "project-1",
+      prompt: "联网检索后生成 MOV",
+      settings: { videoFormat: "mov", networkEnabled: true },
+      materials: [],
+    });
+    expect(manifest.settings).toMatchObject({ videoFormat: "mov", networkEnabled: true });
+    expect(() => parseDirectorManifest({
+      version: 1,
+      projectId: "project-1",
+      prompt: "非法格式",
+      settings: { videoFormat: "avi" },
+      materials: [],
+    })).toThrow(/格式无效/);
+  });
 });
