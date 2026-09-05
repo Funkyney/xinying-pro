@@ -11,6 +11,14 @@ describe("xinying-pro-generate completion policy", () => {
     expect(source).toContain("结果由用户稍后人工查看");
   });
 
+  it("uses one compact end-to-end command instead of repeated polling commands", () => {
+    expect(source).toContain("只执行");
+    expect(source).toContain('director run --manifest "<absolute-manifest-path>" --confirm');
+    expect(source).toContain("不要另开 `job status`");
+    expect(source).toContain("media cache --file");
+    expect(source).toContain("SHA-256");
+  });
+
   it("does not monitor or download results unless separately requested", () => {
     expect(source).toContain("不要默认运行 `job events`、`results sync`、`results list` 或下载命令");
     expect(source).toContain("另行明确要求“继续监控 / 查结果 / 下载”");
@@ -18,8 +26,8 @@ describe("xinying-pro-generate completion policy", () => {
 
   it("never submits a recognizable person as an ordinary local reference", () => {
     expect(source).toContain("人物硬门禁");
-    expect(source).toContain("每个图片和视频文件都必须在清单中显式填写 `containsPerson`");
-    expect(source).toContain("视频检查首帧、尾帧以及覆盖全片的关键帧");
+    expect(source).toContain("每个图片/视频必须在清单中显式填写 `containsPerson`");
+    expect(source).toContain("视频检查首帧、尾帧和覆盖全片的关键帧");
     expect(source).toContain("含人图片或视频仍出现在最终 `preview.references`：停止提交");
     expect(source).toContain("绝不按普通图片或普通视频兜底");
   });
@@ -34,7 +42,7 @@ describe("xinying-pro-generate completion policy", () => {
   it("resumes recoverable default portrait metadata failures without sending the user to the web page", () => {
     expect(source).toContain("性别/年龄/人种选项不可用：其他");
     expect(source).toContain("`job resume <job-id> --confirm`");
-    expect(source).toContain("同一任务在本次流程最多自动恢复 2 次");
+    expect(source).toContain("同一任务最多自动恢复 2 次");
     expect(source).toContain("不要让用户手工进网页");
   });
 

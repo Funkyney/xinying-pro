@@ -52,6 +52,45 @@ describe("XinyingService", () => {
     expect(updated.platformUrl).toContain("sessionId=test-session");
   });
 
+  it("caches exact-file person inspection results and never downgrades a known person", () => {
+    const project = service.createProject({ name: "人物检查缓存" });
+    const person = fixture("cached-person.png", "person-image-bytes");
+    expect(service.mediaAnalysisCache([person])[0]).toMatchObject({
+      hit: false,
+      containsPerson: null,
+      mediaKind: "image",
+    });
+
+    const manifest: DirectorManifest = {
+      version: 1,
+      projectId: project.id,
+      prompt: "@图1中的人物看向镜头",
+      count: 1,
+      replaceMaterials: true,
+      materials: [{ kind: "file", path: person, role: "character", containsPerson: true }],
+    };
+    service.prepareDirectorRun(manifest);
+
+    expect(service.mediaAnalysisCache([person])[0]).toMatchObject({ hit: true, containsPerson: true });
+    expect(() => service.validateDirectorRun({
+      ...manifest,
+      materials: [{ kind: "file", path: person, role: "scene", containsPerson: false }],
+    })).toThrow(/不能降级为普通参考素材/);
+  });
+
+  it("loads lightweight job summaries for the dashboard and fetches details on demand", () => {
+    const project = service.createProject({
+      name: "轻量任务列表",
+      prompt: "长提示词".repeat(5_000),
+      mode: "text-to-video",
+    });
+    const queued = service.submitGeneration(project.id);
+
+    const [summary] = service.listJobSummaries();
+    expect(summary).toMatchObject({ id: queued.id, promptSnapshot: "", parameters: {}, references: [] });
+    expect(service.getJob(queued.id).promptSnapshot.length).toBeGreaterThan(10_000);
+  });
+
   it("builds a deduplicated shared image, video, and audio library", () => {
     const image = fixture("library-image.png", "image-bytes");
     const duplicateImage = fixture("same-image.png", "image-bytes");

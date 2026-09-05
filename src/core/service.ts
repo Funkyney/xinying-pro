@@ -12,6 +12,7 @@ import type {
   Job,
   JobDeleteResult,
   JobEvent,
+  MediaAnalysisCacheEntry,
   PlatformCatalogSnapshot,
   PlatformProjectBinding,
   PlatformPortrait,
@@ -55,6 +56,7 @@ const PORTRAIT_AGE_GROUPS = new Set(["儿童（0-12）", "少年（13-18）", "�
 const PORTRAIT_ETHNICITIES = new Set(["东亚裔", "东南亚裔", "南亚裔", "中亚裔", "中东/北非", "白人/西欧", "白人/东欧", "黑人/非洲", "西语/拉丁裔", "太平洋岛民", "其他"]);
 const PORTRAIT_SCOPES = new Set(["domestic", "overseas", "both"]);
 const TERMINAL_JOB_STATUSES = new Set(["completed", "failed", "cancelled"]);
+const FILE_HASH_CACHE = new Map<string, string>();
 
 const EMPTY_PLATFORM_CATALOG: PlatformCatalogSnapshot = {
   workspaces: [],
@@ -118,9 +120,26 @@ function ensureFile(filePath: string, allowed: Set<string>): void {
 }
 
 function hashFile(filePath: string): string {
+  const stat = fs.statSync(filePath);
+  const cacheKey = `${path.resolve(filePath).toLowerCase()}\0${stat.size}\0${stat.mtimeMs}\0${stat.ctimeMs}`;
+  const cached = FILE_HASH_CACHE.get(cacheKey);
+  if (cached) return cached;
   const hash = crypto.createHash("sha256");
-  hash.update(fs.readFileSync(filePath));
-  return hash.digest("hex");
+  const descriptor = fs.openSync(filePath, "r");
+  const buffer = Buffer.allocUnsafe(4 * 1024 * 1024);
+  try {
+    let bytesRead = 0;
+    do {
+      bytesRead = fs.readSync(descriptor, buffer, 0, buffer.length, null);
+      if (bytesRead > 0) hash.update(buffer.subarray(0, bytesRead));
+    } while (bytesRead > 0);
+  } finally {
+    fs.closeSync(descriptor);
+  }
+  const digest = hash.digest("hex");
+  FILE_HASH_CACHE.set(cacheKey, digest);
+  if (FILE_HASH_CACHE.size > 512) FILE_HASH_CACHE.delete(FILE_HASH_CACHE.keys().next().value!);
+  return digest;
 }
 
 function samePath(left: string, right: string): boolean {
@@ -322,6 +341,53 @@ export class XinyingService {
     } catch {
       return EMPTY_PLATFORM_CATALOG;
     }
+  }
+
+  mediaAnalysisCache(filePaths: string[]): MediaAnalysisCacheEntry[] {
+    const lookup = this.database.db.prepare(
+      "SELECT mime_type, contains_person, checked_at FROM media_analysis_cache WHERE sha256 = ?",
+    );
+    return filePaths.map((inputPath) => {
+      const filePath = path.resolve(inputPath);
+      ensureFile(filePath, REFERENCE_EXTENSIONS);
+      const mimeType = mimeFromExtension(filePath);
+      const mediaKind = mediaKindFromMime(mimeType);
+      const sha256 = hashFile(filePath);
+      if (mediaKind === "audio") {
+        return { path: filePath, sha256, mimeType, mediaKind, hit: true, containsPerson: null, checkedAt: null };
+      }
+      const row = lookup.get(sha256) as { mime_type: string; contains_person: number; checked_at: string } | undefined;
+      return {
+        path: filePath,
+        sha256,
+        mimeType,
+        mediaKind,
+        hit: Boolean(row),
+        containsPerson: row ? Boolean(row.contains_person) : null,
+        checkedAt: row?.checked_at ?? null,
+      };
+    });
+  }
+
+  private rememberDirectorMediaAnalyses(manifest: DirectorManifest): void {
+    const statement = this.database.db.prepare(`INSERT INTO media_analysis_cache
+      (sha256, mime_type, contains_person, checked_at) VALUES (?, ?, ?, ?)
+      ON CONFLICT(sha256) DO UPDATE SET
+        mime_type = excluded.mime_type,
+        contains_person = CASE
+          WHEN media_analysis_cache.contains_person = 1 OR excluded.contains_person = 1 THEN 1
+          ELSE 0
+        END,
+        checked_at = excluded.checked_at`);
+    const timestamp = now();
+    this.database.transaction(() => {
+      for (const material of manifest.materials) {
+        if (material.kind !== "file" || material.containsPerson === undefined) continue;
+        const mimeType = mimeFromExtension(material.path);
+        if (mediaKindFromMime(mimeType) === "audio") continue;
+        statement.run(hashFile(material.path), mimeType, material.containsPerson ? 1 : 0, timestamp);
+      }
+    });
   }
 
   syncPlatformCatalog(catalog: PlatformCatalogSnapshot): PlatformCatalogSnapshot {
@@ -541,6 +607,15 @@ export class XinyingService {
         );
       }
       const fingerprint = hashFile(material.path);
+      const cached = this.database.db.prepare(
+        "SELECT contains_person FROM media_analysis_cache WHERE sha256 = ?",
+      ).get(fingerprint) as { contains_person: number } | undefined;
+      if (cached?.contains_person === 1 && material.containsPerson === false) {
+        throw new AppError(
+          "DIRECTOR_PERSON_CACHE_CONFLICT",
+          `该素材此前已确认包含人物，不能降级为普通参考素材：${material.path}`,
+        );
+      }
       if (seenFiles.has(fingerprint)) throw new AppError("DUPLICATE_DIRECTOR_MATERIAL", `导演任务不能重复使用同一份本地素材：${material.path}`);
       seenFiles.add(fingerprint);
       if (requiresDirectorPortraitAuthorization(material) && mediaKind === "audio") {
@@ -599,7 +674,7 @@ export class XinyingService {
   } {
     const portraits = this.listPortraits().filter((portrait) => portrait.sourceReferenceId === referenceId);
     const portraitIds = new Set(portraits.map((portrait) => portrait.id));
-    const jobs = this.listJobs().filter((job) => job.kind === "portrait-review" && Boolean(job.portraitId && portraitIds.has(job.portraitId)));
+    const jobs = this.listJobsByKind("portrait-review").filter((job) => Boolean(job.portraitId && portraitIds.has(job.portraitId)));
     const latestJob = [...jobs].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0];
     const portrait = latestJob?.portraitId
       ? portraits.find((item) => item.id === latestJob.portraitId)
@@ -616,6 +691,7 @@ export class XinyingService {
 
   prepareDirectorRun(manifest: DirectorManifest): DirectorRunPreparation {
     const validation = this.validateDirectorRun(manifest);
+    this.rememberDirectorMediaAnalyses(manifest);
     const project = validation.project;
     const existingReferences = this.listReferences(project.id);
     const selectedFiles = manifest.materials
@@ -753,7 +829,8 @@ export class XinyingService {
 
   removeProject(id: string): void {
     this.getProject(id);
-    const active = this.listJobs().filter((job) => job.projectId === id && !TERMINAL_JOB_STATUSES.has(job.status));
+    const active = this.database.rows.jobsByProject(id).map((row) => this.database.mapJob(row))
+      .filter((job) => !TERMINAL_JOB_STATUSES.has(job.status));
     if (active.length) throw new AppError("PROJECT_HAS_ACTIVE_JOBS", "项目仍有关联的活动任务，请先在任务队列完成或取消这些任务");
     const assets = this.listReferences(id);
     this.database.db.prepare("DELETE FROM projects WHERE id = ?").run(id);
@@ -1194,7 +1271,7 @@ export class XinyingService {
       ON CONFLICT(id) DO UPDATE SET output_url = COALESCE(excluded.output_url, platform_results.output_url),
         output_path = COALESCE(excluded.output_path, platform_results.output_path), source = 'personal', media_kind = 'video',
         name = excluded.name, available = 1, last_seen_at = excluded.last_seen_at`);
-    for (const job of this.listJobs().filter((item) => item.kind === "generation" && item.status === "completed" && item.projectId)) {
+    for (const job of this.listJobsByKind("generation").filter((item) => item.status === "completed" && item.projectId)) {
       const project = this.getProject(job.projectId!);
       upsert.run({
         id: `job:${job.id}`,
@@ -1316,8 +1393,8 @@ export class XinyingService {
   syncPlatformResults(projectId: string, results: PlatformResult[], source: PlatformResultSource = "personal"): PlatformResult[] {
     const project = this.getProject(projectId);
     this.upsertCompletedJobResults();
-    const localJobsByTask = new Map((source === "personal" ? this.listJobs() : [])
-      .filter((job) => job.kind === "generation" && ["running", "completed"].includes(job.status) && job.projectId === projectId && job.platformTaskId)
+    const localJobsByTask = new Map((source === "personal" ? this.listJobsByKind("generation") : [])
+      .filter((job) => ["running", "completed"].includes(job.status) && job.projectId === projectId && job.platformTaskId)
       .map((job) => [job.platformTaskId!, job]));
     const seen = new Set<string>();
     const syncedAt = now();
@@ -1449,7 +1526,7 @@ export class XinyingService {
     if (reference.projectId !== projectId) throw new AppError("REFERENCE_PROJECT_MISMATCH", "参考素材不属于当前项目");
     const linkedPortraits = this.listPortraits().filter((portrait) => portrait.sourceReferenceId === referenceId);
     const linkedIds = new Set(linkedPortraits.map((portrait) => portrait.id));
-    const linkedJobs = this.listJobs().filter((job) => job.kind === "portrait-review" && Boolean(job.portraitId && linkedIds.has(job.portraitId)));
+    const linkedJobs = this.listJobsByKind("portrait-review").filter((job) => Boolean(job.portraitId && linkedIds.has(job.portraitId)));
     const activeJob = linkedJobs.find((job) => !TERMINAL_JOB_STATUSES.has(job.status));
     if (activeJob) return activeJob;
     const approvedPortrait = linkedPortraits.find((portrait) => portrait.platformStatus === "approved");
@@ -1474,7 +1551,8 @@ export class XinyingService {
 
   updatePortraitMetadata(id: string, input: PortraitMetadataInput): PortraitAsset {
     const current = this.getPortrait(id);
-    const active = this.listJobs().find((job) => job.portraitId === id && ["queued", "submitting", "running"].includes(job.status));
+    const active = this.database.rows.jobsByPortrait(id).map((row) => this.database.mapJob(row))
+      .find((job) => ["queued", "submitting", "running"].includes(job.status));
     if (active) throw new AppError("PORTRAIT_METADATA_LOCKED", "虚拟人像正在上传或审核，暂时不能修改资料");
     const next: PortraitAsset = {
       ...current,
@@ -1494,7 +1572,8 @@ export class XinyingService {
 
   removePortrait(id: string): void {
     const portrait = this.getPortrait(id);
-    const active = this.listJobs().filter((job) => job.portraitId === id && !TERMINAL_JOB_STATUSES.has(job.status));
+    const active = this.database.rows.jobsByPortrait(id).map((row) => this.database.mapJob(row))
+      .filter((job) => !TERMINAL_JOB_STATUSES.has(job.status));
     if (active.length) throw new AppError("PORTRAIT_HAS_ACTIVE_JOB", "虚拟人像仍有关联的审核任务，请先完成或取消该任务");
     this.database.db.prepare("DELETE FROM portrait_assets WHERE id = ?").run(id);
     fs.rmSync(portrait.filePath, { force: true });
@@ -1659,7 +1738,8 @@ export class XinyingService {
       throw new AppError("CONSENT_REQUIRED", "提交虚拟人像审核前必须确认已获得素材授权");
     }
     validatePortraitMetadata(portrait);
-    const active = this.listJobs().find((job) => job.portraitId === portraitId && !TERMINAL_JOB_STATUSES.has(job.status));
+    const active = this.database.rows.jobsByPortrait(portraitId).map((row) => this.database.mapJob(row))
+      .find((job) => !TERMINAL_JOB_STATUSES.has(job.status));
     if (active) throw new AppError("PORTRAIT_REVIEW_ACTIVE", `该素材已有活动审核任务：${active.id}`);
     const timestamp = now();
     const id = crypto.randomUUID();
@@ -1691,12 +1771,34 @@ export class XinyingService {
     return this.database.rows.jobs().map((row) => this.database.mapJob(row));
   }
 
+  listJobSummaries(): Job[] {
+    return this.database.rows.jobSummaries().map((row) => this.database.mapJob(row));
+  }
+
+  listJobsByKind(kind: Job["kind"]): Job[] {
+    return this.database.rows.jobsByKind(kind).map((row) => this.database.mapJob(row));
+  }
+
+  listJobsByKindAndStatus(kind: Job["kind"], status: Job["status"]): Job[] {
+    return this.database.rows.jobsByKindAndStatus(kind, status).map((row) => this.database.mapJob(row));
+  }
+
+  findGenerationBatchTake(batchId: string, takeNumber: number): Job | null {
+    const row = this.database.rows.generationJobByBatchTake(batchId, takeNumber);
+    return row ? this.database.mapJob(row) : null;
+  }
+
   listQueuedJobs(): Job[] {
     return this.database.rows.queuedJobs().map((row) => this.database.mapJob(row));
   }
 
+  nextQueuedJob(): Job | null {
+    const row = this.database.rows.nextQueuedJob();
+    return row ? this.database.mapJob(row) : null;
+  }
+
   recoverInterruptedJobs(): Job[] {
-    const interrupted = this.listJobs().filter((job) => job.status === "submitting");
+    const interrupted = this.database.rows.jobsByStatus("submitting").map((row) => this.database.mapJob(row));
     for (const job of interrupted) {
       this.updateJob(job.id, {
         status: "needs-human",

@@ -23,6 +23,16 @@ export type PlatformWorkspaceKind = "personal" | "team";
 export type ReferenceMediaKind = "image" | "video" | "audio";
 export type PlatformPortraitMediaKind = "image" | "video" | "unknown";
 
+export interface MediaAnalysisCacheEntry {
+  path: string;
+  sha256: string;
+  mimeType: string;
+  mediaKind: ReferenceMediaKind;
+  hit: boolean;
+  containsPerson: boolean | null;
+  checkedAt: string | null;
+}
+
 export interface PlatformWorkspace {
   id: string;
   name: string;

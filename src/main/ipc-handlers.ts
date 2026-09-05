@@ -50,7 +50,7 @@ export function registerIpcHandlers(
     const includeLibraries = options?.includeLibraries !== false;
     return {
       projects: service.listProjects(),
-      jobs: service.listJobs(),
+      jobs: service.listJobSummaries(),
       portraits: service.listPortraits(),
       platformPortraits: includeLibraries ? service.listPlatformPortraits() : [],
       platformPortraitCount: service.countAvailablePlatformPortraits(),

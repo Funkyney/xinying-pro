@@ -216,6 +216,13 @@ export class XinyingDatabase {
       CREATE INDEX IF NOT EXISTS idx_shared_media_created
         ON shared_media_assets(created_at DESC);
 
+      CREATE TABLE IF NOT EXISTS media_analysis_cache (
+        sha256 TEXT PRIMARY KEY,
+        mime_type TEXT NOT NULL,
+        contains_person INTEGER NOT NULL,
+        checked_at TEXT NOT NULL
+      );
+
       CREATE TABLE IF NOT EXISTS reference_assets (
         id TEXT PRIMARY KEY,
         project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -607,8 +614,32 @@ export class XinyingDatabase {
     platformResult: (id: string) => this.db.prepare("SELECT * FROM platform_results WHERE id = ?").get(id) as PlatformResultRow | undefined,
     portrait: (id: string) => this.db.prepare("SELECT * FROM portrait_assets WHERE id = ?").get(id) as PortraitRow | undefined,
     jobs: () => this.db.prepare("SELECT * FROM jobs ORDER BY created_at DESC").all() as JobRow[],
+    jobSummaries: () => this.db.prepare(`SELECT
+      id, kind, project_id, portrait_id, status, platform_task_id, platform_execution_id,
+      progress, progress_label, last_checked_at, '' AS prompt_snapshot,
+      '{}' AS parameters_json, '[]' AS references_json, output_path, output_url,
+      error_code, error_message, requires_human_reason, retry_count, created_at,
+      submitted_at, completed_at, updated_at
+      FROM jobs ORDER BY created_at DESC`).all() as JobRow[],
+    jobsByKind: (kind: JobKind) =>
+      this.db.prepare("SELECT * FROM jobs WHERE kind = ? ORDER BY created_at DESC").all(kind) as JobRow[],
+    jobsByKindAndStatus: (kind: JobKind, status: JobStatus) =>
+      this.db.prepare("SELECT * FROM jobs WHERE kind = ? AND status = ? ORDER BY created_at DESC").all(kind, status) as JobRow[],
+    generationJobByBatchTake: (batchId: string, takeNumber: number) => this.db.prepare(`SELECT * FROM jobs
+      WHERE kind = 'generation'
+        AND json_extract(parameters_json, '$.batchId') = ?
+        AND json_extract(parameters_json, '$.takeNumber') = ?
+      LIMIT 1`).get(batchId, takeNumber) as JobRow | undefined,
+    jobsByStatus: (status: JobStatus) =>
+      this.db.prepare("SELECT * FROM jobs WHERE status = ? ORDER BY created_at DESC").all(status) as JobRow[],
+    jobsByProject: (projectId: string) =>
+      this.db.prepare("SELECT * FROM jobs WHERE project_id = ? ORDER BY created_at DESC").all(projectId) as JobRow[],
+    jobsByPortrait: (portraitId: string) =>
+      this.db.prepare("SELECT * FROM jobs WHERE portrait_id = ? ORDER BY created_at DESC").all(portraitId) as JobRow[],
     queuedJobs: () =>
       this.db.prepare("SELECT * FROM jobs WHERE status = 'queued' ORDER BY created_at ASC").all() as JobRow[],
+    nextQueuedJob: () =>
+      this.db.prepare("SELECT * FROM jobs WHERE status = 'queued' ORDER BY created_at ASC LIMIT 1").get() as JobRow | undefined,
     job: (id: string) => this.db.prepare("SELECT * FROM jobs WHERE id = ?").get(id) as JobRow | undefined,
     events: (jobId: string) =>
       this.db.prepare("SELECT * FROM job_events WHERE job_id = ? ORDER BY id ASC").all(jobId) as EventRow[],

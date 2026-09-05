@@ -844,6 +844,15 @@ function JobsPage({ jobs, projects, portraits, run }: { jobs: Job[]; projects: P
   const [query, setQuery] = useState("");
   const [manageMode, setManageMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
+  useEffect(() => {
+    const jobId = detail?.job.id;
+    if (!jobId || detail.job.kind !== "generation" || detail.job.promptSnapshot) return;
+    let active = true;
+    void window.xinying.jobs.status(jobId).then((fullJob) => {
+      if (active) setDetail((current) => current?.job.id === jobId ? { ...current, job: fullJob } : current);
+    }).catch(() => undefined);
+    return () => { active = false; };
+  }, [detail?.job.id]);
   const terminal = (job: Job) => ["completed", "failed", "cancelled"].includes(job.status);
   const attention = (job: Job) => ["needs-human", "needs-login"].includes(job.status);
   const active = (job: Job) => ["draft", "queued", "submitting", "running"].includes(job.status);

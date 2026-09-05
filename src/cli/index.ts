@@ -3,6 +3,7 @@ import path from "node:path";
 import { Command, CommanderError } from "commander";
 import type {
   CliEnvelope,
+  PlatformCatalogSnapshot,
   PlatformResult,
   PlatformProjectCreateInput,
   PortraitAgeGroup,
@@ -20,6 +21,16 @@ import { XinyingService } from "../core/service";
 import { AppError, asAppError } from "../core/errors";
 import { automationPortCandidates } from "../shared/automation-port";
 import type { Browser } from "playwright-core";
+import {
+  compactBatch,
+  compactCatalog,
+  compactDirectorState,
+  compactJob,
+  compactPortrait,
+  compactProject,
+  compactReference,
+} from "./compact";
+import { runDirectorManifest } from "./director-run";
 
 let currentCommand = "xinying";
 let database: XinyingDatabase | null = null;
@@ -74,7 +85,7 @@ function compactResult(result: PlatformResult) {
   };
 }
 
-type AppOperation = "platform-sync" | "platform-conversations" | "platform-open" | "platform-create" | "portrait-sync" | "portrait-delete" | "results-sync";
+type AppOperation = "app-ready" | "platform-sync" | "platform-conversations" | "platform-open" | "platform-create" | "portrait-sync" | "portrait-delete" | "results-sync";
 
 async function invokeRunningApp(operation: AppOperation, args: unknown[] = []): Promise<unknown> {
   const { chromium } = await import("playwright-core");
@@ -96,6 +107,7 @@ async function invokeRunningApp(operation: AppOperation, args: unknown[] = []): 
     if (!renderer) throw new AppError("APP_RENDERER_NOT_FOUND", "已连接 APP，但找不到心影Pro主界面");
     return await renderer.evaluate(async ({ operation: requested, args: values }) => {
       switch (requested) {
+        case "app-ready": return { ready: Boolean(window.xinying?.jobs && window.xinying?.portraits) };
         case "platform-sync": return window.xinying.platformProjects.sync();
         case "platform-conversations": return window.xinying.platformProjects.conversations(String(values[0]));
         case "platform-open": return window.xinying.platformProjects.open(String(values[0]), values[1] ? String(values[1]) : undefined);
@@ -131,10 +143,17 @@ program
   });
 
 const project = program.command("project").description("管理本地项目");
-project.command("list").description("列出项目").action(() => output(runtime().service.listProjects()));
-project.command("show").argument("<id>").description("读取项目及参考素材").action((id: string) => {
+project.command("list").description("列出项目").option("--full", "返回完整项目数据").action((options) => {
+  const projects = runtime().service.listProjects();
+  output(options.full ? projects : projects.map(compactProject));
+});
+project.command("show").argument("<id>").description("读取项目及参考素材").option("--full", "返回完整提示词与素材数据").action((id: string, options) => {
   const { service } = runtime();
-  output({ project: service.getProject(id), references: service.listReferences(id) });
+  const selected = service.getProject(id);
+  const references = service.listReferences(id);
+  output(options.full
+    ? { project: selected, references }
+    : { project: compactProject(selected), references: references.map(compactReference) });
 });
 project.command("create")
   .requiredOption("--name <name>", "项目名称")
@@ -221,8 +240,32 @@ project.command("remove").argument("<id>").option("--confirm", "确认删除").a
 });
 
 const platform = program.command("platform").description("读取并操控 APP 内已登录的心影空间与项目");
-platform.command("catalog").description("读取最近一次同步的空间与项目目录").action(() => output(runtime().service.getPlatformCatalog()));
-platform.command("sync").description("通过运行中的 APP 同步个人空间、团队空间和项目").action(async () => output(await invokeRunningApp("platform-sync")));
+platform.command("catalog").description("读取最近一次同步的空间与项目目录").option("--full", "返回完整目录字段").action((options) => {
+  const catalog = runtime().service.getPlatformCatalog();
+  output(options.full ? catalog : compactCatalog(catalog));
+});
+platform.command("sync")
+  .description("通过运行中的 APP 同步个人空间、团队空间和项目；默认复用十分钟内缓存")
+  .option("--force", "忽略缓存并立即访问心影网页")
+  .option("--max-age-minutes <number>", "目录缓存有效分钟数", "10")
+  .option("--full", "返回完整目录字段")
+  .action(async (options) => {
+    const { service } = runtime();
+    const cached = service.getPlatformCatalog();
+    const maxAgeMinutes = Number(options.maxAgeMinutes);
+    if (!Number.isFinite(maxAgeMinutes) || maxAgeMinutes < 0) {
+      throw new AppError("INVALID_CACHE_AGE", "--max-age-minutes 必须是大于或等于 0 的数字");
+    }
+    const syncedAt = Date.parse(cached.syncedAt);
+    const fresh = cached.projects.length > 0 && cached.workspaces.length > 0
+      && Number.isFinite(syncedAt) && Date.now() - syncedAt <= maxAgeMinutes * 60_000;
+    if (!options.force && fresh) {
+      output({ source: "cache", catalog: options.full ? cached : compactCatalog(cached) });
+      return;
+    }
+    const synced = await invokeRunningApp("platform-sync") as PlatformCatalogSnapshot;
+    output({ source: "heart", catalog: options.full ? synced : compactCatalog(synced) });
+  });
 platform.command("conversations")
   .argument("<catalog-project-id>")
   .description("读取所选心影项目的历史对话，供后续精确复用")
@@ -304,9 +347,11 @@ portrait.command("platform-list")
   .description("列出 APP 已从心影同步、可直接调用的虚拟人像")
   .option("--workspace-id <id>", "只看指定个人或团队空间")
   .option("--include-unavailable", "同时列出历史上已失效或已迁移的缓存")
+  .option("--full", "返回完整人像数据")
   .action((options) => {
     const rows = runtime().service.listPlatformPortraits(options.workspaceId);
-    output(options.includeUnavailable ? rows : rows.filter((portrait) => portrait.available));
+    const selected = options.includeUnavailable ? rows : rows.filter((portrait) => portrait.available);
+    output(options.full ? selected : selected.map(compactPortrait));
   });
 portrait.command("platform-sync")
   .description("通过运行中的 APP 同步当前项目所属空间的虚拟人像库")
@@ -361,7 +406,17 @@ portrait.command("authorize-reference")
   });
 
 const job = program.command("job").description("预览、提交、查询和下载任务");
-job.command("list").action(() => output(runtime().service.listJobs()));
+job.command("list")
+  .option("--limit <number>", "默认只返回最近的任务数量", "20")
+  .option("--full", "返回全部任务的提示词、参数与参考素材快照")
+  .action((options) => {
+  const jobs = runtime().service.listJobs();
+  const limit = Number(options.limit);
+  if (!Number.isInteger(limit) || limit < 1 || limit > 1_000) {
+    throw new AppError("INVALID_JOB_LIMIT", "--limit 必须是 1 到 1000 的整数");
+  }
+  output(options.full ? jobs : jobs.slice(0, limit).map(compactJob));
+  });
 job.command("preview").argument("<project-id>").action((projectId: string) => output(runtime().service.previewSubmission(projectId)));
 job.command("submit")
   .argument("<project-id>")
@@ -371,9 +426,13 @@ job.command("submit")
     requireConfirm(options.confirm, "提交生成任务");
     const count = Number(options.count);
     const { service } = runtime();
-    output(count === 1 ? service.submitGeneration(projectId) : service.submitGenerationBatch(projectId, count));
+    const submitted = count === 1 ? service.submitGeneration(projectId) : service.submitGenerationBatch(projectId, count);
+    output("batchId" in submitted ? compactBatch(submitted) : compactJob(submitted));
   });
-job.command("status").argument("<id>").action((id: string) => output(runtime().service.getJob(id)));
+job.command("status").argument("<id>").option("--full", "返回提示词、参数与参考素材快照").action((id: string, options) => {
+  const selected = runtime().service.getJob(id);
+  output(options.full ? selected : compactJob(selected));
+});
 job.command("events").argument("<id>").action((id: string) => output(runtime().service.listJobEvents(id)));
 job.command("resume").argument("<id>").option("--confirm").action((id: string, options) => {
   requireConfirm(options.confirm, "恢复任务");
@@ -436,19 +495,24 @@ results.command("batch-download")
 const director = program.command("director").description("执行 Seedance 导演任务清单：素材、授权、参数与批量生成");
 director.command("validate")
   .requiredOption("--manifest <path>", "导演任务 JSON 清单")
+  .option("--full", "返回完整清单与提示词")
   .action((options) => {
     const manifest = loadDirectorManifest(options.manifest);
-    output(runtime().service.validateDirectorRun(manifest));
+    const validation = runtime().service.validateDirectorRun(manifest);
+    output(options.full ? validation : compactDirectorState(validation));
   });
 director.command("prepare")
   .requiredOption("--manifest <path>", "导演任务 JSON 清单")
+  .option("--full", "返回完整清单与提示词")
   .description("按清单配置本地项目并给出人像授权与最终编号预检；不会提交心影")
   .action((options) => {
     const manifest = loadDirectorManifest(options.manifest);
-    output(runtime().service.prepareDirectorRun(manifest));
+    const preparation = runtime().service.prepareDirectorRun(manifest);
+    output(options.full ? preparation : compactDirectorState(preparation));
   });
 director.command("authorize")
   .requiredOption("--manifest <path>", "导演任务 JSON 清单")
+  .option("--full", "返回完整清单、任务参数与素材快照")
   .option("--confirm", "确认合规承诺并把清单中标记的人物素材提交心影审核")
   .action((options) => {
     requireConfirm(options.confirm, "自动勾选合规承诺并提交清单中的人物素材授权");
@@ -457,19 +521,24 @@ director.command("authorize")
     const preparation = service.prepareDirectorRun(manifest);
     const jobs = preparation.authorizationReferenceIds.map((referenceId) =>
       service.authorizeReference(referenceId, manifest.projectId, true));
-    output({ preparation, jobs });
+    output(options.full
+      ? { preparation, jobs }
+      : { preparation: compactDirectorState(preparation), jobs: jobs.map(compactJob) });
   });
 director.command("resolve")
   .requiredOption("--manifest <path>", "导演任务 JSON 清单")
+  .option("--full", "返回完整清单与提示词")
   .description("同步心影角色库，并把审核通过的人物素材原位替换为已授权虚拟人像")
   .action(async (options) => {
     const manifest = loadDirectorManifest(options.manifest);
     await invokeRunningApp("portrait-sync", [manifest.projectId]);
-    output(runtime().service.prepareDirectorRun(manifest));
+    const preparation = runtime().service.prepareDirectorRun(manifest);
+    output(options.full ? preparation : compactDirectorState(preparation));
   });
 director.command("submit")
   .requiredOption("--manifest <path>", "导演任务 JSON 清单")
   .option("--count <number>", "覆盖清单中的生成条数（1-20）")
+  .option("--full", "返回完整清单、任务参数与素材快照")
   .option("--confirm", "确认按指定数量创建可能扣费的心影生成任务")
   .action((options) => {
     requireConfirm(options.confirm, "按导演任务清单提交可能扣费的心影生成任务");
@@ -486,20 +555,56 @@ director.command("submit")
       );
     }
     const count = options.count === undefined ? manifest.count : Number(options.count);
-    output({ preparation, batch: service.submitGenerationBatch(manifest.projectId, count) });
+    const batch = service.submitGenerationBatch(manifest.projectId, count);
+    output(options.full
+      ? { preparation, batch }
+      : { preparation: compactDirectorState(preparation), batch: compactBatch(batch) });
   });
 
+director.command("run")
+  .requiredOption("--manifest <path>", "导演任务 JSON 清单")
+  .option("--count <number>", "覆盖清单中的生成条数（1-20）")
+  .option("--timeout-minutes <number>", "等待授权及全部提交进入生成中的最长分钟数", "45")
+  .option("--confirm", "确认授权人物素材并提交可能扣费的生成任务")
+  .description("一条命令完成准备、人物授权、原位替换、批量提交，并在全部显示生成中后返回")
+  .action(async (options) => {
+    requireConfirm(options.confirm, "自动授权人物素材并提交可能扣费的心影生成任务");
+    const timeoutMinutes = Number(options.timeoutMinutes);
+    if (!Number.isFinite(timeoutMinutes) || timeoutMinutes <= 0) {
+      throw new AppError("INVALID_TIMEOUT", "--timeout-minutes 必须是大于 0 的数字");
+    }
+    const count = options.count === undefined ? undefined : Number(options.count);
+    const manifest = loadDirectorManifest(options.manifest);
+    const { service } = runtime();
+    output(await runDirectorManifest(service, manifest, {
+      count,
+      timeoutMs: timeoutMinutes * 60_000,
+      ensureAppReady: () => invokeRunningApp("app-ready"),
+      syncPortraits: (projectId) => invokeRunningApp("portrait-sync", [projectId]),
+    }));
+  });
+
+const media = program.command("media").description("读取素材检查缓存，减少 Codex 重复看图与视频");
+media.command("cache")
+  .requiredOption("--file <path...>", "一个或多个图片、视频或音频路径")
+  .action((options) => output(runtime().service.mediaAnalysisCache(
+    options.file.map((item: string) => path.resolve(item)),
+  )));
+
 program.command("doctor").description("检查本地数据和 APP 队列状态").action(() => {
-  const { paths, database: activeDatabase, service } = runtime();
+  const { paths, database: activeDatabase } = runtime();
+  const count = (table: "projects" | "jobs", where = "") => Number((activeDatabase.db.prepare(
+    `SELECT COUNT(*) AS count FROM ${table}${where}`,
+  ).get() as { count: number }).count);
   output({
     dataDir: paths.dataDir,
     databasePath: paths.databasePath,
     databaseHealth: activeDatabase.db.pragma("quick_check", { simple: true }),
     databasePages: activeDatabase.db.pragma("page_count", { simple: true }),
     reclaimablePages: activeDatabase.db.pragma("freelist_count", { simple: true }),
-    projects: service.listProjects().length,
-    jobs: service.listJobs().length,
-    queuedJobs: service.listQueuedJobs().length,
+    projects: count("projects"),
+    jobs: count("jobs"),
+    queuedJobs: count("jobs", " WHERE status = 'queued'"),
     note: "databaseHealth 应为 ok；CLI 负责写入共享 SQLite 队列，需要启动心影Pro APP 才会执行网页任务。",
   });
 });

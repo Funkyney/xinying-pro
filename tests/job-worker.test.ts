@@ -32,7 +32,7 @@ describe("JobWorker", () => {
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
-  it("keeps a submitted video job synchronized until Heart confirms completion", async () => {
+  it("refreshes a submitted video job only when completion is explicitly requested", async () => {
     const project = service.createProject({ name: "队列闭环", prompt: "固定机位", mode: "text-to-video" });
     const queued = service.submitGeneration(project.id);
     const adapter = {
@@ -48,10 +48,28 @@ describe("JobWorker", () => {
     expect(service.getJob(queued.id).status).toBe("running");
     expect(service.getJob(queued.id).platformTaskId).toBe("chat:p:s:0");
 
-    await (worker as unknown as { monitorRunning(): Promise<void> }).monitorRunning();
+    await worker.refreshGenerationJobs([queued.id]);
     expect(service.getJob(queued.id)).toMatchObject({ status: "completed", platformExecutionId: "1001", progress: 100 });
     expect(adapter.inspectGenerationJobs).toHaveBeenCalledOnce();
     expect(adapter.inspectRunningJob).not.toHaveBeenCalled();
+  });
+
+  it("does not revisit generation jobs during the portrait background monitor", async () => {
+    const project = service.createProject({ name: "生成任务让路", prompt: "固定机位", mode: "text-to-video" });
+    const queued = service.submitGeneration(project.id);
+    service.updateJob(queued.id, { status: "running", platformExecutionId: "1001" });
+    const adapter = {
+      inspectGenerationJobs: vi.fn(),
+      inspectRunningJob: vi.fn(),
+      inspectPortraitReview: vi.fn(),
+    } as unknown as PlaywrightXinyingAdapter;
+    const worker = new JobWorker(service, adapter);
+
+    await (worker as unknown as { monitorRunning(): Promise<void> }).monitorRunning();
+
+    expect(adapter.inspectGenerationJobs).not.toHaveBeenCalled();
+    expect(adapter.inspectRunningJob).not.toHaveBeenCalled();
+    expect(service.getJob(queued.id).status).toBe("running");
   });
 
   it("locks a newly-created Heart conversation onto the local project after submission", async () => {

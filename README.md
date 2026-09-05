@@ -105,13 +105,17 @@ npm run build
 .\xinying.cmd director authorize --manifest "C:\shots\07\.xinying-run.json" --confirm
 .\xinying.cmd director resolve --manifest "C:\shots\07\.xinying-run.json"
 .\xinying.cmd director submit --manifest "C:\shots\07\.xinying-run.json" --confirm
+.\xinying.cmd media cache --file "C:\shots\07\character.png" "C:\shots\07\motion.mp4"
+.\xinying.cmd director run --manifest "C:\shots\07\.xinying-run.json" --confirm
 ```
 
 `director prepare` 只配置本地项目并输出最终编号预检，不会提交或扣费。清单中 `authorizeAsPortrait: true` 的图片/视频必须先通过 `director authorize` 完成人像审核，再由 `director resolve` 同步角色库并原位替换；`director submit` 会拒绝跳过这道门禁。`count` 默认为 1、上限为 20，清单数组顺序就是 APP 的最终素材顺序。
 
+Codex 自动执行优先使用 `director run`：它在一个进程内完成 prepare、人物授权等待、原位替换、按数量提交，并在全部任务显示“生成中”后立即返回，不再反复输出完整项目、提示词和任务快照。`media cache` 会按文件 SHA-256 复用已确认的人物检查结果；已确认含人的文件不能在后续清单中降级为普通素材。`platform sync` 默认复用十分钟内的目录缓存，确需访问心影网页时使用 `--force`。CLI 的项目、目录、任务与导演命令默认返回精简 JSON，诊断时可加 `--full`。
+
 新项目的分辨率默认是 `auto`：提交时沿用心影当前模型页面已经选中的分辨率。当前能力为：Seedance 2.5 支持 `480p / 720p / 1080p`、时长 4–30 秒、最多 30 图 / 10 视频 / 10 音频且合计 50 项；Seedance 2.0 支持 `480p / 720p / 1080p / 4k`、时长 4–15 秒、最多 9 图 / 3 视频 / 3 音频且合计 15 项。4K 只会在 Seedance 2.0 下显示和通过校验。
 
-`xinying.cmd` 不经过 npm 的日志包装，标准输出只有 CLI JSON，适合 Codex 直接解析。CLI 写入与桌面 APP 共用的 SQLite 队列；`platform sync/open/create`、`portrait platform-sync/platform-delete`、`results sync` 会通过仅监听本机的 APP 控制通道调用当前已登录页面，因此桌面 APP 必须保持运行。新建心影项目、生成、审核、取消和删除等外部写操作要求 `--confirm`；成功、帮助和用法错误均输出可解析 JSON。
+`xinying.cmd` 不经过 npm 的日志包装，标准输出只有 CLI JSON，适合 Codex 直接解析。CLI 写入与桌面 APP 共用的 SQLite 队列；`platform sync/open/create`、`portrait platform-sync/platform-delete`、`results sync` 和 `director run` 会通过仅监听本机的 APP 控制通道调用当前已登录页面，因此桌面 APP 必须保持运行。新建心影项目、生成、审核、取消和删除等外部写操作要求 `--confirm`；成功、帮助和用法错误均输出可解析 JSON。
 
 ## 验证和构建
 

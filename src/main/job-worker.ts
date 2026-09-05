@@ -6,16 +6,17 @@ import type { PlaywrightXinyingAdapter, AdapterOutcome } from "./playwright-adap
 type AutomationViewRunner = <T>(operation: () => Promise<T>, label?: string) => Promise<T>;
 type BackgroundAutomationRunner = <T>(operation: () => Promise<T>) => Promise<T | undefined>;
 
-const PORTRAIT_MONITOR_INTERVAL_MS = 30_000;
+const PORTRAIT_MONITOR_INTERVAL_MS = 10_000;
 const PORTRAIT_INSPECTION_TIMEOUT_MS = 5_000;
-const PORTRAIT_RETRY_AFTER_SKIP_MS = 15_000;
+const PORTRAIT_RETRY_AFTER_SKIP_MS = 5_000;
 
 function portraitMonitorDelay(job: Job, attempt: number, now = Date.now()): number {
   const submittedAt = Date.parse(job.submittedAt ?? job.createdAt);
   const reviewAge = Number.isFinite(submittedAt) ? Math.max(0, now - submittedAt) : 0;
-  if (reviewAge >= 30 * 60_000) return 5 * 60_000;
-  if (reviewAge >= 10 * 60_000 || attempt >= 5) return 2 * 60_000;
-  return 60_000;
+  if (reviewAge >= 30 * 60_000) return 2 * 60_000;
+  if (reviewAge >= 10 * 60_000 || attempt >= 8) return 60_000;
+  if (attempt >= 4) return 30_000;
+  return 20_000;
 }
 
 function stringJobParameter(job: Job, key: string): string {
@@ -57,11 +58,11 @@ export class JobWorker {
   }
 
   async refreshGenerationJobs(ids?: string[]): Promise<Job[]> {
-    if (this.processing) return this.service.listJobs();
+    if (this.processing) return this.service.listJobSummaries();
     this.processing = true;
     try {
       await this.inspectGenerationJobs(ids, 20);
-      return this.service.listJobs();
+      return this.service.listJobSummaries();
     } finally {
       this.processing = false;
     }
@@ -69,11 +70,8 @@ export class JobWorker {
 
   private async inspectGenerationJobs(ids?: string[], fallbackLimit = 2): Promise<void> {
     const selectedIds = ids?.length ? new Set(ids) : null;
-    const running = this.service.listJobs().filter((job) =>
-      job.kind === "generation"
-      && job.status === "running"
-      && (!selectedIds || selectedIds.has(job.id)),
-    );
+    const running = this.service.listJobsByKindAndStatus("generation", "running")
+      .filter((job) => !selectedIds || selectedIds.has(job.id));
     if (!running.length) return;
     const results = await this.runWithBackgroundAutomation(async () => {
       const byExecutionId = await this.adapter.inspectGenerationJobs(running).catch(() => new Map<string, AdapterOutcome>());
@@ -107,7 +105,7 @@ export class JobWorker {
 
   private async processQueue(): Promise<void> {
     if (this.processing) return;
-    const job = this.service.listQueuedJobs()[0];
+    const job = this.service.nextQueuedJob();
     if (!job) return;
     this.processing = true;
     try {
@@ -117,11 +115,7 @@ export class JobWorker {
         const batchId = stringJobParameter(job, "batchId");
         const takeNumber = integerJobParameter(job, "takeNumber");
         if (batchId && takeNumber && takeNumber > 1) {
-          const predecessor = this.service.listJobs().find((candidate) =>
-            candidate.kind === "generation"
-            && stringJobParameter(candidate, "batchId") === batchId
-            && integerJobParameter(candidate, "takeNumber") === takeNumber - 1,
-          );
+          const predecessor = this.service.findGenerationBatchTake(batchId, takeNumber - 1);
           if (!predecessor || !["running", "completed"].includes(predecessor.status) || !predecessor.platformTaskId?.startsWith("chat:")) {
             const message = `批次第 ${takeNumber - 1} 条尚未在心影确认提交，无法安全复用生成第 ${takeNumber} 条`;
             this.service.updateJob(job.id, { status: "needs-human", requiresHumanReason: message });
@@ -163,12 +157,12 @@ export class JobWorker {
     if (this.processing) return;
     this.processing = true;
     try {
-      await this.inspectGenerationJobs();
-      // Portrait authorization still needs monitoring because later reference
-      // submission depends on its approved/rejected state.
+      // A generation job reaching `running` already crossed the automation
+      // success boundary. Only explicit result refreshes inspect it again, so
+      // old generations cannot occupy the shared Heart page while a new run
+      // is authorizing portraits or submitting takes.
       const now = Date.now();
-      const running = this.service.listJobs()
-        .filter((job) => job.status === "running" && job.kind === "portrait-review")
+      const running = this.service.listJobsByKindAndStatus("portrait-review", "running")
         .filter((job) => (this.portraitCheckNotBefore.get(job.id) ?? 0) <= now)
         .sort((left, right) => {
           const scheduled = (this.portraitCheckNotBefore.get(left.id) ?? 0) - (this.portraitCheckNotBefore.get(right.id) ?? 0);

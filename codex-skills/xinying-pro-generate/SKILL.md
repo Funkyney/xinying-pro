@@ -3,38 +3,25 @@ name: xinying-pro-generate
 description: Use 心影Pro to execute a finished Seedance 2.0/2.5 prompt with ordered image, video, and audio references; inspect every image and video for people, require every asset containing any visible real or virtual person to pass 心影 virtual-portrait authorization instead of ordinary reference upload, preserve the intended @图/@视频/@音频 mapping, submit an explicitly requested number of takes, and stop once every take is confirmed as generating. Trigger when the user says “用心影生成”, “用心影Pro生成”, “把这条提示词跑一下”, “生成 N 条”, or asks Codex to upload references and operate 心影Pro. Only monitor, retrieve, or download results when the user separately asks. Do not use for prompt writing alone or for non-心影 providers.
 ---
 
-# 心影Pro 自动生成
+# 心影Pro 极速生成
 
-把 Seedance 导演提示词与电脑上的素材变成一份可校验的导演任务清单，再通过心影Pro的本地 CLI 执行。始终保留提示词中的准确引用关系；心影网页真实编号与计划编号不一致时，由 APP 在提交前回读并改写。
+把已定稿的 Seedance 提示词和本地素材写成导演清单，然后用一次 `director run` 完成准备、人物授权、原位替换、批量提交和“生成中”确认。不要把目录同步、授权轮询和生成轮询拆成多轮 CLI 调用。
 
 ## 安全门禁
 
-- 只有用户明确说“用心影生成/提交/生成 N 条”等会产生任务的指令，才可执行 `director authorize --confirm` 和 `director submit --confirm`。讨论、改提示词、预览和“准备一下”不算提交授权。
-- 明确生成但未给数量时，默认 1 条；不要擅自增加数量。一次最多 20 条。
-- 将真人或虚拟人物素材标为 `authorizeAsPortrait: true` 前，确认它是用户有权使用的原创、公司或已授权素材。第三方真人、名人、来源不明或授权不清时暂停并询问。
-- 任何图片或视频只要任意画面/帧出现真人、虚拟人物或人形角色，无论人物是否清晰、是否在背景、是否只是动作/构图/服装参考，都必须先走心影虚拟人像审核；绝不能作为普通本地图片/视频参考直接提交，也不能为绕过审核而改成 `scene`、`style`、`motion` 或 `other`。
-- 不读取或导出 Cookie、Token、二维码、浏览器配置；不绕过登录、验证码、实名、审核、额度、付费确认或地域限制。
-- `needs-login` 时报告原始原因，让用户扫码后再恢复。`needs-human` 先检查是否属于可自动恢复的默认资料选项错误；只有按“失败恢复”仍不能恢复或确实需要人工确认时，才让用户进入心影Pro“原网页模式”。
+- 只有用户明确说“用心影生成/提交/生成 N 条”等会创建任务时，才可运行带 `--confirm` 的提交命令。讨论、改提示词和预览不算授权。
+- 未指定数量时只生成 1 条；不得擅自增加，一次最多 20 条。
+- 将人物素材送审前，确认它是用户有权使用的原创、公司或已授权素材。第三方真人、名人、来源不明或授权不清时暂停询问。
+- 图片或视频的任意画面/帧只要出现真人、虚拟人物或人形角色，无论大小、清晰度、正背面或是否在背景，都必须走心影虚拟人像授权。绝不按普通图片或普通视频兜底，也不能改成 `scene/style/motion/other` 绕过。
+- 不读取或导出 Cookie、Token、二维码或浏览器配置；不绕过登录、验证码、实名、审核、额度、付费确认或地域限制。
 
-## 执行流程
+## 1. 取得提示词、素材和项目
 
-### 1. 取得定稿与素材
+使用当前任务中 Seedance 2.0 OS 已定稿的提示词。未定稿时先调用 `$seedance-20`，定稿后再执行本 Skill。
 
-使用当前对话中 Seedance 2.0 OS 的最终提示词。若提示词还未定稿，先使用 `$seedance-20` 完成提示词，再继续本 Skill。
+收集每个 `@图N / @视频N / @音频N` 对应的绝对路径，顺序以提示词意图为准，不能依赖文件系统排序。优先复用镜头文件夹中已有的 `.xinying-run.json` 和其中的 `projectId`。
 
-收集每一个 `@图N / @视频N / @音频N` 对应的绝对本地路径。逐张检查图片；视频检查首帧、尾帧以及覆盖全片的关键帧，不能只看封面；音频读取时长。根据提示词中引用的先后和媒体类型确定清单顺序，不依赖文件系统排序。若图片或视频无法打开、无法抽帧或无法确认是否有人，停止并报告，绝不能默认当作“无人”普通上传。
-
-按目标模型执行素材上限硬校验：Seedance 2.5 最多 30 张图片（含虚拟人像）、10 条视频、10 条音频，三类合计最多 50 项，视频总时长与音频总时长各不超过 30 秒；Seedance 2.0 最多 9 图、3 视频、3 音频，合计最多 15 项。不得通过改编号或重复拆分清单绕过上限。
-
-人物硬门禁：每个图片和视频文件都必须在清单中显式填写 `containsPerson`。任意画面/帧出现真人、虚拟人物或人形角色时写 `containsPerson: true`；只有确认整项素材完全无人时才能写 `containsPerson: false`。`containsPerson: true` 会由 APP 自动强制为 `role: "character"` 并进入虚拟人像授权，即使清单误写了其他 role 或漏写 `authorizeAsPortrait` 也不能按普通素材提交。
-
-只有确认没有任何人物的纯场景、纯物品、纯纹理素材，才可保持普通文件。背景路人、远景人群、人物剪影和视频中一闪而过的人物也不能作为普通素材上传。多人合照、背脸、脸部过小或人物不完整仍属于含人素材：不要在 Codex 侧预判审核失败，也不要在上传前要求用户拆分、换图或改成无人场景；继续写入 `containsPerson: true` 和 `authorizeAsPortrait: true`，并通过 `director authorize` 原样提交心影虚拟人像审核。只有心影表单、接口或审核任务明确返回失败后才暂停，并原样报告心影的真实原因；不能退回普通本地上传。
-
-### 2. 定位心影Pro CLI 与当前项目
-
-使用本 Skill `scripts` 目录中的启动器。不要要求用户下载源码或运行 `npm install`。
-
-Windows PowerShell：
+使用本 Skill 的启动器，不要求用户下载源码或执行 `npm install`：
 
 ```powershell
 $CodexRoot = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $HOME ".codex" }
@@ -42,92 +29,60 @@ $XinyingCli = Join-Path $CodexRoot "skills\xinying-pro-generate\scripts\xinying.
 & $XinyingCli doctor
 ```
 
-macOS shell：
-
 ```bash
 XINYING_CLI="${CODEX_HOME:-$HOME/.codex}/skills/xinying-pro-generate/scripts/xinying"
 "$XINYING_CLI" doctor
 ```
 
-如果启动器不存在或报告的APP路径已失效，停止并让用户在心影Pro的“Codex扩展”页面点击“安装/更新到 Codex”。不要自行搜索或复制用户会话数据。
+启动器缺失或 APP 路径失效时，让用户在心影Pro“Codex扩展”页点击安装/更新。已有有效 `projectId` 时不要例行运行 `platform sync/catalog/project list`。只有项目缺失、用户切换空间/项目或本地目录确实过期时才运行 `platform sync`；它默认复用十分钟缓存，需要强制刷新时加 `--force`。已绑定项目保留 `platformUrl` 的 `sessionId`，不要再次 `platform open` 误建新对话。
 
-随后通过同一启动器依次运行：
+## 2. 人物检查（先查缓存）
 
-```text
-platform sync
-platform catalog
-project list
-```
-
-优先选择用户已在心影Pro中绑定的本地项目，并保留该项目 `platformUrl` 中的精确 `sessionId`；这会让新生成继续追加到用户所选历史对话。项目已经绑定时不要再次运行 `platform open`，否则可能把它切到新对话。
-
-没有绑定项目时，先运行 `platform conversations <catalog-project-id>` 读取历史对话，再用 `platform open <catalog-project-id> --conversation-id <id>` 绑定用户指定的对话。只有用户明确要求从空白对话开始时，才省略 `--conversation-id` 新建对话。存在多个合理项目或对话且无法唯一判断时先询问，不要猜测。
-
-### 3. 写导演任务清单
-
-在当前镜头文件夹写 `.xinying-run.json`，字段严格遵循 [manifest-schema.md](references/manifest-schema.md)。默认 `replaceMaterials: true`，因为最终顺序必须完全等于清单顺序。把 Seedance 提示词原样放入 `prompt`；只在 APP 回读到心影实际编号后由提交器改写编号。
-
-用启动器运行：
+在重新看图或抽帧前，对全部图片和视频一次运行：
 
 ```text
-director validate --manifest "<absolute-manifest-path>"
-director prepare --manifest "<absolute-manifest-path>"
+media cache --file "<path1>" "<path2>" ...
 ```
 
-检查输出：素材数量与顺序正确；每个图片/视频都有明确的 `containsPerson` 检查结果；`preview.orderedLabels` 覆盖提示词中的所有引用；参数与最终提示词一致；所有 `containsPerson: true` 的图片/视频都出现在 `authorizationReferenceIds` 或已经解析为 `platformPortraitId`。`prepare` 只在 APP 本地暂存源文件以建立审核任务，不会把人物源文件上传到生成输入框，也不会扣费。
+- `hit: true`：这是同一文件 SHA-256 的已记录结果，直接复用 `containsPerson`，无需再次看图或视频。
+- `hit: false`：图片逐张检查；视频检查首帧、尾帧和覆盖全片的关键帧，不能只看封面。
+- 无法打开、无法抽帧或无法确认是否有人时暂停；绝不能默认写 `false`。
 
-Seedance 2.5 的默认高级参数为 `videoFormat: "mp4"` 和 `networkEnabled: true`。用户明确要 MOV 时写入 `videoFormat: "mov"`；只有用户明确要关闭联网时才写 `networkEnabled: false`。提交器会在心影“高级配置”中逐项确认这两个值。
+每个图片/视频必须在清单中显式填写 `containsPerson`。有人写 `true` 并写 `authorizeAsPortrait: true`；只有确认整项完全无人时才写 `false`。人物硬门禁会把已知含人的同一文件锁为人物素材，后续清单不能将其降级。
 
-### 4. 自动授权人物素材
+多人合照、背脸、脸部过小或人物不完整仍原样写 `true`。不要在 Codex 侧预判审核失败；内部会通过 `director authorize` 原样提交心影虚拟人像审核。只有心影实际返回失败后才报告原因，不能退回普通上传。
 
-仅在安全门禁已满足时运行：
+素材上限：Seedance 2.5 最多 30 图、10 视频、10 音频，合计最多 50 项，视频和音频总时长各不超过 30 秒；Seedance 2.0 最多 9 图、3 视频、3 音频，合计最多 15 项。
+
+## 3. 写清单并一次执行
+
+在镜头文件夹写 `.xinying-run.json`，严格遵循 [manifest-schema.md](references/manifest-schema.md)。默认 `replaceMaterials: true`，确保清单顺序就是心影最终顺序。提示词原样写入 `prompt`；APP 会按心影实际素材编号自动重写 `@图/@视频/@音频`。
+
+Seedance 2.5 默认写 `videoFormat: "mp4"` 与 `networkEnabled: true`；用户明确要 MOV 时改为 `mov`，明确关闭联网时才写 `false`。APP 会在高级配置中确认。
+
+安全门禁满足后只执行：
 
 ```text
-director authorize --manifest "<absolute-manifest-path>" --confirm
+director run --manifest "<absolute-manifest-path>" --confirm
 ```
 
-该命令会把清单中所有 `containsPerson: true` 的图片和视频上传到心影“虚拟人像”，创建或复用审核任务；名称带稳定短标识，性别、年龄、人种默认“其他”，应用范围默认国内，并由 APP 自动勾选心影合规承诺。这里的本地参考记录只用于定位原文件和审核状态，不是生成素材。
+用户本次明确改变数量时追加 `--count N`。允许该进程持续运行，工具初次返回后台会话后继续等待同一会话；不要另开 `job status`、`director resolve` 或重复 `director run`。默认总等待上限 45 分钟，可用 `--timeout-minutes N` 调整。
 
-对返回的每个审核任务使用 `job status <job-id>` 轮询。状态为 `queued/submitting/running` 时继续等待；心影官方说明审核预计约 5 分钟，接口队列数先变为 0 也不代表失败，不要在 2 分钟时误判为卡住或重复创建任务。`completed` 后再继续；`failed/needs-login` 时停止自动提交并报告；`needs-human` 按“失败恢复”先判断能否恢复原任务。
+这一个命令会：
 
-所有审核完成后运行：
+1. 校验清单并按顺序配置本地项目；
+2. 复用相同文件已通过的虚拟人像，其他含人图片/视频自动勾选合规承诺后排队审核；
+3. 在 APP 内部等待审核、把人物素材在原位置替换为已授权虚拟人像；
+4. 按 `count` 依次提交，后续条目复用上一条心影对话；
+5. 所有任务达到 `running` 或 `completed` 后返回一个精简 JSON。
 
-```text
-director resolve --manifest "<absolute-manifest-path>"
-```
-
-它会同步角色库，把审核通过的人物素材在原清单位置替换为心影虚拟人像。确认输出中人物素材的 `referenceId` 为 `null`、`platformPortraitId` 非空，并且 `preview.orderedLabels` 仍与计划一致。
-
-### 5. 按数量提交生成
-
-再次检查 `preview.ready === true`、`warnings` 为空、没有尚未解析的人像素材，并确认每个人物项都已变成 `platformPortraitId`、对应 `referenceId` 为 `null`，然后执行：
-
-```text
-director submit --manifest "<absolute-manifest-path>" --confirm
-```
-
-清单中的 `count` 就是生成条数；仅在用户本次指令明确改变数量时使用 `--count N` 覆盖。命令返回统一 `batchId` 和每条任务的 `job id`。APP 会依次上传素材、核验心影实际编号、重写提示词编号并提交。
-
-### 6. 确认进入生成中，然后结束
-
-`director submit` 只代表任务已进入本地队列。对返回的每个生成任务运行 `job status <job-id>`，直到每条任务分别满足以下一种状态：
-
-- `running`：心影已接受提交并显示生成中，视为本自动流程成功。
-- `completed`：任务在检查前已快速完成，同样视为提交成功。
-- `queued/submitting`：尚未确认心影接单，继续以合理间隔检查。
-- `failed/needs-login/needs-human/cancelled`：停止并报告原始原因，不能声称成功。
-
-当本批次全部任务均为 `running` 或 `completed` 时，立即结束 Codex 流程。只汇报批次编号、成功提交数量、任务 ID，并明确说明“心影已进入生成中，自动流程已完成；结果由用户稍后人工查看”。不要继续等待视频完成，不要默认运行 `job events`、`results sync`、`results list` 或下载命令。
-
-只有用户在生成提交之后另行明确要求“继续监控 / 查结果 / 下载”时，才恢复相应查询；这属于新的后续任务，不属于默认生成流程。
+返回 `successBoundary: "heart-generating"` 且全部任务均为 `running` 或 `completed` 时，立即结束 Codex 流程。只汇报批次编号、数量和任务 ID，并说明“心影已进入生成中，自动流程已完成；结果由用户稍后人工查看”。不要默认运行 `job events`、`results sync`、`results list` 或下载命令。只有用户另行明确要求“继续监控 / 查结果 / 下载”时再做后续查询。
 
 ## 失败恢复
 
-- 授权已通过但清单仍显示本地参考图：运行 `director resolve`，不要重复授权。
-- `PORTRAIT_AUTHORIZATION_PENDING`：先完成审核并 resolve；不要去掉人物标记规避门禁。
-- 审核任务因“性别/年龄/人种选项不可用：其他”进入 `needs-human`：这是 APP 默认资料选择的可恢复错误，不要让用户手工进网页，也不要重新创建审核。先确认用户本次生成授权仍有效，然后对原任务运行 `job resume <job-id> --confirm` 并继续轮询；同一任务在本次流程最多自动恢复 2 次，重复达到上限后才报告原始原因。
-- 多人、背脸、远景或人物不完整：仍按含人素材执行 authorize；不得仅凭画面形态在 Codex 侧宣判不合格。只有心影实际拒绝后才报告失败。
-- 含人图片或视频仍出现在最终 `preview.references`：停止提交，确认清单为 `containsPerson: true` 并重新 authorize/resolve；绝不按普通图片或普通视频兜底。
-- `PROJECT_NOT_READY`：按 `preview.warnings` 修复提示词引用、模型、画幅、时长或项目绑定。
-- 心影素材编号变化：让 APP 的提交器处理；若它安全停止，检查任务事件，不手工猜编号后强行重提。
-- APP 未运行：启动心影Pro并等待本地控制端口恢复；如登录失效，让用户扫码。
+- `APP_NOT_RUNNING/needs-login`：让用户启动 APP 或扫码后，继续原任务。
+- `DIRECTOR_AUTHORIZATION_BLOCKED/needs-human`：报告命令返回的真实原因。若仅为“性别/年龄/人种选项不可用：其他”，不要让用户手工进网页；对原任务执行 `job resume <job-id> --confirm`，同一任务最多自动恢复 2 次，然后重新运行一次 `director run`。其他人工门禁进入“原网页模式”处理。
+- 多人、背脸、远景或人物不完整：仍按含人素材送审，不得自行拆图或降级。只有心影表单、接口或审核任务明确返回失败后才暂停。
+- `DIRECTOR_NOT_READY/PROJECT_NOT_READY`：按返回的精简 `warnings` 修复引用、模型、参数或项目绑定。
+- 含人图片或视频仍出现在最终 `preview.references`：停止提交并纠正清单；绝不按普通图片或普通视频兜底。
+- 心影编号变化由 APP 回读处理；安全停止时检查任务事件，不手工猜编号强行重提。
