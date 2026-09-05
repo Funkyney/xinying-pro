@@ -415,7 +415,11 @@ td:first-child { display: flex; flex-direction: column; gap: 3px; }td:first-chil
 .consent-banner strong { color: #d9d3ee; font-size: 11px; }
 .portrait-section { margin-bottom: 24px; }
 .library-count { padding: 5px 9px; border-radius: 999px; color: #aeb5c5; background: rgba(255,255,255,.05); font-size: 9px; }
+.library-show-all { padding: 5px 9px; border: 1px solid rgba(139,92,246,.28); border-radius: 999px; color: #c7b7f3; background: rgba(139,92,246,.07); font-size: 9px; cursor: pointer; white-space: nowrap; }
+.library-show-all:hover { border-color: rgba(139,92,246,.55); background: rgba(139,92,246,.13); }
 .platform-library { max-height: 470px; padding-right: 5px; overflow-y: auto; }
+.portrait-load-more { display: flex; min-height: 54px; padding: 8px 12px; grid-column: 1 / -1; align-items: center; justify-content: center; gap: 9px; border: 1px dashed rgba(139,92,246,.22); border-radius: 12px; color: #8991a2; background: rgba(139,92,246,.035); font-size: 9px; }
+.portrait-load-more .button { min-height: 30px; padding: 0 10px; font-size: 9px; }
 .portrait-approved { color: #8ee8ba; background: rgba(36,128,89,.82); }
 .portrait-batch-bar { display: flex; margin: 0 0 12px; padding: 12px 14px; align-items: center; justify-content: space-between; gap: 16px; border: 1px solid rgba(255,107,120,.2); border-radius: 12px; background: linear-gradient(90deg, rgba(255,107,120,.07), rgba(139,92,246,.045)); }
 .portrait-batch-bar > div:first-child { display: flex; min-width: 0; flex-direction: column; gap: 3px; }

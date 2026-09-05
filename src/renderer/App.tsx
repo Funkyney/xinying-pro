@@ -712,6 +712,8 @@ function StudioPage({ project, projects, portraits, platformPortraits, jobs, onS
 }
 
 function PortraitsPage({ portraits, platformPortraits, projects, selectedProject, workspaceName, onSelectProject, run, onNavigate }: { portraits: PortraitAsset[]; platformPortraits: PlatformPortrait[]; projects: Project[]; selectedProject: Project | null; workspaceName: string; onSelectProject: (id: string) => void; run: (action: () => Promise<unknown>, success?: string) => Promise<void>; onNavigate: (page: PageKey) => void }) {
+  const portraitPageSize = 120;
+  const portraitDeleteLimit = 120;
   const [consent, setConsent] = useState(() => localStorage.getItem("xinying:portrait-compliance-v1") === "confirmed");
   const [portraitQuery, setPortraitQuery] = useState("");
   const [portraitSort, setPortraitSort] = useState<"newest" | "oldest">("newest");
@@ -721,6 +723,7 @@ function PortraitsPage({ portraits, platformPortraits, projects, selectedProject
   const [deleteConsent, setDeleteConsent] = useState(false);
   const [deleteProgress, setDeleteProgress] = useState<PlatformPortraitDeleteProgress | null>(null);
   const [locallyDeletedIds, setLocallyDeletedIds] = useState<Set<string>>(() => new Set());
+  const [portraitVisibleLimit, setPortraitVisibleLimit] = useState(portraitPageSize);
   const updateConsent = (confirmed: boolean) => {
     setConsent(confirmed);
     if (confirmed) localStorage.setItem("xinying:portrait-compliance-v1", "confirmed");
@@ -731,18 +734,25 @@ function PortraitsPage({ portraits, platformPortraits, projects, selectedProject
   const filteredPlatformPortraits = availablePlatformPortraits.filter((portrait) => !normalizedQuery || portrait.displayName.toLocaleLowerCase("zh-CN").includes(normalizedQuery));
   const managedPlatformPortraits = manageMode ? filteredPlatformPortraits.filter((portrait) => portrait.canDelete) : filteredPlatformPortraits;
   const portraitUploadOrder = (portrait: PlatformPortrait) => manageMode ? (portrait.deleteSortOrder ?? portrait.sortOrder) : portrait.sortOrder;
-  const visiblePlatformPortraits = [...managedPlatformPortraits]
-    .sort((left, right) => portraitSort === "newest" ? portraitUploadOrder(left) - portraitUploadOrder(right) : portraitUploadOrder(right) - portraitUploadOrder(left))
-    .slice(0, 120);
+  const sortedPlatformPortraits = [...managedPlatformPortraits]
+    .sort((left, right) => portraitSort === "newest" ? portraitUploadOrder(left) - portraitUploadOrder(right) : portraitUploadOrder(right) - portraitUploadOrder(left));
+  const visiblePlatformPortraits = sortedPlatformPortraits.slice(0, portraitVisibleLimit);
+  const hasMorePlatformPortraits = visiblePlatformPortraits.length < sortedPlatformPortraits.length;
   const deletableVisiblePortraits = visiblePlatformPortraits.filter((portrait) => portrait.canDelete);
   const selectedDeletePortraits = availablePlatformPortraits
     .filter((portrait) => selectedDeleteIds.has(portrait.id) && portrait.canDelete)
     .sort((left, right) => portraitSort === "newest" ? (left.deleteSortOrder ?? left.sortOrder) - (right.deleteSortOrder ?? right.sortOrder) : (right.deleteSortOrder ?? right.sortOrder) - (left.deleteSortOrder ?? left.sortOrder));
-  const allVisibleSelected = deletableVisiblePortraits.length > 0 && deletableVisiblePortraits.every((portrait) => selectedDeleteIds.has(portrait.id));
+  const selectedVisibleDeleteCount = deletableVisiblePortraits.filter((portrait) => selectedDeleteIds.has(portrait.id)).length;
+  const allVisibleSelected = deletableVisiblePortraits.length > 0
+    && selectedVisibleDeleteCount >= Math.min(portraitDeleteLimit, deletableVisiblePortraits.length);
+  const loadMorePlatformPortraits = () => setPortraitVisibleLimit((current) => Math.min(current + portraitPageSize, sortedPlatformPortraits.length));
   const portraitDragSelection = useDragMultiSelect({
     enabled: manageMode,
     isSelected: (id) => selectedDeleteIds.has(id),
-    setSelected: (id, selected) => setSelectedDeleteIds((current) => withSelectionState(current, id, selected)),
+    setSelected: (id, selected) => setSelectedDeleteIds((current) => {
+      if (selected && !current.has(id) && current.size >= portraitDeleteLimit) return current;
+      return withSelectionState(current, id, selected);
+    }),
   });
   useEffect(() => {
     setManageMode(false);
@@ -751,7 +761,9 @@ function PortraitsPage({ portraits, platformPortraits, projects, selectedProject
     setDeleteConsent(false);
     setDeleteProgress(null);
     setLocallyDeletedIds(new Set());
+    setPortraitVisibleLimit(portraitPageSize);
   }, [selectedProject?.id, selectedProject?.platformWorkspaceId]);
+  useEffect(() => setPortraitVisibleLimit(portraitPageSize), [portraitQuery, portraitSort, manageMode]);
   useEffect(() => window.xinying.portraits.onDeleteProgress((progress) => {
     setDeleteProgress(progress);
     if (progress.deletedIds.length) {
@@ -767,7 +779,7 @@ function PortraitsPage({ portraits, platformPortraits, projects, selectedProject
     setSelectedDeleteIds((current) => {
       const next = new Set(current);
       if (next.has(portrait.id)) next.delete(portrait.id);
-      else next.add(portrait.id);
+      else if (next.size < portraitDeleteLimit) next.add(portrait.id);
       return next;
     });
   };
@@ -776,7 +788,7 @@ function PortraitsPage({ portraits, platformPortraits, projects, selectedProject
       const next = new Set(current);
       for (const portrait of deletableVisiblePortraits) {
         if (allVisibleSelected) next.delete(portrait.id);
-        else next.add(portrait.id);
+        else if (next.size < portraitDeleteLimit) next.add(portrait.id);
       }
       return next;
     });
@@ -802,11 +814,12 @@ function PortraitsPage({ portraits, platformPortraits, projects, selectedProject
             <option value="oldest">最早上传优先</option>
           </select>
           <button className={`button ${manageMode ? "ghost" : "secondary"}`} disabled={!selectedProject || !availablePlatformPortraits.length} onClick={() => { setManageMode((current) => !current); setSelectedDeleteIds(new Set()); }}><Settings2 size={15} />{manageMode ? "退出管理" : "批量管理"}</button>
-          <span className="library-count">{manageMode ? "可管理" : "显示"} {visiblePlatformPortraits.length} / {manageMode ? managedPlatformPortraits.length : availablePlatformPortraits.length}</span>
+          <span className="library-count">{manageMode ? "可管理" : "显示"} {visiblePlatformPortraits.length} / {sortedPlatformPortraits.length}</span>
+          {hasMorePlatformPortraits && <button className="library-show-all" onClick={() => setPortraitVisibleLimit(sortedPlatformPortraits.length)}>显示全部</button>}
         </div>
       </div>
-      {manageMode && <div className="portrait-batch-bar" data-testid="portrait-batch-bar"><div><strong>已选择 {selectedDeletePortraits.length} 项</strong><span>按住卡片拖过可连续多选；从已选卡片开始拖动可批量取消。当前列表中 {deletableVisiblePortraits.length} 项可删除。</span></div><div><button className="button ghost" disabled={!deletableVisiblePortraits.length} onClick={toggleAllVisible}>{allVisibleSelected ? "取消全选当前列表" : "全选当前列表"}</button><button className="button ghost" disabled={!selectedDeletePortraits.length} onClick={() => setSelectedDeleteIds(new Set())}>清空选择</button><button className="button danger" disabled={!selectedDeletePortraits.length} onClick={() => { setDeleteConsent(false); setDeleteConfirmOpen(true); }}><Trash2 size={15} />永久删除 {selectedDeletePortraits.length || ""} 项</button></div></div>}
-      <div className={`portrait-grid platform-library ${manageMode ? "drag-select-surface" : ""} ${portraitDragSelection.isDragging ? "drag-select-active" : ""}`} {...portraitDragSelection.dragProps}>
+      {manageMode && <div className="portrait-batch-bar" data-testid="portrait-batch-bar"><div><strong>已选择 {selectedDeletePortraits.length} 项</strong><span>按住卡片拖过可连续多选；从已选卡片开始拖动可批量取消。当前已显示 {deletableVisiblePortraits.length} 项可删除，每批最多 {portraitDeleteLimit} 项。</span></div><div><button className="button ghost" disabled={!deletableVisiblePortraits.length} onClick={toggleAllVisible}>{allVisibleSelected ? "取消全选当前列表" : "全选当前列表"}</button><button className="button ghost" disabled={!selectedDeletePortraits.length} onClick={() => setSelectedDeleteIds(new Set())}>清空选择</button><button className="button danger" disabled={!selectedDeletePortraits.length} onClick={() => { setDeleteConsent(false); setDeleteConfirmOpen(true); }}><Trash2 size={15} />永久删除 {selectedDeletePortraits.length || ""} 项</button></div></div>}
+      <div className={`portrait-grid platform-library ${manageMode ? "drag-select-surface" : ""} ${portraitDragSelection.isDragging ? "drag-select-active" : ""}`} {...portraitDragSelection.dragProps} onScroll={(event) => { const element = event.currentTarget; if (hasMorePlatformPortraits && element.scrollHeight - element.scrollTop - element.clientHeight < 320) loadMorePlatformPortraits(); }}>
         {visiblePlatformPortraits.map((portrait) => {
           const selected = selectedProject?.portraitIds.includes(portrait.id) ?? false;
           const order = selectedProject?.materialOrder.indexOf(portraitMaterialKey(portrait.id)) ?? -1;
@@ -829,6 +842,7 @@ function PortraitsPage({ portraits, platformPortraits, projects, selectedProject
         {!selectedProject && <EmptyState title="请先选择调用项目" description="不同空间的虚拟人像可见范围不同，先选择项目才能准确读取并调用。" action={<button className="button primary" onClick={() => onNavigate("projects")}><Building2 size={16} />选择空间和项目</button>} />}
         {selectedProject && !availablePlatformPortraits.length && <EmptyState title="尚未同步当前空间角色" description="点击“同步当前空间”，读取你或同事已经授权的虚拟人像。" />}
         {availablePlatformPortraits.length > 0 && !visiblePlatformPortraits.length && <EmptyState title={manageMode ? "没有可删除的匹配角色" : "没有匹配角色"} description={manageMode ? "当前筛选结果中没有心影授予本账号删除权限的角色。" : "换一个名称关键词继续搜索。"} />}
+        {hasMorePlatformPortraits && <div className="portrait-load-more"><span>已显示 {visiblePlatformPortraits.length} / {sortedPlatformPortraits.length}</span><button className="button secondary" onClick={loadMorePlatformPortraits}>再显示 {Math.min(portraitPageSize, sortedPlatformPortraits.length - visiblePlatformPortraits.length)} 项</button><button className="button ghost" onClick={() => setPortraitVisibleLimit(sortedPlatformPortraits.length)}>显示全部</button></div>}
       </div>
     </section>
     <section className="portrait-section"><div className="panel-heading compact"><div><span className="eyebrow">LOCAL UPLOADS</span><h2>本地待上传 / 审核</h2><p>名称自动取文件名，性别、年龄、人种默认“其他”；提交到当前项目所属空间并自动勾选承诺。</p></div></div><div className="portrait-grid">{portraits.map((portrait) => { const active = ["queued", "reviewing", "needs-human"].includes(portrait.platformStatus); const scope = portrait.applicationScope === "domestic" ? "国内版" : portrait.applicationScope === "overseas" ? "海外版" : "国内版 + 海外版"; return <article className="portrait-card" key={portrait.id}><div className="portrait-media">{portrait.mimeType.startsWith("video") ? <video src={window.xinying.references.mediaUrl(portrait.filePath)} /> : <img src={window.xinying.references.mediaUrl(portrait.filePath)} alt={portrait.displayName} />}<span className={`portrait-status portrait-${portrait.platformStatus}`}>{portrait.platformStatus}</span></div><div className="portrait-body"><strong>{portrait.displayName}</strong><span>{portrait.gender} · {portrait.ageGroup} · {portrait.ethnicity} · {scope}</span><span>{portrait.consentConfirmed ? "已记录合规确认" : "未确认合规承诺"}</span>{portrait.reviewNote && <p>{portrait.reviewNote}</p>}<div className="card-actions"><button className="button secondary" disabled={!selectedProject || !portrait.consentConfirmed || active || portrait.platformStatus === "approved"} onClick={() => selectedProject && run(() => window.xinying.portraits.submitReview(portrait.id, selectedProject.id), "上传审核任务已加入队列")}><UserRoundCheck size={15} />自动上传并授权</button><button className="icon-button danger" disabled={active} title={active ? "请先完成或取消关联审核任务" : "删除本地素材"} onClick={() => confirm("删除本地虚拟人像素材？") && run(() => window.xinying.portraits.remove(portrait.id), "素材已删除")}><Trash2 size={15} /></button></div></div></article>; })}{!portraits.length && <EmptyState title="暂无本地待上传素材" description="选择心影项目并确认合规声明后，可从这里上传图片或视频并自动授权。" />}</div></section>

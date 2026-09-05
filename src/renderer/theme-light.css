@@ -361,6 +361,9 @@ p { color: var(--muted); }
 .portrait-search:focus { border-color: rgba(201, 149, 56, .6); box-shadow: 0 0 0 2px rgba(201, 149, 56, .1); }
 .portrait-sort { color: #55545a; background: #fff; }
 .library-count { color: #7d7871; background: rgba(70, 61, 49, .055); }
+.library-show-all { border-color: rgba(184, 126, 30, .25); color: #9e691b; background: rgba(218, 163, 64, .08); }
+.library-show-all:hover { border-color: rgba(184, 126, 30, .48); background: rgba(218, 163, 64, .14); }
+.portrait-load-more { border-color: rgba(184, 126, 30, .2); color: #817b73; background: rgba(218, 163, 64, .045); }
 .portrait-batch-bar {
   border-color: rgba(216, 93, 103, .18);
   background: linear-gradient(90deg, rgba(216, 93, 103, .06), rgba(235, 196, 122, .06));
