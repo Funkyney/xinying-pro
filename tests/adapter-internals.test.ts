@@ -71,6 +71,22 @@ describe("Playwright adapter task references", () => {
     expect(adapterInternals.platformPortraitIdentity("角色A", "https://cdn.bluemediacdn.com/team/asset-1.png", "team-b").id).not.toBe(first.id);
   });
 
+  it("matches a Heart portrait card by its stable asset id after a rename or CDN transform", () => {
+    const portrait = {
+      displayName: "伴舞11",
+      previewUrl: "https://cdn.bluemediacdn.com/team/asset-11.png?x-tos-process=image/quality,q_40",
+      platformAssetId: "asset-11",
+    };
+    expect(adapterInternals.platformPortraitCardMatches(portrait, {
+      displayName: "伴舞11-已改名",
+      previewUrl: "https://cdn.bluemediacdn.com/team/asset-11.webp?x-tos-process=image/quality,q_80",
+    })).toBe(true);
+    expect(adapterInternals.platformPortraitCardMatches(portrait, {
+      displayName: "伴舞11",
+      previewUrl: "https://cdn.bluemediacdn.com/team/another-asset.png",
+    })).toBe(false);
+  });
+
   it("matches renamed Heart portrait approvals by the uploaded file fingerprint", () => {
     const records = adapterInternals.platformPortraitApiRecords({
       code: 0,

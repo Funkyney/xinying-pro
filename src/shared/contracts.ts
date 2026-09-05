@@ -298,7 +298,10 @@ export interface PlatformResult {
 
 export interface PlatformPortraitDeleteResult {
   requestedIds: string[];
+  /** Local ids confirmed absent from Heart after this operation. */
   deletedIds: string[];
+  /** Subset already gone remotely that only needed stale local cache cleanup. */
+  alreadyAbsentIds: string[];
   failed?: {
     id: string;
     displayName: string;

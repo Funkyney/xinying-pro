@@ -234,6 +234,23 @@ function platformPortraitIdentity(displayName: string, previewUrl: string, works
   };
 }
 
+function normalizedRemoteAssetUrl(value: string): string {
+  return value.split("?")[0]?.trim() ?? "";
+}
+
+function platformPortraitCardMatches(
+  portrait: Pick<PlatformPortrait, "displayName" | "previewUrl" | "platformAssetId">,
+  card: { displayName: string; previewUrl: string },
+): boolean {
+  const cardIdentity = platformPortraitIdentity(card.displayName, card.previewUrl);
+  const targetAssetId = portrait.platformAssetId.trim();
+  if (targetAssetId && targetAssetId !== "unknown" && cardIdentity.platformAssetId === targetAssetId) return true;
+  if (card.displayName.trim() !== portrait.displayName.trim()) return false;
+  const cardUrl = normalizedRemoteAssetUrl(card.previewUrl);
+  const targetUrl = normalizedRemoteAssetUrl(portrait.previewUrl);
+  return !cardUrl || !targetUrl || cardUrl === targetUrl;
+}
+
 function platformWorkspaceIdentity(kind: PlatformWorkspace["kind"], name: string): string {
   return crypto.createHash("sha256").update(`workspace\n${kind}\n${name.trim()}`).digest("hex");
 }
@@ -1590,16 +1607,14 @@ export class PlaywrightXinyingAdapter {
   }
 
   private async findPlatformPortraitCard(cards: Locator, portrait: PlatformPortrait): Promise<Locator | null> {
-    const candidates = cards.filter({ hasText: portrait.displayName });
-    for (let index = 0; index < await candidates.count(); index += 1) {
-      const candidate = candidates.nth(index);
-      const exactName = (await candidate.locator(".face-name-text").innerText().catch(() => "")).trim() === portrait.displayName;
-      const imageUrl = await candidate.locator("img:not(.previewBg)").first().getAttribute("src").catch(() => null)
-        ?? await candidate.locator("img").first().getAttribute("src").catch(() => null);
-      const sameAsset = !imageUrl || imageUrl.split("?")[0] === portrait.previewUrl.split("?")[0];
-      if (exactName && sameAsset) return candidate;
-    }
-    return null;
+    const entries = await cards.evaluateAll((elements) => elements.map((card) => ({
+      displayName: (card.querySelector(".face-name-text")?.textContent ?? card.textContent ?? "").replace(/\s+/g, " ").trim(),
+      previewUrl: card.querySelector<HTMLImageElement>("img:not(.previewBg)")?.src
+        ?? card.querySelector<HTMLImageElement>("img")?.src
+        ?? "",
+    })));
+    const index = entries.findIndex((entry) => platformPortraitCardMatches(portrait, entry));
+    return index >= 0 ? cards.nth(index) : null;
   }
 
   async deletePlatformPortraits(
@@ -1608,7 +1623,11 @@ export class PlaywrightXinyingAdapter {
     portraits: PlatformPortrait[],
     onProgress?: (progress: PlatformPortraitDeleteProgress) => void,
   ): Promise<PlatformPortraitDeleteResult> {
-    const result: PlatformPortraitDeleteResult = { requestedIds: portraits.map((portrait) => portrait.id), deletedIds: [] };
+    const result: PlatformPortraitDeleteResult = {
+      requestedIds: portraits.map((portrait) => portrait.id),
+      deletedIds: [],
+      alreadyAbsentIds: [],
+    };
     const report = (
       status: PlatformPortraitDeleteProgress["status"],
       index: number,
@@ -1648,16 +1667,34 @@ export class PlaywrightXinyingAdapter {
       if (!dialog) throw new AppError("PORTRAIT_PICKER_NOT_FOUND", "心影认证角色库未打开");
       await this.setPortraitSourceFilter(page, dialog, "上传人像");
       const initialCards = await waitForCollectionWithin(dialog, this.selectors.generation.portraitCards, 20_000);
-      if (!initialCards) throw new AppError("PORTRAIT_LIBRARY_EMPTY", "心影认证角色库没有可管理的人像卡片");
-      await this.loadPortraitCards(initialCards, 30, 6, 400);
+      // 删除可以选择最早上传的人像，因此必须比“全部人像”的增量同步窗口读得更深。
+      // 若远端已经没有任何上传人像，也仍需进入循环清理用户选中的本地过期记录。
+      if (initialCards) await this.loadPortraitCards(initialCards, 80, 6, 400);
+      let refreshedAfterMissingCard = false;
 
       for (const [index, portrait] of portraits.entries()) {
         try {
           report("deleting", index + 1, portrait, `正在删除 ${index + 1} / ${portraits.length}：${portrait.displayName}`);
-          const cards = await firstCollectionWithin(dialog, this.selectors.generation.portraitCards);
-          if (!cards) throw new AppError("PORTRAIT_LIBRARY_EMPTY", "心影认证角色库没有可管理的人像卡片");
-          const matched = await this.findPlatformPortraitCard(cards, portrait);
-          if (!matched) throw new AppError("PLATFORM_PORTRAIT_NOT_FOUND", `心影角色库中找不到“${portrait.displayName}”，请重新同步`);
+          let cards = await firstCollectionWithin(dialog, this.selectors.generation.portraitCards);
+          let matched = cards ? await this.findPlatformPortraitCard(cards, portrait) : null;
+          if (!matched && !refreshedAfterMissingCard) {
+            // 团队成员或上一次部分任务可能已经删除了这张卡。强制切换筛选刷新一次，
+            // 避免把暂时没有重绘的 DOM 当成权威结果；同一批后续项复用这份新快照。
+            await this.setPortraitSourceFilter(page, dialog, "全部");
+            await this.setPortraitSourceFilter(page, dialog, "上传人像");
+            cards = await waitForCollectionWithin(dialog, this.selectors.generation.portraitCards, 8_000);
+            if (cards) await this.loadPortraitCards(cards, 80, 6, 400);
+            matched = cards ? await this.findPlatformPortraitCard(cards, portrait) : null;
+            refreshedAfterMissingCard = true;
+          }
+          if (!matched) {
+            // 心影端最终状态已经是“不存在”。把本地增量缓存里的旧卡片视为已清理，
+            // 并继续处理整批，而不是让第一条过期记录永久卡住后续删除。
+            result.deletedIds.push(portrait.id);
+            result.alreadyAbsentIds.push(portrait.id);
+            report("deleted", index + 1, portrait, `心影中已不存在“${portrait.displayName}”，已清理本地过期记录并继续`);
+            continue;
+          }
           await matched.scrollIntoViewIfNeeded().catch(() => undefined);
           const deleteIcon = matched.locator(".icon-shanchu").filter({ visible: true }).first();
           if ((await deleteIcon.count()) === 0) {
@@ -3234,6 +3271,7 @@ export const adapterInternals = {
   extractBaseTaskId,
   taskListRecords,
   platformPortraitIdentity,
+  platformPortraitCardMatches,
   platformWorkspaceIdentity,
   platformProjectIdentity,
   platformConversationsFromApi,

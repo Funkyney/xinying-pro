@@ -232,8 +232,12 @@ export function registerIpcHandlers(
     }
     service.markPlatformPortraitsDeleted(result.deletedIds, targetProject.platformWorkspaceId);
     if (result.failed) {
-      throw new Error(`已永久删除 ${result.deletedIds.length} 项；删除“${result.failed.displayName}”时停止：${result.failed.message}`);
+      const deletedCount = result.deletedIds.length - result.alreadyAbsentIds.length;
+      const cleaned = result.alreadyAbsentIds.length;
+      throw new Error(`已处理 ${result.deletedIds.length} 项（本次删除 ${deletedCount} 项，清理过期记录 ${cleaned} 项）；处理“${result.failed.displayName}”时停止：${result.failed.message}`);
     }
+    const deletedCount = result.deletedIds.length - result.alreadyAbsentIds.length;
+    const cleaned = result.alreadyAbsentIds.length;
     notifyProgress({
       status: "completed",
       requestedIds,
@@ -242,7 +246,9 @@ export function registerIpcHandlers(
       currentName: null,
       current: result.deletedIds.length,
       total: portraits.length,
-      message: `已删除 ${result.deletedIds.length} / ${portraits.length} 个虚拟人像`,
+      message: cleaned
+        ? `已处理 ${result.deletedIds.length} / ${portraits.length} 项：本次删除 ${deletedCount} 项，自动清理过期记录 ${cleaned} 项`
+        : `已删除 ${result.deletedIds.length} / ${portraits.length} 个虚拟人像`,
     });
     return result;
   });
