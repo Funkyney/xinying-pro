@@ -97,6 +97,9 @@ function createWindow(): void {
     cliEntry,
     bundledSkillPath,
   });
+  void codexExtension.updateManagedInstallation().catch((error) => {
+    console.warn("Failed to update managed Codex extension", error);
+  });
   registerIpcHandlers(mainWindow, service, platformManager, adapter, codexExtension, worker);
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {

@@ -150,6 +150,12 @@ export class CodexExtensionManager {
     };
   }
 
+  async updateManagedInstallation(): Promise<CodexExtensionInstallResult | null> {
+    const current = await this.status();
+    if (!current.available || !current.installed || current.conflict || !current.needsUpdate) return null;
+    return this.install(false);
+  }
+
   async install(replaceExisting = false): Promise<CodexExtensionInstallResult> {
     const before = await this.status();
     if (!before.available) throw new Error(before.message);

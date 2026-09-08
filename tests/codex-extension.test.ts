@@ -62,6 +62,17 @@ describe("CodexExtensionManager", () => {
     expect(result.backupPath).toBeNull();
   });
 
+  it("updates an older managed Skill automatically without touching unmanaged conflicts", async () => {
+    const initial = await fixture("0.5.12");
+    await initial.manager.install();
+    const updated = new CodexExtensionManager({ ...initial.manager.runtime, appVersion: "0.5.13" });
+
+    const result = await updated.updateManagedInstallation();
+
+    expect(result?.installedVersion).toBe("0.5.13");
+    expect((await updated.status()).state).toBe("installed");
+  });
+
   it("preserves an unmanaged same-name Skill before confirmed replacement", async () => {
     const { manager } = await fixture();
     await fs.promises.mkdir(manager.skillPath, { recursive: true });
