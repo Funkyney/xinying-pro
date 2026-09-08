@@ -66,13 +66,13 @@ Seedance 2.5 默认写 `videoFormat: "mp4"` 与 `networkEnabled: true`；用户�
 director run --manifest "<absolute-manifest-path>" --confirm
 ```
 
-用户本次明确改变数量时追加 `--count N`。允许该进程持续运行，工具初次返回后台会话后继续等待同一会话；不要另开 `job status`、`director resolve` 或重复 `director run`。默认总等待上限 45 分钟，可用 `--timeout-minutes N` 调整。
+用户本次明确改变数量时追加 `--count N`。允许该进程持续运行，工具初次返回后台会话后继续等待同一会话；不要另开 `job status`、`director resolve` 或重复 `director run`，也不要在任务仍运行时让用户去网页补操作。默认总等待上限 45 分钟，可用 `--timeout-minutes N` 调整。长时间等待由同一个本地进程完成，不要用多轮 Codex 对话或轮询消耗额外 token。
 
 这一个命令会：
 
 1. 校验清单并按顺序配置本地项目；
-2. 复用相同文件已通过的虚拟人像，其他含人图片/视频自动勾选合规承诺后排队审核；
-3. 在 APP 内部等待审核、把人物素材在原位置替换为已授权虚拟人像；
+2. 复用相同文件已通过的虚拟人像，其他含人图片/视频分别使用干净表单，自动填写名称、默认资料和合规承诺后排队审核；
+3. 在 APP 内部等待审核、自动恢复临时表单错误、回绑新角色，并把人物素材在原位置替换为已授权虚拟人像；
 4. 按 `count` 依次提交，后续条目复用上一条心影对话；
 5. 所有任务达到 `running` 或 `completed` 后返回一个精简 JSON。
 
@@ -81,8 +81,9 @@ director run --manifest "<absolute-manifest-path>" --confirm
 ## 失败恢复
 
 - `APP_NOT_RUNNING/needs-login`：让用户启动 APP 或扫码后，继续原任务。
-- `DIRECTOR_AUTHORIZATION_BLOCKED/needs-human`：报告命令返回的真实原因。若仅为“性别/年龄/人种选项不可用：其他”，不要让用户手工进网页；对原任务执行 `job resume <job-id> --confirm`，同一任务最多自动恢复 2 次，然后重新运行一次 `director run`。其他人工门禁进入“原网页模式”处理。
+- 上传表单残留、资料下拉框暂时不可用、角色库刚审核完尚未重绘、角色卡编号或图片/视频类型变化：全部由 APP 内部自动清理、重试、回绑和重写编号；不要执行 `job resume`，不要让用户删除重传、改提示词或进入网页补操作。
+- `DIRECTOR_AUTHORIZATION_BLOCKED/needs-human`：只报告命令最终返回的真实原因。只有登录失效、心影明确驳回、授权/权限不足、付费确认或平台持续故障才让用户进入“原网页模式”处理。
 - 多人、背脸、远景或人物不完整：仍按含人素材送审，不得自行拆图或降级。只有心影表单、接口或审核任务明确返回失败后才暂停。
 - `DIRECTOR_NOT_READY/PROJECT_NOT_READY`：按返回的精简 `warnings` 修复引用、模型、参数或项目绑定。
 - 含人图片或视频仍出现在最终 `preview.references`：停止提交并纠正清单；绝不按普通图片或普通视频兜底。
-- 心影编号变化由 APP 回读处理；安全停止时检查任务事件，不手工猜编号强行重提。
+- 心影编号变化以及视频人像被角色槽显示为 `@图N` 的情况由 APP 回读并自动改写提示词；不要手工猜编号或要求重新上传。

@@ -116,6 +116,32 @@ describe("JobWorker", () => {
     expect(service.listJobEvents(queued.id).at(-1)?.code).toBe("NEEDS_PAYMENT");
   });
 
+  it("automatically resets and retries transient portrait form failures", async () => {
+    const project = service.createProject({ name: "无人值守人像", prompt: "固定机位", mode: "text-to-video" });
+    const portraitPath = path.join(tempDir, "portrait.png");
+    fs.writeFileSync(portraitPath, "image");
+    const portrait = service.addPortraits([portraitPath], true)[0];
+    const queued = service.submitPortraitReview(portrait.id, project.id);
+    const adapter = {
+      submitGeneration: vi.fn(),
+      submitPortraitReview: vi.fn()
+        .mockResolvedValueOnce({
+          status: "needs-human",
+          checkpoint: { reason: "approval", message: "心影未关闭虚拟人像提交表单，请人工检查页面提示" },
+        })
+        .mockResolvedValueOnce({ status: "running", platformTaskId: "portrait:approved-next", message: "已自动提交" }),
+    } as unknown as PlaywrightXinyingAdapter;
+    const worker = new JobWorker(service, adapter);
+
+    await (worker as unknown as { processQueue(): Promise<void> }).processQueue();
+    expect(service.getJob(queued.id)).toMatchObject({ status: "queued", retryCount: 1, requiresHumanReason: null });
+    expect(service.listJobEvents(queued.id).at(-1)?.code).toBe("AUTOMATION_RETRY");
+
+    await (worker as unknown as { processQueue(): Promise<void> }).processQueue();
+    expect(service.getJob(queued.id)).toMatchObject({ status: "running", platformTaskId: "portrait:approved-next" });
+    expect(adapter.submitPortraitReview).toHaveBeenCalledTimes(2);
+  });
+
   it("submits the first take normally and chains later takes through Heart reuse editing", async () => {
     const project = service.createProject({ name: "连续三条", prompt: "固定机位，角色转身", mode: "text-to-video" });
     const batch = service.submitGenerationBatch(project.id, 3);

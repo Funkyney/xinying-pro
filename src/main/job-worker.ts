@@ -9,6 +9,8 @@ type BackgroundAutomationRunner = <T>(operation: () => Promise<T>) => Promise<T 
 const PORTRAIT_MONITOR_INTERVAL_MS = 10_000;
 const PORTRAIT_INSPECTION_TIMEOUT_MS = 5_000;
 const PORTRAIT_RETRY_AFTER_SKIP_MS = 5_000;
+const PORTRAIT_AUTOMATION_RETRY_LIMIT = 5;
+const GENERATION_AUTOMATION_RETRY_LIMIT = 3;
 
 function portraitMonitorDelay(job: Job, attempt: number, now = Date.now()): number {
   const submittedAt = Date.parse(job.submittedAt ?? job.createdAt);
@@ -27,6 +29,22 @@ function stringJobParameter(job: Job, key: string): string {
 function integerJobParameter(job: Job, key: string): number | null {
   const value = job.parameters[key];
   return Number.isInteger(value) ? Number(value) : null;
+}
+
+function shouldRetryAutomationCheckpoint(job: Job, outcome: AdapterOutcome): boolean {
+  if (outcome.status !== "needs-human") return false;
+  if (job.kind === "portrait-review") {
+    if (job.retryCount >= PORTRAIT_AUTOMATION_RETRY_LIMIT) return false;
+    if (outcome.checkpoint.reason === "page-changed") return true;
+    return outcome.checkpoint.reason === "approval"
+      && /表单|提交条件|未关闭|素材槽位|角色库/.test(outcome.checkpoint.message);
+  }
+  if (job.retryCount >= GENERATION_AUTOMATION_RETRY_LIMIT) return false;
+  if (outcome.checkpoint.reason === "page-changed") {
+    return /认证角色库|虚拟人像|素材槽位|生成页|上传入口|确认按钮|实际编号|页面.*加载/.test(outcome.checkpoint.message);
+  }
+  return outcome.checkpoint.reason === "approval"
+    && /认证角色库|所选虚拟人像|素材槽位/.test(outcome.checkpoint.message);
 }
 
 export class JobWorker {
@@ -224,6 +242,26 @@ export class JobWorker {
       return;
     }
     if (outcome.status === "needs-human") {
+      if (shouldRetryAutomationCheckpoint(job, outcome)) {
+        const retryCount = job.retryCount + 1;
+        this.service.updateJob(job.id, {
+          status: "queued",
+          platformTaskId: outcome.platformTaskId ?? job.platformTaskId,
+          requiresHumanReason: null,
+          retryCount,
+        });
+        if (job.kind === "portrait-review" && job.portraitId) {
+          this.service.updatePortraitReviewState(job.portraitId, "queued", `自动恢复第 ${retryCount} 次：${outcome.checkpoint.message}`);
+        }
+        this.service.addJobEvent(
+          job.id,
+          "warning",
+          "AUTOMATION_RETRY",
+          `页面临时状态未完成，APP 将自动清理草稿并重试（${retryCount}/${job.kind === "portrait-review" ? PORTRAIT_AUTOMATION_RETRY_LIMIT : GENERATION_AUTOMATION_RETRY_LIMIT}）`,
+          { reason: outcome.checkpoint.reason, previousMessage: outcome.checkpoint.message, retryCount },
+        );
+        return;
+      }
       this.service.updateJob(job.id, {
         status: "needs-human",
         platformTaskId: outcome.platformTaskId ?? job.platformTaskId,
@@ -296,3 +334,7 @@ export class JobWorker {
     if (logRunning) this.service.addJobEvent(job.id, "info", "RUNNING", outcome.message);
   }
 }
+
+export const jobWorkerInternals = {
+  shouldRetryAutomationCheckpoint,
+};

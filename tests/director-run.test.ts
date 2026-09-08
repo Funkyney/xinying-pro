@@ -59,4 +59,68 @@ describe("director run", () => {
     expect(JSON.stringify(result)).not.toContain(manifest.prompt);
     database.close();
   });
+
+  it("resumes an interrupted authorization and continues through generation without user intervention", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "xinying-director-run-recovery-test-"));
+    temporaryDirectories.push(directory);
+    const paths = createAppPaths(directory);
+    const database = new XinyingDatabase(paths.databasePath);
+    const service = new XinyingService(database, paths);
+    const personPath = path.join(directory, "person.png");
+    fs.writeFileSync(personPath, "person");
+    const project = service.createProject({
+      name: "授权自动恢复",
+      prompt: "@图1 向镜头挥手",
+      mode: "reference-to-video",
+      platformWorkspaceId: "workspace-team",
+      platformProjectId: "platform-project",
+      platformUrl: "https://blueaivideo.com/avpAgent?projectId=platform-project&sessionId=test-session",
+    });
+    const manifest: DirectorManifest = {
+      version: 1,
+      projectId: project.id,
+      prompt: "@图1 向镜头挥手",
+      count: 1,
+      replaceMaterials: true,
+      settings: { mode: "reference-to-video" },
+      materials: [{ kind: "file", path: personPath, role: "character", containsPerson: true }],
+    };
+    const preparation = service.prepareDirectorRun(manifest);
+    const interrupted = service.authorizeReference(preparation.authorizationReferenceIds[0], project.id, true);
+    service.updateJob(interrupted.id, { status: "needs-human", requiresHumanReason: "心影未关闭虚拟人像提交表单" });
+
+    const result = await runDirectorManifest(service, manifest, {
+      timeoutMs: 10_000,
+      ensureAppReady: async () => ({ ready: true }),
+      sleep: async () => {
+        const review = service.getJob(interrupted.id);
+        if (review.status === "queued") {
+          const portrait = service.getPortrait(review.portraitId!);
+          service.approvePortraitFromPlatform(portrait.id, {
+            id: "platform-person",
+            displayName: portrait.displayName,
+            previewUrl: "https://blueaivideo.com/platform-person.png",
+            platformAssetId: "platform-person",
+            workspaceId: "workspace-team",
+            mediaKind: "image",
+            sortOrder: 0,
+            deleteSortOrder: 0,
+            canDelete: true,
+            available: true,
+            lastSeenAt: new Date().toISOString(),
+          }, "审核通过");
+          service.updateJob(review.id, { status: "completed", completedAt: new Date().toISOString() });
+        }
+        service.listJobsByKind("generation").forEach((job) => service.updateJob(job.id, {
+          status: "running",
+          platformTaskId: "chat:platform-project:test-session:0",
+        }));
+      },
+    });
+
+    expect(result.successBoundary).toBe("heart-generating");
+    expect(service.getJob(interrupted.id)).toMatchObject({ status: "completed", retryCount: 1 });
+    expect(service.listJobEvents(interrupted.id).some((event) => event.code === "DIRECTOR_AUTO_RESUMED")).toBe(true);
+    database.close();
+  });
 });

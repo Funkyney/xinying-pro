@@ -132,6 +132,14 @@ async function firstVisibleWithin(scope: Locator, selectors: string[]): Promise<
   return null;
 }
 
+async function firstExistingWithin(scope: Locator, selectors: string[]): Promise<Locator | null> {
+  for (const selector of selectors) {
+    const locator = scope.locator(selector).first();
+    if ((await locator.count()) > 0) return locator;
+  }
+  return null;
+}
+
 async function firstCollectionWithin(scope: Locator, selectors: string[]): Promise<Locator | null> {
   for (const selector of selectors) {
     const locator = scope.locator(selector).filter({ visible: true });
@@ -2161,19 +2169,29 @@ export class PlaywrightXinyingAdapter {
     if (!dialog) return { reason: "page-changed", message: "心影认证角色库未打开" };
     await dialog.waitFor({ state: "visible", timeout: 8_000 }).catch(() => undefined);
 
+    // The picker remembers the user's last source filter. Newly authorized roles can
+    // otherwise exist in Heart while remaining invisible to automation.
+    await this.setPortraitSourceFilter(page, dialog, "全部").catch(() => undefined);
+
     for (const portrait of portraits) {
-      const collection = await waitForCollectionWithin(dialog, this.selectors.generation.portraitCards, 20_000);
+      let collection = await waitForCollectionWithin(dialog, this.selectors.generation.portraitCards, 20_000);
       if (!collection) return { reason: "page-changed", message: "心影认证角色库没有可选择的人像卡片" };
-      const cards = collection.filter({ hasText: portrait.displayName });
-      let matched: Locator | null = null;
-      for (let index = 0; index < await cards.count(); index += 1) {
-        const candidate = cards.nth(index);
-        const exactName = (await candidate.locator(".face-name-text").innerText().catch(() => "")).trim() === portrait.displayName;
-        const imageUrl = await candidate.locator("img:not(.previewBg)").first().getAttribute("src").catch(() => null);
-        const sameAsset = !imageUrl || imageUrl.split("?")[0] === portrait.previewUrl.split("?")[0];
-        if (exactName && sameAsset) {
-          matched = candidate;
-          break;
+      let matched = await this.findPlatformPortraitCard(collection, portrait);
+      if (!matched) {
+        // Heart lazy-loads the role library and may rewrite CDN query strings after
+        // approval. Match by the stable platform asset id and load deeper only on a
+        // cache miss, keeping the normal path fast.
+        await this.loadPortraitCards(collection, 80, 4, 300);
+        matched = await this.findPlatformPortraitCard(collection, portrait);
+      }
+      if (!matched) {
+        // Force one authoritative redraw before declaring the role unavailable.
+        await this.setPortraitSourceFilter(page, dialog, "上传人像").catch(() => undefined);
+        await this.setPortraitSourceFilter(page, dialog, "全部").catch(() => undefined);
+        collection = await waitForCollectionWithin(dialog, this.selectors.generation.portraitCards, 8_000);
+        if (collection) {
+          await this.loadPortraitCards(collection, 80, 4, 300);
+          matched = await this.findPlatformPortraitCard(collection, portrait);
         }
       }
       if (!matched) {
@@ -2333,11 +2351,10 @@ export class PlaywrightXinyingAdapter {
               await this.clearUploadedMaterials(page);
               return { status: "needs-human", checkpoint: { reason: "page-changed", message: `心影把虚拟人像“${portrait.displayName}”识别成音频，已安全停止` } };
             }
-            this.persistPlatformPortraitMediaKind?.(portrait.id, actualKind);
-            if (portrait.mediaKind !== "unknown" && portrait.mediaKind !== actualKind) {
-              await this.clearUploadedMaterials(page);
-              return { status: "needs-human", checkpoint: { reason: "page-changed", message: `虚拟人像“${portrait.displayName}”实际编号为 @${actual}，APP 已更新类型；请检查提示词后重新提交` } };
-            }
+            // Heart can expose an authorized video person as a static @图 role card.
+            // Keep the source kind (used by the authored @视频 mapping) and remap it
+            // to the actual Heart label below instead of forcing a manual re-upload.
+            if (portrait.mediaKind === "unknown") this.persistPlatformPortraitMediaKind?.(portrait.id, actualKind);
             actualLabelByKey.set(portraitMaterialKey(portrait.id), `@${actual}`);
           }
           if (actualLabelByKey.size < orderedPortraits.length) {
@@ -2474,6 +2491,24 @@ export class PlaywrightXinyingAdapter {
     };
   }
 
+  private async discardOpenPortraitUploadDialog(page: Page): Promise<void> {
+    const staleDialog = await firstVisible(page, this.selectors.portrait.dialog);
+    if (!staleDialog) return;
+    const cancel = staleDialog.getByText("取消", { exact: true }).filter({ visible: true }).last();
+    if ((await cancel.count()) > 0) {
+      await clickDom(cancel).catch(() => undefined);
+      await staleDialog.waitFor({ state: "hidden", timeout: 3_000 }).catch(() => undefined);
+    }
+    if (await staleDialog.isVisible().catch(() => false)) {
+      // A failed validation can leave Heart's modal mounted with every previously
+      // uploaded row. Reloading this page discards that transient draft and prevents
+      // the next queued portrait from editing the first (wrong) row.
+      await page.reload({ waitUntil: "domcontentloaded", timeout: 30_000 });
+      const remaining = await firstVisible(page, this.selectors.portrait.dialog);
+      if (remaining) throw new AppError("PORTRAIT_FORM_RESET_FAILED", "心影未能清理上一次虚拟人像上传表单");
+    }
+  }
+
   async submitPortraitReview(job: Job, portrait: PortraitAsset): Promise<AdapterOutcome> {
     if (!portrait.consentConfirmed) throw new AppError("CONSENT_REQUIRED", "未确认虚拟人像素材授权");
     if (job.platformTaskId?.startsWith("portrait-staged:") || job.platformTaskId?.startsWith("portrait:")) {
@@ -2507,36 +2542,53 @@ export class PlaywrightXinyingAdapter {
       });
     }
 
-    let dialog = await firstVisible(page, this.selectors.portrait.dialog);
-    if (!dialog) {
-      const create = await this.waitForTextEntry(page, this.selectors.portrait.createTexts, 20_000);
-      if (!create) return { status: "needs-human", checkpoint: { reason: "page-changed", message: "找不到“新建虚拟形象”入口" } };
-      await clickDom(create);
-      const localUpload = await this.waitForTextEntry(page, this.selectors.portrait.localUploadTexts, 8_000);
-      if (!localUpload) return { status: "needs-human", checkpoint: { reason: "page-changed", message: "找不到虚拟人像“本地上传”入口" } };
-      await clickDom(localUpload);
-      dialog = await this.waitForVisible(page, this.selectors.portrait.dialog, 8_000);
-      if (!dialog) return { status: "needs-human", checkpoint: { reason: "page-changed", message: "新建虚拟人像表单未打开" } };
-    }
-    const input = await firstExisting(page, this.selectors.portrait.uploadInput);
+    await this.discardOpenPortraitUploadDialog(page);
+    const create = await this.waitForTextEntry(page, this.selectors.portrait.createTexts, 20_000);
+    if (!create) return { status: "needs-human", checkpoint: { reason: "page-changed", message: "找不到“新建虚拟形象”入口" } };
+    await clickDom(create);
+    const localUpload = await this.waitForTextEntry(page, this.selectors.portrait.localUploadTexts, 8_000);
+    if (!localUpload) return { status: "needs-human", checkpoint: { reason: "page-changed", message: "找不到虚拟人像“本地上传”入口" } };
+    await clickDom(localUpload);
+    const dialog = await this.waitForVisible(page, this.selectors.portrait.dialog, 8_000);
+    if (!dialog) return { status: "needs-human", checkpoint: { reason: "page-changed", message: "新建虚拟人像表单未打开" } };
+
+    const formRows = dialog.locator(".image_card_wrapper").filter({ visible: true });
+    const beforeRowCount = await formRows.count();
+    const input = await firstExistingWithin(dialog, ["input[type='file']"])
+      ?? await firstExisting(page, this.selectors.portrait.uploadInput);
     if (!input) return { status: "needs-human", checkpoint: { reason: "page-changed", message: "找不到虚拟人像图片/视频上传控件" } };
     await input.setInputFiles(portrait.filePath);
     const uploadDeadline = Date.now() + (portrait.mimeType.startsWith("video/") ? 180_000 : 90_000);
     const failure = dialog.getByText(/上传失败|文件不支持|素材解析失败|图片校验失败|视频校验失败/).filter({ visible: true }).first();
-    let nameInput = dialog.locator("input[placeholder*='人像名称'], .image_card_wrapper input[type='text']").filter({ visible: true }).first();
+    let targetRow: Locator | null = null;
+    while (Date.now() < uploadDeadline) {
+      if ((await failure.count()) > 0) {
+        return { status: "failed", code: "PORTRAIT_UPLOAD_REJECTED", message: (await failure.innerText()).trim() };
+      }
+      const rowCount = await formRows.count();
+      if (rowCount > beforeRowCount) {
+        targetRow = formRows.nth(rowCount - 1);
+        break;
+      }
+      await page.waitForTimeout(250);
+    }
+    if (!targetRow) {
+      return { status: "failed", code: "PORTRAIT_UPLOAD_TIMEOUT", message: `心影未在规定时间内完成“${portrait.displayName}”的素材上传或解析` };
+    }
+    let nameInput = targetRow.locator("input[placeholder*='人像名称'], input[type='text']:not([role='combobox'])").filter({ visible: true }).first();
     while (Date.now() < uploadDeadline && (await nameInput.count()) === 0) {
       if ((await failure.count()) > 0) {
         return { status: "failed", code: "PORTRAIT_UPLOAD_REJECTED", message: (await failure.innerText()).trim() };
       }
       await page.waitForTimeout(250);
-      nameInput = dialog.locator("input[placeholder*='人像名称'], .image_card_wrapper input[type='text']").filter({ visible: true }).first();
+      nameInput = targetRow.locator("input[placeholder*='人像名称'], input[type='text']:not([role='combobox'])").filter({ visible: true }).first();
     }
     if ((await nameInput.count()) === 0) {
-      return { status: "failed", code: "PORTRAIT_UPLOAD_TIMEOUT", message: `心影未在规定时间内完成“${portrait.displayName}”的素材上传或解析` };
+      return { status: "needs-human", checkpoint: { reason: "page-changed", message: "心影已接收人像素材，但新素材行缺少名称输入框" } };
     }
     await nameInput.fill(portrait.displayName);
     for (const selection of configurablePortraitOptions(portrait)) {
-      if (!(await this.choosePortraitOption(page, dialog, selection.index, selection.value))) {
+      if (!(await this.choosePortraitOption(page, targetRow, selection.index, selection.value))) {
         const fieldName = ["性别", "年龄", "人种"][selection.index] ?? "资料";
         return { status: "needs-human", checkpoint: { reason: "page-changed", message: `心影虚拟人像${fieldName}选项不可用：${selection.value}` } };
       }
@@ -3157,8 +3209,8 @@ export class PlaywrightXinyingAdapter {
     return null;
   }
 
-  private async choosePortraitOption(page: Page, dialog: Locator, index: number, value: string): Promise<boolean> {
-    const input = dialog.locator("input[role='combobox']").nth(index);
+  private async choosePortraitOption(page: Page, row: Locator, index: number, value: string): Promise<boolean> {
+    const input = row.locator("input[role='combobox']").nth(index);
     if ((await input.count()) === 0) return false;
     for (let attempt = 0; attempt < 5; attempt += 1) {
       const currentValue = (await input.inputValue()).trim();

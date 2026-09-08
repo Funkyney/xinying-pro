@@ -62,9 +62,15 @@ export async function runDirectorManifest(
     throw new AppError("APP_NOT_READY", "心影Pro APP 已连接，但本地控制接口尚未就绪");
   }
   let preparation = service.prepareDirectorRun(manifest);
-  const authorizationJobs = preparation.authorizationReferenceIds.map((referenceId) =>
+  let authorizationJobs = preparation.authorizationReferenceIds.map((referenceId) =>
     service.authorizeReference(referenceId, manifest.projectId, true));
   const reusedAuthorizationCount = authorizationJobs.filter((job) => job.status === "completed").length;
+  authorizationJobs = authorizationJobs.map((job) => {
+    if (job.status !== "needs-human") return job;
+    const resumed = service.resumeJob(job.id);
+    service.addJobEvent(job.id, "info", "DIRECTOR_AUTO_RESUMED", "导演自动流程已恢复此前中断的人像授权任务");
+    return resumed;
+  });
 
   if (authorizationJobs.length) {
     await waitForJobs(

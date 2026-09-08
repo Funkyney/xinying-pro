@@ -39,11 +39,11 @@ describe("xinying-pro-generate completion policy", () => {
     expect(source).not.toContain("暂停并请用户提供可审核的单人素材");
   });
 
-  it("resumes recoverable default portrait metadata failures without sending the user to the web page", () => {
-    expect(source).toContain("性别/年龄/人种选项不可用：其他");
-    expect(source).toContain("`job resume <job-id> --confirm`");
-    expect(source).toContain("同一任务最多自动恢复 2 次");
-    expect(source).toContain("不要让用户手工进网页");
+  it("leaves transient portrait-form and material mapping recovery inside the app", () => {
+    expect(source).toContain("全部由 APP 内部自动清理、重试、回绑和重写编号");
+    expect(source).toContain("不要执行 `job resume`");
+    expect(source).toContain("不要让用户删除重传、改提示词或进入网页补操作");
+    expect(source).toContain("视频人像被角色槽显示为 `@图N`");
   });
 
   it("carries Seedance 2.5 MOV and network settings through the manifest", () => {
