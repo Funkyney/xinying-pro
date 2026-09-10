@@ -1268,7 +1268,9 @@ export class XinyingService {
     const upsert = this.database.db.prepare(`INSERT INTO platform_results
       (id, project_id, platform_project_id, platform_task_id, job_id, source, media_kind, name, prompt, output_url, preview_url, output_path, marked, available, created_at, last_seen_at)
       VALUES (@id, @projectId, @platformProjectId, @platformTaskId, @jobId, 'personal', 'video', @name, @prompt, @outputUrl, @previewUrl, @outputPath, 0, 1, @createdAt, @lastSeenAt)
-      ON CONFLICT(id) DO UPDATE SET output_url = COALESCE(excluded.output_url, platform_results.output_url),
+      ON CONFLICT(id) DO UPDATE SET project_id = excluded.project_id, platform_project_id = excluded.platform_project_id,
+        platform_task_id = excluded.platform_task_id, job_id = excluded.job_id,
+        output_url = COALESCE(excluded.output_url, platform_results.output_url),
         output_path = COALESCE(excluded.output_path, platform_results.output_path), source = 'personal', media_kind = 'video',
         name = excluded.name, available = 1, last_seen_at = excluded.last_seen_at`);
     for (const job of this.listJobsByKind("generation").filter((item) => item.status === "completed" && item.projectId)) {
@@ -1435,7 +1437,8 @@ export class XinyingService {
       const upsert = this.database.db.prepare(`INSERT INTO platform_results
         (id, project_id, platform_project_id, platform_task_id, job_id, source, media_kind, name, prompt, output_url, preview_url, output_path, marked, available, created_at, last_seen_at)
         VALUES (@id, @projectId, @platformProjectId, @platformTaskId, @jobId, @source, @mediaKind, @name, @prompt, @outputUrl, @previewUrl, @outputPath, @marked, 1, @createdAt, @lastSeenAt)
-        ON CONFLICT(id) DO UPDATE SET platform_task_id = excluded.platform_task_id, source = excluded.source,
+        ON CONFLICT(id) DO UPDATE SET project_id = excluded.project_id, platform_project_id = excluded.platform_project_id,
+          platform_task_id = excluded.platform_task_id, job_id = excluded.job_id, source = excluded.source,
           media_kind = excluded.media_kind, name = excluded.name, prompt = excluded.prompt,
           output_url = COALESCE(excluded.output_url, platform_results.output_url), preview_url = COALESCE(excluded.preview_url, platform_results.preview_url),
           output_path = CASE

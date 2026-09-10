@@ -722,6 +722,37 @@ describe("XinyingService", () => {
     expect(repaired.outputPath).toBeNull();
   });
 
+  it("refreshes a result's Heart project binding when the catalog identity changes", () => {
+    const project = service.createProject({
+      name: "重命名后的心影项目",
+      platformUrl: "https://blueaivideo.com/avpAgent?projectId=remote-project&sessionId=session-1",
+      platformProjectId: "catalog-project-old",
+    });
+    const base = {
+      id: "stable-remote-result",
+      projectId: project.id,
+      platformTaskId: "chat:remote-project:session-1:0",
+      jobId: null,
+      source: "personal" as const,
+      mediaKind: "video" as const,
+      name: "result.mp4",
+      prompt: "固定机位",
+      outputUrl: "https://media.example/result.mp4",
+      previewUrl: "https://media.example/result.jpg",
+      outputPath: null,
+      marked: false,
+      available: true,
+      createdAt: "2026-09-10T00:00:00.000Z",
+      lastSeenAt: "2026-09-10T00:00:00.000Z",
+    };
+    service.syncPlatformResults(project.id, [{ ...base, platformProjectId: "catalog-project-old" }]);
+    service.updateProject(project.id, { platformProjectId: "catalog-project-new" });
+
+    const [refreshed] = service.syncPlatformResults(project.id, [{ ...base, platformProjectId: "catalog-project-new" }]);
+
+    expect(refreshed.platformProjectId).toBe("catalog-project-new");
+  });
+
   it("completes a submitted generation only when result sync finds its Heart video", () => {
     const project = service.createProject({ name: "人工查看结果", prompt: "固定机位", mode: "text-to-video" });
     const job = service.submitGeneration(project.id);

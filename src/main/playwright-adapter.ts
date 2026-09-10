@@ -605,6 +605,13 @@ function safeGenerationUrl(rawUrl: string): URL | null {
   }
 }
 
+function matchesGenerationTarget(rawUrl: string, target: URL): boolean {
+  const current = safeGenerationUrl(rawUrl);
+  if (!current || current.searchParams.get("projectId") !== target.searchParams.get("projectId")) return false;
+  const targetSessionId = target.searchParams.get("sessionId") ?? "";
+  return !targetSessionId || current.searchParams.get("sessionId") === targetSessionId;
+}
+
 function hostMatches(hostname: string, expected: string): boolean {
   return hostname === expected || hostname.endsWith(`.${expected}`);
 }
@@ -3071,20 +3078,30 @@ export class PlaywrightXinyingAdapter {
     const target = safeGenerationUrl(project.platformUrl);
     if (!target) throw new AppError("GENERATION_PAGE_REQUIRED", "请先绑定心影生成项目，再同步结果库");
     const page = await this.page();
-    if (safeGenerationUrl(page.url())?.searchParams.get("projectId") !== target.searchParams.get("projectId")) {
+    const targetProjectId = target.searchParams.get("projectId") ?? "";
+    const targetSessionId = target.searchParams.get("sessionId") ?? "";
+    if (!matchesGenerationTarget(page.url(), target)) {
       await page.goto(target.toString(), { waitUntil: "domcontentloaded", timeout: 30_000 });
     }
     this.requireAuthenticatedPage(page);
     const composer = await this.waitForVisible(page, this.selectors.generation.composer, 20_000);
     if (!composer) throw new AppError("GENERATION_PAGE_NOT_READY", "心影当前项目结果页未完成加载");
+    const loaded = safeGenerationUrl(page.url());
+    if (loaded?.searchParams.get("projectId") !== targetProjectId
+      || (targetSessionId && loaded?.searchParams.get("sessionId") !== targetSessionId)) {
+      throw new AppError("GENERATION_SESSION_NOT_FOUND", "已进入心影项目，但绑定的对话没有正确加载，请重新选择该对话");
+    }
     await page.keyboard.press("Escape").catch(() => undefined);
     const results = new Map<string, PlatformResult>();
     const processed = new Set<string>();
-    const initialSessionId = safeGenerationUrl(page.url())?.searchParams.get("sessionId");
+    const initialSessionId = loaded?.searchParams.get("sessionId");
     if (initialSessionId) {
       await this.collectCurrentConversationResults(page, target, project, initialSessionId, results);
       processed.add(initialSessionId);
     }
+    // A selected Heart conversation is an exact binding. Do not walk the
+    // sidebar and mix older conversations back into the current result view.
+    if (targetSessionId) return [...results.values()];
     const sessionRows = page.locator(".session-panel .session");
     const sessionScroller = page.locator(".session-panel .session-scrollbar .el-scrollbar__wrap").first();
     let stableRounds = 0;
@@ -3313,6 +3330,7 @@ export const adapterInternals = {
   encodePendingTaskRef,
   decodePendingTaskRef,
   safeGenerationUrl,
+  matchesGenerationTarget,
   explicitParameterValue,
   parseSelectedPortraitCount,
   remapPromptLabels,

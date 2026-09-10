@@ -17,6 +17,18 @@ describe("Playwright adapter task references", () => {
     expect(adapterInternals.decodeChatTaskRef("task-from-private-api")).toBeNull();
   });
 
+  it("treats a different conversation in the same Heart project as a different target", () => {
+    const target = new URL("https://blueaivideo.com/avpAgent?projectId=project-a&sessionId=session-new");
+    expect(adapterInternals.matchesGenerationTarget(
+      "https://blueaivideo.com/avpAgent?projectId=project-a&sessionId=session-old",
+      target,
+    )).toBe(false);
+    expect(adapterInternals.matchesGenerationTarget(
+      "https://blueaivideo.com/avpAgent?projectId=project-a&sessionId=session-new",
+      target,
+    )).toBe(true);
+  });
+
   it("keeps the current Heart resolution when the project requests auto", () => {
     const auto = { parameters: { resolution: "auto" } } as Job;
     const explicit = { parameters: { resolution: "2K" } } as Job;

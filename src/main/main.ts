@@ -13,6 +13,10 @@ import { registerAppUpdater } from "./app-updater";
 import { IPC } from "../shared/ipc";
 import { reserveAutomationPort } from "../shared/automation-port";
 import { CodexExtensionManager } from "./codex-extension";
+import { guardClosedOutputPipe } from "./output-pipe";
+
+guardClosedOutputPipe(process.stdout);
+guardClosedOutputPipe(process.stderr);
 
 app.setName("xinying-director");
 
@@ -97,9 +101,7 @@ function createWindow(): void {
     cliEntry,
     bundledSkillPath,
   });
-  void codexExtension.updateManagedInstallation().catch((error) => {
-    console.warn("Failed to update managed Codex extension", error);
-  });
+  void codexExtension.updateManagedInstallation().catch(() => undefined);
   registerIpcHandlers(mainWindow, service, platformManager, adapter, codexExtension, worker);
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
