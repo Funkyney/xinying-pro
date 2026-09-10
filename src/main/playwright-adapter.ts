@@ -2895,7 +2895,11 @@ export class PlaywrightXinyingAdapter {
     return { status: "running", platformTaskId: matchedTaskId, message: "心影任务仍在运行" };
   }
 
-  private async loadAllConversationMessages(page: Page): Promise<void> {
+  private async loadAllConversationMessages(page: Page): Promise<number> {
+    // Heart renders the composer before it hydrates the selected conversation.
+    // Waiting here prevents a fast sync from treating a still-loading session
+    // as an empty one and invalidating its previously synchronized results.
+    await page.locator(".ContentChatListItem").first().waitFor({ state: "attached", timeout: 5_000 }).catch(() => undefined);
     let stableRounds = 0;
     for (let round = 0; round < 8 && stableRounds < 2; round += 1) {
       const before = await page.locator(".ContentChatListItem").count();
@@ -2908,6 +2912,7 @@ export class PlaywrightXinyingAdapter {
       const after = await page.locator(".ContentChatListItem").count();
       if (after === before) stableRounds += 1; else stableRounds = 0;
     }
+    return page.locator(".ContentChatListItem").count();
   }
 
   private async collectCurrentConversationResults(
@@ -2916,8 +2921,8 @@ export class PlaywrightXinyingAdapter {
     project: Project,
     fallbackSessionId: string,
     results: Map<string, PlatformResult>,
-  ): Promise<void> {
-    await this.loadAllConversationMessages(page);
+  ): Promise<number> {
+    const messageCount = await this.loadAllConversationMessages(page);
     const current = safeGenerationUrl(page.url());
     const sessionId = current?.searchParams.get("sessionId") ?? fallbackSessionId;
     const entries = await page.evaluate(() => {
@@ -2963,6 +2968,7 @@ export class PlaywrightXinyingAdapter {
           lastSeenAt: timestamp,
         });
     }
+    return messageCount;
   }
 
   async syncProjectMaterials(project: Project): Promise<PlatformResult[]> {
@@ -3096,7 +3102,10 @@ export class PlaywrightXinyingAdapter {
     const processed = new Set<string>();
     const initialSessionId = loaded?.searchParams.get("sessionId");
     if (initialSessionId) {
-      await this.collectCurrentConversationResults(page, target, project, initialSessionId, results);
+      const messageCount = await this.collectCurrentConversationResults(page, target, project, initialSessionId, results);
+      if (targetSessionId && messageCount === 0) {
+        throw new AppError("GENERATION_CONVERSATION_NOT_READY", "心影已进入绑定对话，但会话内容仍未加载，请稍后重试同步");
+      }
       processed.add(initialSessionId);
     }
     // A selected Heart conversation is an exact binding. Do not walk the
