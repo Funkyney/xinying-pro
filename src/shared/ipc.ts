@@ -66,4 +66,5 @@ export const IPC = {
   codexExtensionStatus: "codex-extension:status",
   codexExtensionInstall: "codex-extension:install",
   codexExtensionOpenFolder: "codex-extension:open-folder",
+  automationDirectorRun: "automation:director-run",
 } as const;

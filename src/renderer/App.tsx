@@ -441,7 +441,7 @@ function CodexExtensionPage() {
       <div className="codex-extension-icon"><Bot size={38} /></div>
       <div className="codex-extension-summary">
         <div><span className={`extension-state extension-${status?.state ?? "loading"}`}><span />{loading ? "检测中" : stateLabel}</span><small>心影Pro × Codex</small></div>
-        <h2>心影Pro 自动生成 Skill</h2>
+        <h2>心影Pro MCP + 自动生成 Skill</h2>
         <p>{status?.message ?? "正在检测本机 Codex 扩展目录…"}</p>
       </div>
       <div className="codex-extension-actions">
@@ -454,9 +454,9 @@ function CodexExtensionPage() {
     {error && <div className="extension-notice error"><ShieldAlert size={17} /><span>{error}</span></div>}
 
     <div className="codex-extension-grid">
-      <section className="panel extension-detail-card"><span className="eyebrow">INSTALLATION</span><h3>安装状态</h3><dl><div><dt>APP内置版本</dt><dd>{status?.currentVersion ?? "—"}</dd></div><div><dt>已安装版本</dt><dd>{status?.installedVersion ?? "未安装"}</dd></div><div><dt>更新联动</dt><dd>APP更新后此页会提示扩展更新</dd></div></dl></section>
+      <section className="panel extension-detail-card"><span className="eyebrow">INSTALLATION</span><h3>安装状态</h3><dl><div><dt>APP内置版本</dt><dd>{status?.currentVersion ?? "—"}</dd></div><div><dt>已安装版本</dt><dd>{status?.installedVersion ?? "未安装"}</dd></div><div><dt>MCP连接器</dt><dd>{status?.mcpConfigured ? `已注册（${status.mcpServerName}）` : "未注册"}</dd></div><div><dt>更新联动</dt><dd>APP更新后自动同步 Skill 与 MCP 路径</dd></div></dl></section>
       <section className="panel extension-detail-card"><span className="eyebrow">LOCAL PATH</span><h3>本机位置</h3><dl><div><dt>Codex目录</dt><dd title={status?.codexHome}>{status?.codexHome ?? "检测中…"}</dd></div><div><dt>Skill目录</dt><dd title={status?.skillPath}>{status?.skillPath ?? "检测中…"}</dd></div><div><dt>CLI启动器</dt><dd title={status?.launcherPath ?? undefined}>{status?.launcherPath ?? "安装时自动生成"}</dd></div></dl></section>
-      <section className="panel extension-detail-card extension-workflow-card"><span className="eyebrow">WORKFLOW</span><h3>同事怎么使用</h3><ol><li><b>1</b><span>安装心影Pro并用飞书登录自己的心影账号</span></li><li><b>2</b><span>在此页点击“安装到 Codex”</span></li><li><b>3</b><span>在 Codex 中完成 Seedance 提示词后说“用心影Pro生成 N 条”</span></li></ol></section>
+      <section className="panel extension-detail-card extension-workflow-card"><span className="eyebrow">WORKFLOW</span><h3>同事怎么使用</h3><ol><li><b>1</b><span>安装心影Pro并用飞书登录自己的心影账号</span></li><li><b>2</b><span>在此页点击“安装到 Codex”，随后新建一次 Codex 任务</span></li><li><b>3</b><span>在 Codex 中完成 Seedance 提示词后说“用心影Pro生成 N 条”</span></li></ol></section>
     </div>
 
     <section className="extension-safety panel"><ShieldAlert size={18} /><div><strong>授权与费用仍由每位使用者控制</strong><span>Skill只在用户明确要求生成时才提交并可能扣费；不会读取 Cookie、Token、二维码，也不会绕过登录、审核、额度或付费确认。</span></div></section>

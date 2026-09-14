@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron";
-import type { PlatformAutomationState, PlatformPortraitDeleteProgress, PlatformProjectCreateInput, PlatformResultSource, PlatformViewBounds, PortraitMetadataInput, ProjectInput, ReferenceRole, ResultReuseInput, XinyingApi } from "../shared/contracts";
+import type { DirectorRunRequest, PlatformAutomationState, PlatformPortraitDeleteProgress, PlatformProjectCreateInput, PlatformResultSource, PlatformViewBounds, PortraitMetadataInput, ProjectInput, ReferenceRole, ResultReuseInput, XinyingApi } from "../shared/contracts";
 
 // Sandboxed Electron preload scripts cannot require arbitrary local modules.
 // Keep this runtime channel table self-contained; src/shared/ipc.ts is the
@@ -72,6 +72,7 @@ const IPC = {
   codexExtensionStatus: "codex-extension:status",
   codexExtensionInstall: "codex-extension:install",
   codexExtensionOpenFolder: "codex-extension:open-folder",
+  automationDirectorRun: "automation:director-run",
 } as const;
 
 const api: XinyingApi = {
@@ -180,6 +181,9 @@ const api: XinyingApi = {
     status: () => ipcRenderer.invoke(IPC.codexExtensionStatus),
     install: (replaceExisting = false) => ipcRenderer.invoke(IPC.codexExtensionInstall, replaceExisting),
     openFolder: () => ipcRenderer.invoke(IPC.codexExtensionOpenFolder),
+  },
+  automation: {
+    directorRun: (input: DirectorRunRequest) => ipcRenderer.invoke(IPC.automationDirectorRun, input),
   },
 };
 

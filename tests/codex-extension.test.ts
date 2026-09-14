@@ -18,6 +18,7 @@ async function fixture(version = "0.5.12", platform: NodeJS.Platform = "win32") 
     appVersion: version,
     appExecutable: platform === "win32" ? "C:\\Program Files\\心影Pro\\心影Pro.exe" : "/Applications/心影Pro.app/Contents/MacOS/心影Pro",
     cliEntry: platform === "win32" ? "C:\\Program Files\\心影Pro\\resources\\app.asar\\dist-electron\\cli\\index.js" : "/Applications/心影Pro.app/Contents/Resources/app.asar/dist-electron/cli/index.js",
+    mcpEntry: platform === "win32" ? "C:\\Program Files\\心影Pro\\resources\\app.asar\\dist-electron\\mcp\\server.mjs" : "/Applications/心影Pro.app/Contents/Resources/app.asar/dist-electron/mcp/server.mjs",
     bundledSkillPath: source,
     codexHome,
     platform,
@@ -38,6 +39,7 @@ describe("CodexExtensionManager", () => {
     expect(installed.state).toBe("installed");
     expect(installed.installedVersion).toBe("0.5.12");
     expect(installed.backupPath).toBeNull();
+    expect(installed.mcpConfigured).toBe(true);
     expect(await fs.promises.readFile(path.join(manager.skillPath, "SKILL.md"), "utf8")).toContain("xinying-pro-generate");
     const launcher = await fs.promises.readFile(manager.launcherPath, "utf8");
     expect(launcher).toContain("WindowsPowerShell");
@@ -49,6 +51,10 @@ describe("CodexExtensionManager", () => {
     expect(powerShellLauncher).toContain("RedirectStandardOutput = $true");
     expect(powerShellLauncher).toContain("$process.WaitForExit()");
     expect(powerShellLauncher).toContain("'C:\\Program Files\\心影Pro\\心影Pro.exe'");
+    const config = await fs.promises.readFile(path.join(manager.runtime.codexHome, "config.toml"), "utf8");
+    expect(config).toContain("[mcp_servers.xinying_pro]");
+    expect(config).toContain("dist-electron\\\\mcp\\\\server.mjs");
+    expect(config).toContain("tool_timeout_sec = 3600");
   });
 
   it("detects and replaces an older managed version", async () => {
@@ -60,6 +66,35 @@ describe("CodexExtensionManager", () => {
     expect(result.state).toBe("installed");
     expect(result.installedVersion).toBe("0.5.13");
     expect(result.backupPath).toBeNull();
+  });
+
+  it("preserves unrelated Codex config while replacing a confirmed unmanaged MCP table", async () => {
+    const { manager } = await fixture();
+    await fs.promises.mkdir(manager.runtime.codexHome, { recursive: true });
+    await fs.promises.writeFile(manager.codexConfigPath, [
+      'model = "gpt-5"',
+      "",
+      "[mcp_servers.xinying_pro]",
+      'command = "old-command"',
+      "",
+      "[mcp_servers.xinying_pro.env]",
+      'OLD_VALUE = "keep-out"',
+      "",
+      "[mcp_servers.another_service]",
+      'command = "another-command"',
+      "",
+    ].join("\n"), "utf8");
+
+    await expect(manager.install()).rejects.toThrow("MCP");
+    const result = await manager.install(true);
+    const config = await fs.promises.readFile(manager.codexConfigPath, "utf8");
+
+    expect(result.state).toBe("installed");
+    expect(config).toContain('model = "gpt-5"');
+    expect(config).toContain("[mcp_servers.another_service]");
+    expect(config).toContain('command = "another-command"');
+    expect(config).not.toContain("old-command");
+    expect(config).not.toContain("OLD_VALUE");
   });
 
   it("updates an older managed Skill automatically without touching unmanaged conflicts", async () => {

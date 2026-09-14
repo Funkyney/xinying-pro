@@ -5,7 +5,7 @@ description: Use 心影Pro to execute a finished Seedance 2.0/2.5 prompt with or
 
 # 心影Pro 极速生成
 
-把已定稿的 Seedance 提示词和本地素材写成导演清单，然后用一次 `director run` 完成准备、人物授权、原位替换、批量提交和“生成中”确认。不要把目录同步、授权轮询和生成轮询拆成多轮 CLI 调用。
+把已定稿的 Seedance 提示词和本地素材写成导演清单，然后优先用心影Pro MCP 的一次 `generate` 调用完成准备、人物授权、原位替换、批量提交和“生成中”确认。MCP 不可用时才回退到一次 `director run`。不要把目录同步、授权轮询和生成轮询拆成多轮调用。
 
 ## 安全门禁
 
@@ -21,7 +21,9 @@ description: Use 心影Pro to execute a finished Seedance 2.0/2.5 prompt with or
 
 收集每个 `@图N / @视频N / @音频N` 对应的绝对路径，顺序以提示词意图为准，不能依赖文件系统排序。优先复用镜头文件夹中已有的 `.xinying-run.json` 和其中的 `projectId`。
 
-使用本 Skill 的启动器，不要求用户下载源码或执行 `npm install`：
+先检查当前 Codex 是否已提供心影Pro MCP 工具（`status/catalog/conversations/select/generate/jobs/portraits/results`）。已提供时只调用 MCP；它会连接或自动启动心影Pro，并复用 APP 内登录态。需要查项目时先用 `catalog` 的本地缓存，只有用户要求刷新或缓存确实过期才传 `force: true`；需要复用对话时用 `conversations`，随后用 `select` 绑定精确对话。
+
+只有当前 Codex 会话尚未加载心影Pro MCP 时，才使用本 Skill 的 CLI 启动器；不要求用户下载源码或执行 `npm install`：
 
 ```powershell
 $CodexRoot = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $HOME ".codex" }
@@ -60,7 +62,15 @@ media cache --file "<path1>" "<path2>" ...
 
 Seedance 2.5 默认写 `videoFormat: "mp4"` 与 `networkEnabled: true`；用户明确要 MOV 时改为 `mov`，明确关闭联网时才写 `false`。APP 会在高级配置中确认。
 
-安全门禁满足后只执行：
+安全门禁满足后，首选只调用一次心影Pro MCP `generate`：
+
+```json
+{"manifestPath":"<absolute-manifest-path>","confirm":true}
+```
+
+用户明确改变数量时增加 `count: N`。MCP 会保持到整个流程返回，不要同时再启动 CLI 或第二次 `generate`。
+
+当前 Codex 会话没有心影Pro MCP 时，才执行：
 
 ```text
 director run --manifest "<absolute-manifest-path>" --confirm
@@ -68,7 +78,7 @@ director run --manifest "<absolute-manifest-path>" --confirm
 
 用户本次明确改变数量时追加 `--count N`。允许该进程持续运行，工具初次返回后台会话后继续等待同一会话；不要另开 `job status`、`director resolve` 或重复 `director run`，也不要在任务仍运行时让用户去网页补操作。默认总等待上限 45 分钟，可用 `--timeout-minutes N` 调整。长时间等待由同一个本地进程完成，不要用多轮 Codex 对话或轮询消耗额外 token。
 
-这一个命令会：
+这一次 MCP 调用或回退命令会：
 
 1. 校验清单并按顺序配置本地项目；
 2. 复用相同文件已通过的虚拟人像，其他含人图片/视频分别使用干净表单，自动填写名称、默认资料和合规承诺后排队审核；

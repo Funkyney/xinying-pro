@@ -709,6 +709,106 @@ export class PlaywrightXinyingAdapter {
     }
   }
 
+  /**
+   * Heart's frontend stores the signed-in bearer token in its own origin.
+   * Build the authorization headers inside that page and keep the credential
+   * there; only the requested JSON response crosses back to the app process.
+   */
+  private async authenticatedGet(page: Page, pathAndQuery: string): Promise<unknown> {
+    this.requireAuthenticatedPage(page);
+    return page.evaluate(async ({ requestedUrl }) => {
+      const stored = window.localStorage.getItem("token");
+      if (!stored) throw new Error("心影登录凭据不存在");
+      let token = stored;
+      try {
+        const parsed = JSON.parse(stored) as unknown;
+        if (typeof parsed === "string") token = parsed;
+      } catch {
+        // Older Heart builds stored the raw token instead of a JSON string.
+      }
+      const response = await fetch(new URL(requestedUrl, window.location.origin).toString(), {
+        method: "GET",
+        credentials: "include",
+        headers: { authorization: `Bearer ${token}`, "mb-token": `Bearer ${token}` },
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      return response.json();
+    }, { requestedUrl: pathAndQuery });
+  }
+
+  private async readPlatformCatalogDirect(
+    page: Page,
+    syncedAt: string,
+    previous?: PlatformCatalogSnapshot,
+  ): Promise<PlatformCatalogSnapshot> {
+    const currentRemoteId = safeGenerationUrl(page.url())?.searchParams.get("projectId")
+      ?? new URL(page.url()).searchParams.get("projectId")
+      ?? "";
+    const groupPayload = recordValue(await this.authenticatedGet(page, "/api/group/list"));
+    if (Number(groupPayload.code) !== 0) throw new Error(nonEmptyString(groupPayload.message) || "心影空间接口拒绝访问");
+    const groupRows = Array.isArray(groupPayload.data) ? groupPayload.data.map(recordValue) : [recordValue(groupPayload.data)];
+    const groupId = nonEmptyString(groupRows[0]?.group_id);
+    if (!groupId) throw new Error("心影没有返回公司空间 ID");
+
+    const teamPayload = recordValue(await this.authenticatedGet(page, `/api/team/list/?group_id=${encodeURIComponent(groupId)}`));
+    if (Number(teamPayload.code) !== 0 || !Array.isArray(teamPayload.data)) {
+      throw new Error(nonEmptyString(teamPayload.message) || "心影没有返回个人/团队空间");
+    }
+    const teamRows = teamPayload.data.map(recordValue).filter((row) => row.space_type === "PRIVATE"
+      || (typeof row.team_id === "string" && row.team_id.trim()));
+    const workspaces = teamRows.flatMap((row) => {
+      const personal = row.space_type === "PRIVATE";
+      const teamId = nonEmptyString(row.team_id);
+      const name = personal ? "个人空间" : nonEmptyString(row.team_name);
+      if (!personal && (!teamId || !name)) return [];
+      return [{
+        key: personal ? `personal:${groupId}` : `team:${teamId}`,
+        kind: personal ? "personal" as const : "team" as const,
+        name,
+        teamId,
+      }];
+    });
+
+    const projectGroups = await Promise.all(workspaces.map(async (workspace) => {
+      const query = new URLSearchParams({
+        app_domain: "VIDEO_PRODUCER",
+        project_type: workspace.kind === "personal" ? "PERSONAL_PROJECT" : "TEAM_PROJECT",
+        group_id: groupId,
+      });
+      if (workspace.kind === "team") query.set("team_id", workspace.teamId);
+      const payload = recordValue(await this.authenticatedGet(page, `/api/project/list?${query.toString()}`));
+      if (Number(payload.code) !== 0 || !Array.isArray(payload.data)) {
+        throw new Error(nonEmptyString(payload.message) || `心影没有返回“${workspace.name}”的项目`);
+      }
+      return payload.data.map(recordValue).flatMap((row) => {
+        const remoteId = nonEmptyString(row.project_id);
+        const name = nonEmptyString(row.project_name);
+        const shortId = nonEmptyString(row.project_short_id);
+        return remoteId && name && shortId ? [{ workspaceKey: workspace.key, remoteId, name, shortId }] : [];
+      });
+    }));
+
+    const skuPayload = recordValue(await this.authenticatedGet(page, `/api/project/sku_type?group_id=${encodeURIComponent(groupId)}`).catch(() => null));
+    const creationTypeOptions = Number(skuPayload.code) === 0 && Array.isArray(skuPayload.data)
+      ? skuPayload.data.map(recordValue).map((row) => nonEmptyString(row.merchant_name)).filter(Boolean)
+      : previous?.creationTypeOptions ?? [];
+    const clientPayload = recordValue(await this.authenticatedGet(page, `/api/client/list?group_id=${encodeURIComponent(groupId)}`).catch(() => null));
+    const customerOptions = Number(clientPayload.code) === 0 && Array.isArray(clientPayload.data)
+      ? clientPayload.data.map(recordValue).map((row) => nonEmptyString(row.client_name)).filter(Boolean)
+      : previous?.customerOptions ?? [];
+    const currentWorkspaceKey = projectGroups.flat().find((project) => project.remoteId === currentRemoteId)?.workspaceKey
+      ?? workspaces[0]?.key
+      ?? "";
+    return platformCatalogFromApi({
+      currentRemoteId,
+      currentWorkspaceKey,
+      workspaces: workspaces.map(({ key, kind, name }) => ({ key, kind, name })),
+      projects: projectGroups.flat(),
+      customerOptions,
+      creationTypeOptions,
+    }, syncedAt, this.selectors.baseUrl, this.selectors.projects.homePath);
+  }
+
   private async ensureHomePage(page: Page): Promise<Page> {
     let current: URL;
     try {
@@ -1227,6 +1327,15 @@ export class PlaywrightXinyingAdapter {
     const originalUrl = page.url();
     const syncedAt = new Date().toISOString();
     try {
+      // Fast path: request every accessible project list with Heart's own
+      // signed-in browser credential. This avoids switching each workspace in
+      // the selector and leaves the user's current page untouched.
+      return await this.readPlatformCatalogDirect(page, syncedAt, previous);
+    } catch {
+      // Keep the response-capture and DOM paths below for Heart deployments
+      // whose account policy does not allow same-origin direct requests.
+    }
+    try {
       // Capture the read-only JSON responses that Heart's own selector issues.
       // This keeps the official workspace switch behavior while avoiding slow
       // card-by-card DOM reconstruction and returns every full projectId in one
@@ -1293,6 +1402,35 @@ export class PlaywrightXinyingAdapter {
     const currentSessionId = current?.searchParams.get("projectId") === remoteId
       ? current.searchParams.get("sessionId") ?? ""
       : "";
+    let body: unknown = null;
+    try {
+      const sessions: unknown[] = [];
+      let pageNumber = 1;
+      let total = Number.POSITIVE_INFINITY;
+      while (sessions.length < total && pageNumber <= 100) {
+        const query = new URLSearchParams({
+          page: String(pageNumber),
+          page_size: "40",
+          project_id: remoteId,
+          session_biz_type: "stooory",
+        });
+        const envelope = recordValue(await this.authenticatedGet(page, `/api/avp_agent/session/list?${query.toString()}`));
+        if (Number(envelope.code) !== 0) throw new Error(nonEmptyString(envelope.message) || "心影返回了错误状态");
+        const data = recordValue(envelope.data);
+        const rows = Array.isArray(data.sessions) ? data.sessions : [];
+        sessions.push(...rows);
+        const parsedTotal = Number(data.total);
+        total = Number.isFinite(parsedTotal) ? parsedTotal : sessions.length;
+        if (!rows.length || rows.length < 40) break;
+        pageNumber += 1;
+      }
+      body = { code: 0, data: { sessions, total: Number.isFinite(total) ? total : sessions.length } };
+      const apiConversations = platformConversationsFromApi(body, project.id, currentSessionId);
+      return apiConversations;
+    } catch {
+      // Fall back to the visible sidebar when Heart changes or disables the
+      // authenticated conversation endpoint for this account.
+    }
     if (current?.searchParams.get("projectId") !== remoteId) {
       const target = `${this.selectors.baseUrl.replace(/\/$/, "")}/avpAgent?projectId=${encodeURIComponent(remoteId)}`;
       await page.goto(target, { waitUntil: "domcontentloaded", timeout: 30_000 });
@@ -1300,38 +1438,6 @@ export class PlaywrightXinyingAdapter {
     this.requireAuthenticatedPage(page);
     const composer = await this.waitForVisible(page, this.selectors.generation.composer, 20_000);
     if (!composer) throw new AppError("GENERATION_PAGE_NOT_READY", "心影内容生成页未完成加载，暂时无法读取对话记录");
-    let body: unknown = null;
-    try {
-      body = await page.evaluate(async ({ remoteProjectId }) => {
-        const sessions: unknown[] = [];
-        let pageNumber = 1;
-        let total = Number.POSITIVE_INFINITY;
-        while (sessions.length < total && pageNumber <= 100) {
-          const url = new URL("/api/avp_agent/session/list", window.location.origin);
-          url.searchParams.set("page", String(pageNumber));
-          url.searchParams.set("page_size", "40");
-          url.searchParams.set("project_id", remoteProjectId);
-          url.searchParams.set("session_biz_type", "stooory");
-          const response = await fetch(url.toString(), { method: "GET", credentials: "include" });
-          if (!response.ok) throw new Error(`HTTP ${response.status}`);
-          const envelope = await response.json() as { code?: unknown; message?: unknown; data?: { sessions?: unknown[]; total?: unknown } };
-          if (Number(envelope.code) !== 0) throw new Error(typeof envelope.message === "string" ? envelope.message : "心影返回了错误状态");
-          const rows = Array.isArray(envelope.data?.sessions) ? envelope.data.sessions : [];
-          sessions.push(...rows);
-          const parsedTotal = Number(envelope.data?.total);
-          total = Number.isFinite(parsedTotal) ? parsedTotal : sessions.length;
-          if (!rows.length || rows.length < 40) break;
-          pageNumber += 1;
-        }
-        return { code: 0, data: { sessions, total: Number.isFinite(total) ? total : sessions.length } };
-      }, { remoteProjectId: remoteId });
-      const apiConversations = platformConversationsFromApi(body, project.id, currentSessionId);
-      if (apiConversations.length) return apiConversations;
-    } catch {
-      // Some Heart accounts render the authorized conversation list but reject
-      // direct fetch calls with code 401. Fall back to the visible sidebar and
-      // read the session ids by selecting each rendered row.
-    }
     const originalUrl = safeGenerationUrl(page.url());
     const rows = page.locator(".session-panel .session");
     const rowCount = Math.min(await rows.count(), 80);
@@ -1370,6 +1476,12 @@ export class PlaywrightXinyingAdapter {
     if (!workspace) throw new AppError("WORKSPACE_NOT_FOUND", "所选项目的心影空间当前不可用");
     const page = await this.page();
     const open = async () => {
+      if (project.remoteId && conversationId?.trim()) {
+        const direct = new URL(`${this.selectors.baseUrl.replace(/\/$/, "")}/avpAgent`);
+        direct.searchParams.set("projectId", project.remoteId);
+        direct.searchParams.set("sessionId", conversationId.trim());
+        return { remoteId: project.remoteId, generationUrl: direct.toString() };
+      }
       // Once a project has been opened, its full remoteId is persisted. Going
       // straight to avpAgent avoids the slow and occasionally stale selector.
       if (project.remoteId) {
@@ -2176,9 +2288,16 @@ export class PlaywrightXinyingAdapter {
     if (!dialog) return { reason: "page-changed", message: "心影认证角色库未打开" };
     await dialog.waitFor({ state: "visible", timeout: 8_000 }).catch(() => undefined);
 
-    // The picker remembers the user's last source filter. Newly authorized roles can
-    // otherwise exist in Heart while remaining invisible to automation.
-    await this.setPortraitSourceFilter(page, dialog, "全部").catch(() => undefined);
+    // Automated generation overwhelmingly uses uploaded/authorized portraits.
+    // Start with Heart's much smaller upload subset; only expand to the full
+    // shared library if a requested card is not there.
+    let portraitFilter: "全部" | "上传人像" = "上传人像";
+    try {
+      await this.setPortraitSourceFilter(page, dialog, portraitFilter);
+    } catch {
+      portraitFilter = "全部";
+      await this.setPortraitSourceFilter(page, dialog, portraitFilter).catch(() => undefined);
+    }
 
     for (const portrait of portraits) {
       let collection = await waitForCollectionWithin(dialog, this.selectors.generation.portraitCards, 20_000);
@@ -2191,10 +2310,10 @@ export class PlaywrightXinyingAdapter {
         await this.loadPortraitCards(collection, 80, 4, 300);
         matched = await this.findPlatformPortraitCard(collection, portrait);
       }
-      if (!matched) {
-        // Force one authoritative redraw before declaring the role unavailable.
-        await this.setPortraitSourceFilter(page, dialog, "上传人像").catch(() => undefined);
-        await this.setPortraitSourceFilter(page, dialog, "全部").catch(() => undefined);
+      if (!matched && portraitFilter !== "全部") {
+        // Official/shared characters may not be part of the upload subset.
+        portraitFilter = "全部";
+        await this.setPortraitSourceFilter(page, dialog, portraitFilter).catch(() => undefined);
         collection = await waitForCollectionWithin(dialog, this.selectors.generation.portraitCards, 8_000);
         if (collection) {
           await this.loadPortraitCards(collection, 80, 4, 300);

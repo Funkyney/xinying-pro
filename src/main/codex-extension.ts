@@ -6,6 +6,9 @@ import type { CodexExtensionInstallResult, CodexExtensionStatus } from "../share
 
 const SKILL_NAME = "xinying-pro-generate";
 const MARKER_NAME = ".xinying-pro-managed.json";
+const MCP_SERVER_NAME = "xinying_pro";
+const MCP_BEGIN = "# BEGIN XINYING PRO MANAGED MCP";
+const MCP_END = "# END XINYING PRO MANAGED MCP";
 
 interface ManagedMarker {
   managedBy: "xinying-pro";
@@ -14,6 +17,7 @@ interface ManagedMarker {
   installedAt: string;
   appExecutable: string;
   cliEntry: string;
+  mcpEntry: string;
   launcherPath: string;
 }
 
@@ -21,6 +25,7 @@ export interface CodexExtensionRuntime {
   appVersion: string;
   appExecutable: string;
   cliEntry: string;
+  mcpEntry: string;
   bundledSkillPath: string;
   codexHome?: string;
   platform?: NodeJS.Platform;
@@ -82,6 +87,40 @@ function backupTimestamp(now: Date): string {
   return now.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
 }
 
+function tomlString(value: string): string {
+  return JSON.stringify(value);
+}
+
+function managedMcpPattern(): RegExp {
+  return new RegExp(`${MCP_BEGIN.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[\\s\\S]*?${MCP_END.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`, "m");
+}
+
+function unmanagedMcpPattern(): RegExp {
+  return /^\[mcp_servers\.xinying_pro\]\s*$/m;
+}
+
+function removeUnmanagedMcpBlock(config: string): string {
+  const newline = config.includes("\r\n") ? "\r\n" : "\n";
+  const lines = config.split(/\r?\n/);
+  const retained: string[] = [];
+  let removing = false;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed === `[mcp_servers.${MCP_SERVER_NAME}]`) {
+      removing = true;
+      continue;
+    }
+    if (removing && /^\[[^\]]+\]$/.test(trimmed)) {
+      if (trimmed.startsWith(`[mcp_servers.${MCP_SERVER_NAME}.`)) continue;
+      removing = false;
+    }
+    if (!removing) retained.push(line);
+  }
+
+  return retained.join(newline).trimEnd();
+}
+
 export class CodexExtensionManager {
   readonly runtime: Required<Omit<CodexExtensionRuntime, "codexHome" | "platform">> & { codexHome: string; platform: NodeJS.Platform };
 
@@ -105,6 +144,10 @@ export class CodexExtensionManager {
     return path.join(this.runtime.codexHome, "skill-backups");
   }
 
+  get codexConfigPath(): string {
+    return path.join(this.runtime.codexHome, "config.toml");
+  }
+
   get launcherName(): string {
     return this.runtime.platform === "win32" ? "xinying.cmd" : "xinying";
   }
@@ -113,13 +156,66 @@ export class CodexExtensionManager {
     return path.join(this.skillPath, "scripts", this.launcherName);
   }
 
+  private mcpBlock(): string {
+    return [
+      MCP_BEGIN,
+      `[mcp_servers.${MCP_SERVER_NAME}]`,
+      `command = ${tomlString(this.runtime.appExecutable)}`,
+      `args = [${tomlString(this.runtime.mcpEntry)}]`,
+      `env = { ELECTRON_RUN_AS_NODE = "1", XINYING_APP_EXECUTABLE = ${tomlString(this.runtime.appExecutable)} }`,
+      "startup_timeout_sec = 30",
+      "tool_timeout_sec = 3600",
+      'default_tools_approval_mode = "auto"',
+      "enabled = true",
+      MCP_END,
+    ].join("\n");
+  }
+
+  private async readCodexConfig(): Promise<string> {
+    try {
+      return await fs.promises.readFile(this.codexConfigPath, "utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return "";
+      throw error;
+    }
+  }
+
+  private async isMcpConfigured(): Promise<boolean> {
+    const config = await this.readCodexConfig();
+    const block = config.match(managedMcpPattern())?.[0] ?? "";
+    return block.includes(`[mcp_servers.${MCP_SERVER_NAME}]`)
+      && block.includes(`command = ${tomlString(this.runtime.appExecutable)}`)
+      && block.includes(`args = [${tomlString(this.runtime.mcpEntry)}]`)
+      && block.includes("enabled = true");
+  }
+
+  private async registerMcpServer(replaceExisting: boolean): Promise<void> {
+    await fs.promises.mkdir(this.runtime.codexHome, { recursive: true });
+    const current = await this.readCodexConfig();
+    const managed = managedMcpPattern();
+    let next: string;
+    if (managed.test(current)) {
+      next = current.replace(managed, this.mcpBlock());
+    } else {
+      if (unmanagedMcpPattern().test(current) && !replaceExisting) {
+        throw new Error(`检测到同名的非心影Pro托管 MCP：${MCP_SERVER_NAME}。请确认替换后再安装。`);
+      }
+      const withoutConflict = replaceExisting
+        ? removeUnmanagedMcpBlock(current)
+        : current.trimEnd();
+      next = `${withoutConflict}${withoutConflict ? "\n\n" : ""}${this.mcpBlock()}\n`;
+    }
+    if (next !== current) await fs.promises.writeFile(this.codexConfigPath, next, "utf8");
+  }
+
   async status(): Promise<CodexExtensionStatus> {
     const sourceAvailable = await pathExists(path.join(this.runtime.bundledSkillPath, "SKILL.md"));
     const targetExists = await pathExists(this.skillPath);
     const marker = targetExists ? await readMarker(this.skillPath) : null;
     const conflict = targetExists && !marker;
     const installed = Boolean(marker);
-    const needsUpdate = Boolean(marker && marker.extensionVersion !== this.runtime.appVersion);
+    const mcpConfigured = await this.isMcpConfigured();
+    const needsUpdate = Boolean(marker && (marker.extensionVersion !== this.runtime.appVersion || !mcpConfigured));
     const state: CodexExtensionStatus["state"] = !sourceAvailable
       ? "source-missing"
       : conflict
@@ -133,7 +229,7 @@ export class CodexExtensionManager {
       : state === "conflict" ? "检测到同名的非心影Pro托管 Skill；安装前会先备份"
         : state === "not-installed" ? "尚未安装到本机 Codex"
           : state === "update-available" ? `Codex 扩展可更新至 ${this.runtime.appVersion}`
-            : `Codex 扩展 ${this.runtime.appVersion} 已就绪`;
+            : `Codex Skill 与 MCP ${this.runtime.appVersion} 已就绪`;
 
     return {
       state,
@@ -146,6 +242,8 @@ export class CodexExtensionManager {
       codexHome: this.runtime.codexHome,
       skillPath: this.skillPath,
       launcherPath: installed ? this.launcherPath : null,
+      mcpConfigured,
+      mcpServerName: MCP_SERVER_NAME,
       message,
     };
   }
@@ -173,6 +271,9 @@ export class CodexExtensionManager {
     requireInside(this.skillsRoot, previous);
     let displacedPath: string | null = null;
     let backupPath: string | null = null;
+    let installedNewSkill = false;
+    let originalConfig: string | null = null;
+    let originalConfigExisted = false;
 
     try {
       await fs.promises.mkdir(staging, { recursive: false });
@@ -205,6 +306,7 @@ export class CodexExtensionManager {
         installedAt: new Date().toISOString(),
         appExecutable: this.runtime.appExecutable,
         cliEntry: this.runtime.cliEntry,
+        mcpEntry: this.runtime.mcpEntry,
         launcherPath: this.launcherPath,
       };
       await fs.promises.writeFile(path.join(staging, MARKER_NAME), `${JSON.stringify(marker, null, 2)}\n`, "utf8");
@@ -227,10 +329,24 @@ export class CodexExtensionManager {
       }
 
       await fs.promises.rename(staging, this.skillPath);
+      installedNewSkill = true;
+      originalConfigExisted = await pathExists(this.codexConfigPath);
+      originalConfig = await this.readCodexConfig();
+      await this.registerMcpServer(replaceExisting);
       if (displacedPath === previous) await fs.promises.rm(previous, { recursive: true, force: true }).catch(() => undefined);
       return { ...(await this.status()), backupPath };
     } catch (error) {
-      if (!(await pathExists(this.skillPath)) && displacedPath && await pathExists(displacedPath)) {
+      if (originalConfig !== null) {
+        if (originalConfigExisted) {
+          await fs.promises.writeFile(this.codexConfigPath, originalConfig, "utf8").catch(() => undefined);
+        } else {
+          await fs.promises.rm(this.codexConfigPath, { force: true }).catch(() => undefined);
+        }
+      }
+      if (installedNewSkill && await pathExists(this.skillPath)) {
+        await fs.promises.rm(this.skillPath, { recursive: true, force: true }).catch(() => undefined);
+      }
+      if (displacedPath && await pathExists(displacedPath) && !(await pathExists(this.skillPath))) {
         await fs.promises.rename(displacedPath, this.skillPath).catch(() => undefined);
       }
       await fs.promises.rm(staging, { recursive: true, force: true }).catch(() => undefined);

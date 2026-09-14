@@ -2,13 +2,15 @@ import fs from "node:fs";
 import path from "node:path";
 import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import { IPC } from "../shared/ipc";
-import type { PlatformPortraitDeleteProgress, PlatformProjectCreateInput, PlatformResult, PlatformResultSource, PlatformViewBounds, PortraitMetadataInput, ProjectInput, ReferenceRole, ResultReuseInput, SessionState } from "../shared/contracts";
+import type { DirectorRunRequest, PlatformPortraitDeleteProgress, PlatformProjectCreateInput, PlatformResult, PlatformResultSource, PlatformViewBounds, PortraitMetadataInput, ProjectInput, ReferenceRole, ResultReuseInput, SessionState } from "../shared/contracts";
 import { projectDownloadName } from "../shared/download-naming";
 import type { XinyingService } from "../core/service";
 import type { PlatformViewManager } from "./platform-view";
 import type { PlaywrightXinyingAdapter } from "./playwright-adapter";
 import type { CodexExtensionManager } from "./codex-extension";
 import type { JobWorker } from "./job-worker";
+import { loadDirectorManifest } from "../core/director-manifest";
+import { runDirectorManifest } from "../cli/director-run";
 
 export function registerIpcHandlers(
   window: BrowserWindow,
@@ -44,6 +46,15 @@ export function registerIpcHandlers(
       if (!fs.existsSync(next)) return next;
     }
     return `${base}-${Date.now()}${extension}`;
+  };
+  const syncPlatformPortraitsForProject = async (projectId: string) => {
+    const targetProject = service.getProject(projectId);
+    if (!targetProject.platformUrl) throw new Error("请先选择并进入一个心影项目，再同步该空间的虚拟人像库");
+    const portraits = await platform.withAutomationViewport(
+      () => adapter.syncPlatformPortraits(targetProject.platformUrl, targetProject.modelName, targetProject.platformWorkspaceId),
+      "正在同步当前空间虚拟人像",
+    );
+    return service.syncPlatformPortraits(portraits, targetProject.platformWorkspaceId, false);
   };
 
   handle(IPC.dashboard, async (_event, options?: { includeLibraries?: boolean }) => {
@@ -173,11 +184,7 @@ export function registerIpcHandlers(
   handle(IPC.portraitsSync, async (_event, projectId?: string) => {
     const targetProject = projectId ? service.getProject(projectId) : service.listProjects().find((project) => project.platformUrl);
     if (!targetProject?.platformUrl) throw new Error("请先选择并进入一个心影项目，再同步该空间的虚拟人像库");
-    const portraits = await platform.withAutomationViewport(
-      () => adapter.syncPlatformPortraits(targetProject.platformUrl, targetProject.modelName, targetProject.platformWorkspaceId),
-      "正在同步当前空间虚拟人像",
-    );
-    return service.syncPlatformPortraits(portraits, targetProject.platformWorkspaceId, false);
+    return syncPlatformPortraitsForProject(targetProject.id);
   });
   handle(IPC.portraitsPlatformDelete, async (_event, projectId: string, ids: string[]) => {
     const targetProject = service.getProject(projectId);
@@ -381,5 +388,23 @@ export function registerIpcHandlers(
     const error = await shell.openPath(target);
     if (error) throw new Error(error);
     return target;
+  });
+  handle(IPC.automationDirectorRun, async (_event, input: DirectorRunRequest) => {
+    if (!input?.confirm) throw new Error("自动授权与生成可能扣费，必须明确传入 confirm=true");
+    const timeoutMs = input.timeoutMs ?? 45 * 60_000;
+    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > 4 * 60 * 60_000) {
+      throw new Error("timeoutMs 必须在 1 毫秒到 4 小时之间");
+    }
+    const count = input.count;
+    if (count !== undefined && (!Number.isInteger(count) || count < 1 || count > 20)) {
+      throw new Error("count 必须是 1 到 20 的整数");
+    }
+    const manifest = loadDirectorManifest(input.manifestPath);
+    return runDirectorManifest(service, manifest, {
+      count,
+      timeoutMs,
+      ensureAppReady: async () => ({ ready: true }),
+      syncPortraits: syncPlatformPortraitsForProject,
+    });
   });
 }

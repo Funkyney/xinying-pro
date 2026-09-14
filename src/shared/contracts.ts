@@ -194,6 +194,13 @@ export interface DirectorRunPreparation extends DirectorRunValidation {
   preview: SubmissionPreview;
 }
 
+export interface DirectorRunRequest {
+  manifestPath: string;
+  count?: number;
+  timeoutMs?: number;
+  confirm: boolean;
+}
+
 export interface GenerationBatch {
   batchId: string;
   count: number;
@@ -459,6 +466,8 @@ export interface CodexExtensionStatus {
   codexHome: string;
   skillPath: string;
   launcherPath: string | null;
+  mcpConfigured: boolean;
+  mcpServerName: string;
   message: string;
 }
 
@@ -556,6 +565,9 @@ export interface XinyingApi {
     status(): Promise<CodexExtensionStatus>;
     install(replaceExisting?: boolean): Promise<CodexExtensionInstallResult>;
     openFolder(): Promise<string>;
+  };
+  automation: {
+    directorRun(input: DirectorRunRequest): Promise<unknown>;
   };
 }
 

@@ -95,10 +95,14 @@ function createWindow(): void {
   const cliEntry = app.isPackaged
     ? path.join(process.resourcesPath, "app.asar", "dist-electron", "cli", "index.js")
     : path.join(app.getAppPath(), "dist-electron", "cli", "index.js");
+  const mcpEntry = app.isPackaged
+    ? path.join(process.resourcesPath, "app.asar", "dist-electron", "mcp", "server.mjs")
+    : path.join(app.getAppPath(), "dist-electron", "mcp", "server.mjs");
   const codexExtension = new CodexExtensionManager({
     appVersion: app.getVersion(),
     appExecutable: process.execPath,
     cliEntry,
+    mcpEntry,
     bundledSkillPath,
   });
   void codexExtension.updateManagedInstallation().catch(() => undefined);

@@ -1,6 +1,6 @@
 # 心影Pro：Codex 操作约定
 
-优先通过 `xinying` CLI 操作本地项目和队列，不要通过坐标点击桌面界面。安装版由“Codex扩展”页面在 `$CODEX_HOME/skills/xinying-pro-generate/scripts/` 生成启动器；源码开发环境才使用仓库根目录的 `xinying.cmd`。
+优先使用心影Pro MCP 操作本地项目、项目对话和导演生成；一个完整导演任务只调用一次 `generate`。当前 Codex 会话没有加载 MCP 时才通过 `xinying` CLI 操作，不要通过坐标点击桌面界面。安装版由“Codex扩展”页面同时注册 MCP，并在 `$CODEX_HOME/skills/xinying-pro-generate/scripts/` 生成回退启动器；源码开发环境才使用仓库根目录的 `xinying.cmd`。
 
 ## 安全边界
 
@@ -18,7 +18,7 @@
 4. 用 `platform open <catalog-project-id>` 选择心影项目；新建时使用 `platform create ... --confirm`。已绑定项目不要重复 open，以免误建新对话。
 5. Seedance 自动执行先对图片/视频一次运行 `media cache --file ...`。命中同一 SHA-256 时复用人物检查；未命中才看图或抽取覆盖全片的关键帧。
 6. 每张图片和每条视频都必须在清单填写 `containsPerson`。任意帧有人时必须为 `true`，由 APP 强制走虚拟人像授权；无法检查时停止，不能默认填 `false`。
-7. 写好导演任务 JSON 后，用户明确要求生成时优先只执行 `director run --manifest <path> --confirm`。该命令内部完成 validate、prepare、authorize、resolve、submit 与状态等待；不要拆成多轮 CLI 轮询。
+7. 写好导演任务 JSON 后，用户明确要求生成时优先只调用 MCP `generate({ manifestPath, count?, confirm: true })`；没有 MCP 时只执行 `director run --manifest <path> --confirm`。两者内部都完成 validate、prepare、authorize、resolve、submit 与状态等待；不要拆成多轮轮询。
 8. `director run` 返回 `successBoundary: heart-generating` 即成功并立即结束。除非用户另行要求，不继续监控结果，不运行 `job events`、`results sync/list`，也不下载。
 9. 人工步骤处理完成后，先复查原网页，再执行 `job resume <job-id> --confirm`，随后只重跑一次 `director run`。
 
