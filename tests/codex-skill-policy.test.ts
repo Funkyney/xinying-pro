@@ -13,7 +13,8 @@ describe("xinying-pro-generate completion policy", () => {
 
   it("uses one compact MCP call with a CLI fallback instead of repeated polling commands", () => {
     expect(source).toContain("首选只调用一次心影Pro MCP `generate`");
-    expect(source).toContain('{"manifestPath":"<absolute-manifest-path>","confirm":true}');
+    expect(source).toContain('{"manifestPath":"<absolute-manifest-path>","requestId":"<stable-id-for-this-user-request>","confirm":true}');
+    expect(source).toContain("同一次用户生成指令必须始终复用相同的 `requestId`");
     expect(source).toContain("当前 Codex 会话没有心影Pro MCP 时，才执行");
     expect(source).toContain('director run --manifest "<absolute-manifest-path>" --confirm');
     expect(source).toContain("不要另开 `job status`");

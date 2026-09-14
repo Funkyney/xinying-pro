@@ -400,8 +400,11 @@ export function registerIpcHandlers(
       throw new Error("count 必须是 1 到 20 的整数");
     }
     const manifest = loadDirectorManifest(input.manifestPath);
+    const explicitRequestId = input.requestId?.trim() || "";
+    if (explicitRequestId.length > 200) throw new Error("requestId 不能超过 200 个字符");
     return runDirectorManifest(service, manifest, {
       count,
+      requestId: explicitRequestId || undefined,
       timeoutMs,
       ensureAppReady: async () => ({ ready: true }),
       syncPortraits: syncPlatformPortraitsForProject,

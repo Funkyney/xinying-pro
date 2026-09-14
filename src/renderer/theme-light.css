@@ -236,6 +236,9 @@ p { color: var(--muted); }
 .project-entry-panel > .button { color: #fff; background: linear-gradient(135deg, #e4b75f, #c98e2e); }
 
 .status-pill { border: 1px solid rgba(70, 61, 49, .08); }
+.self-heal-panel { border-color: rgba(72, 139, 123, .22); background: linear-gradient(135deg, rgba(225, 244, 238, .82), rgba(255, 255, 255, .9)); }
+.self-heal-icon { color: #377d6d; background: rgba(78, 153, 136, .12); }.self-heal-panel strong { color: #355c53; }.self-heal-panel span { color: #7b8d88; }.self-heal-counts b { border-color: rgba(71, 139, 123, .18); color: #347665; background: rgba(91, 166, 148, .08); }.self-heal-counts small { color: #82958f; }
+.recovery-pill { color: #367e6d; border-color: rgba(61, 139, 121, .2); background: rgba(70, 153, 134, .09); }.recovery-manual,.recovery-exhausted { color: #a66f22; border-color: rgba(190, 132, 48, .2); background: rgba(207, 151, 67, .09); }.job-stage-label { color: #4d8e7f; }.job-retry-at { color: #a6752d; }
 .status-queued,
 .status-submitting,
 .status-running,

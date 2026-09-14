@@ -7,6 +7,7 @@ const BLOCKING_STATUSES = new Set<JobStatus>(["failed", "needs-login", "needs-hu
 
 export interface DirectorRunOptions {
   count?: number;
+  requestId?: string;
   timeoutMs: number;
   ensureAppReady: () => Promise<unknown>;
   syncPortraits?: (projectId: string) => Promise<unknown>;
@@ -107,7 +108,7 @@ export async function runDirectorManifest(
   }
 
   const count = options.count ?? manifest.count;
-  const batch = service.submitGenerationBatch(manifest.projectId, count);
+  const batch = service.submitGenerationBatch(manifest.projectId, count, options.requestId);
   const generationJobs = await waitForJobs(
     service,
     batch.jobs.map((job) => job.id),
@@ -120,6 +121,8 @@ export async function runDirectorManifest(
   return {
     success: true,
     successBoundary: "heart-generating",
+    requestId: options.requestId ?? null,
+    deduplicated: batch.deduplicated,
     elapsedMs: Date.now() - startedAt,
     authorization: {
       required: authorizationJobs.length,

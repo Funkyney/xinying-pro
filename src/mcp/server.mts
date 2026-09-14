@@ -144,7 +144,7 @@ class HeartAppBridge {
             })),
             activeJobs: jobs.filter((job) => ["queued", "preparing", "uploading", "running", "needs-human", "needs-login"].includes(job.status))
               .slice(0, 20)
-              .map((job) => ({ id: job.id, projectId: job.projectId, kind: job.kind, status: job.status, progress: job.progress, progressLabel: job.progressLabel })),
+              .map((job) => ({ id: job.id, projectId: job.projectId, kind: job.kind, status: job.status, progress: job.progress, progressLabel: job.progressLabel, automationStage: job.automationStage, recoveryState: job.recoveryState, nextRetryAt: job.nextRetryAt })),
           };
         }
         case "catalog": {
@@ -181,6 +181,7 @@ class HeartAppBridge {
           return window.xinying.automation.directorRun({
             manifestPath: String(value.manifestPath),
             ...(value.count === undefined ? {} : { count: Number(value.count) }),
+            ...(value.requestId ? { requestId: String(value.requestId) } : {}),
             timeoutMs: Number(value.timeoutMinutes ?? 45) * 60_000,
             confirm: value.confirm === true,
           });
@@ -188,7 +189,7 @@ class HeartAppBridge {
           const ids = Array.isArray(value.ids) ? value.ids.map(String) : [];
           const jobs = ids.length ? await Promise.all(ids.map((id) => window.xinying.jobs.status(id))) : await window.xinying.jobs.list();
           const selected = jobs.filter((job) => ids.length || ["queued", "preparing", "uploading", "running", "needs-human", "needs-login"].includes(job.status)).slice(0, 50);
-          return { ok: true, jobs: selected.map((job) => ({ id: job.id, projectId: job.projectId, kind: job.kind, status: job.status, platformTaskId: job.platformTaskId, progress: job.progress, progressLabel: job.progressLabel, errorCode: job.errorCode, errorMessage: job.errorMessage, requiresHumanReason: job.requiresHumanReason, updatedAt: job.updatedAt })) };
+          return { ok: true, jobs: selected.map((job) => ({ id: job.id, projectId: job.projectId, kind: job.kind, status: job.status, platformTaskId: job.platformTaskId, progress: job.progress, progressLabel: job.progressLabel, automationStage: job.automationStage, recoveryState: job.recoveryState, nextRetryAt: job.nextRetryAt, lastRecoveryCode: job.lastRecoveryCode, errorCode: job.errorCode, errorMessage: job.errorMessage, requiresHumanReason: job.requiresHumanReason, updatedAt: job.updatedAt })) };
         }
         case "portraits": {
           const projectId = value.projectId ? String(value.projectId) : undefined;
@@ -265,6 +266,7 @@ function buildServer(): McpServer {
     inputSchema: z.object({
       manifestPath: z.string().min(1).describe("已完成的.xinying-run.json绝对路径"),
       count: z.number().int().min(1).max(20).optional(),
+      requestId: z.string().min(1).max(200).describe("同一次用户生成指令的稳定标识；重试必须复用，新的生成指令必须更换"),
       timeoutMinutes: z.number().positive().max(240).optional().default(45),
       confirm: z.literal(true).describe("用户已明确授权人物合规承诺并接受可能扣费"),
     }),

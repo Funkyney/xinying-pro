@@ -18,8 +18,8 @@
 4. 用 `platform open <catalog-project-id>` 选择心影项目；新建时使用 `platform create ... --confirm`。已绑定项目不要重复 open，以免误建新对话。
 5. Seedance 自动执行先对图片/视频一次运行 `media cache --file ...`。命中同一 SHA-256 时复用人物检查；未命中才看图或抽取覆盖全片的关键帧。
 6. 每张图片和每条视频都必须在清单填写 `containsPerson`。任意帧有人时必须为 `true`，由 APP 强制走虚拟人像授权；无法检查时停止，不能默认填 `false`。
-7. 写好导演任务 JSON 后，用户明确要求生成时优先只调用 MCP `generate({ manifestPath, count?, confirm: true })`；没有 MCP 时只执行 `director run --manifest <path> --confirm`。两者内部都完成 validate、prepare、authorize、resolve、submit 与状态等待；不要拆成多轮轮询。
+7. 写好导演任务 JSON 后，用户明确要求生成时优先只调用 MCP `generate({ manifestPath, requestId, count?, confirm: true })`；同一次用户指令及其重试必须复用相同 `requestId`，只有用户明确要求新增一批时才更换。没有 MCP 时只执行 `director run --manifest <path> --confirm`。两者内部都完成 validate、prepare、authorize、resolve、submit 与状态等待；不要拆成多轮轮询。
 8. `director run` 返回 `successBoundary: heart-generating` 即成功并立即结束。除非用户另行要求，不继续监控结果，不运行 `job events`、`results sync/list`，也不下载。
-9. 人工步骤处理完成后，先复查原网页，再执行 `job resume <job-id> --confirm`，随后只重跑一次 `director run`。
+9. 临时连接、页面和表单错误由 APP 自愈引擎自动恢复，不要手动重跑。只有任务最终进入 `needs-login`、`needs-human` 或恢复次数用尽时，才让用户完成明确的人工步骤并恢复原任务。
 
 CLI 始终输出 JSON，项目、目录、任务与导演命令默认返回精简字段；诊断时才使用 `--full`。不要依赖界面文案解析本地项目状态。

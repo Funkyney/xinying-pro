@@ -60,6 +60,51 @@ describe("director run", () => {
     database.close();
   });
 
+  it("reuses an existing running batch when Codex repeats the same request id", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "xinying-director-run-idempotency-test-"));
+    temporaryDirectories.push(directory);
+    const paths = createAppPaths(directory);
+    const database = new XinyingDatabase(paths.databasePath);
+    const service = new XinyingService(database, paths);
+    const project = service.createProject({
+      name: "请求去重",
+      prompt: "占位",
+      mode: "text-to-video",
+      platformWorkspaceId: "workspace-team",
+      platformProjectId: "platform-project",
+      platformUrl: "https://blueaivideo.com/avpAgent?projectId=platform-project&sessionId=test-session",
+    });
+    const manifest: DirectorManifest = {
+      version: 1,
+      projectId: project.id,
+      prompt: "固定机位",
+      count: 1,
+      replaceMaterials: true,
+      settings: { mode: "text-to-video" },
+      materials: [],
+    };
+    const options = {
+      requestId: "codex-same-request",
+      timeoutMs: 10_000,
+      ensureAppReady: async () => ({ ready: true }),
+      sleep: async () => {
+        service.listJobsByKind("generation").forEach((job) => service.updateJob(job.id, {
+          status: "running",
+          platformTaskId: "chat:p:s:0",
+        }));
+      },
+    };
+
+    const first = await runDirectorManifest(service, manifest, options);
+    const second = await runDirectorManifest(service, manifest, options);
+
+    expect(first.deduplicated).toBe(false);
+    expect(second.deduplicated).toBe(true);
+    expect(second.batch.jobs[0].id).toBe(first.batch.jobs[0].id);
+    expect(service.listJobsByKind("generation")).toHaveLength(1);
+    database.close();
+  });
+
   it("resumes an interrupted authorization and continues through generation without user intervention", async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "xinying-director-run-recovery-test-"));
     temporaryDirectories.push(directory);

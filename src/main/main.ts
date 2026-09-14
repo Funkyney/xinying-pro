@@ -76,7 +76,11 @@ function createWindow(): void {
     (prefix, timeoutMs) => platformManager!.captureNextDownload(paths.outputsDir, prefix, timeoutMs),
     (prefix, reason) => platformManager!.cancelPendingDownload(prefix, reason),
     (jobId, platformTaskId) => {
-      service.updateJob(jobId, { platformTaskId });
+      service.updateJob(jobId, {
+        platformTaskId,
+        automationStage: "submitting",
+        progressLabel: "已记录提交意图，正在等待心影确认",
+      });
       service.addJobEvent(jobId, "info", "SUBMIT_INTENT_RECORDED", "已在点击生成前记录心影对话位置，用于异常恢复和防止重复提交");
     },
     (portraitId, mediaKind) => {

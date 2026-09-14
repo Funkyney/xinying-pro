@@ -241,9 +241,18 @@ describe("XinyingService", () => {
       mode TEXT NOT NULL DEFAULT 'reference-to-video', aspect_ratio TEXT NOT NULL DEFAULT '16:9', duration INTEGER NOT NULL DEFAULT 5,
       resolution TEXT NOT NULL DEFAULT '720p', audio_enabled INTEGER NOT NULL DEFAULT 1, status TEXT NOT NULL DEFAULT 'draft',
       created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    );
+    CREATE TABLE jobs (
+      id TEXT PRIMARY KEY, kind TEXT NOT NULL, project_id TEXT, portrait_id TEXT, status TEXT NOT NULL,
+      platform_task_id TEXT, prompt_snapshot TEXT NOT NULL DEFAULT '', parameters_json TEXT NOT NULL DEFAULT '{}',
+      references_json TEXT NOT NULL DEFAULT '[]', output_path TEXT, output_url TEXT, error_code TEXT,
+      error_message TEXT, requires_human_reason TEXT, retry_count INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL, submitted_at TEXT, completed_at TEXT, updated_at TEXT NOT NULL
     )`);
     legacy.prepare("INSERT INTO projects VALUES (?, ?, '', '', 'reference-to-video', '16:9', 5, '720p', 1, 'draft', ?, ?)")
       .run("legacy", "旧项目", "2026-01-01T00:00:00.000Z", "2026-01-01T00:00:00.000Z");
+    legacy.prepare("INSERT INTO jobs VALUES (?, 'generation', ?, NULL, 'running', ?, '', '{}', '[]', NULL, NULL, NULL, NULL, NULL, 0, ?, ?, NULL, ?)")
+      .run("legacy-job", "legacy", "chat:legacy:session:0", "2026-01-01T00:00:00.000Z", "2026-01-01T00:00:01.000Z", "2026-01-01T00:00:01.000Z");
     legacy.close();
 
     database = new XinyingDatabase(databasePath);
@@ -252,6 +261,12 @@ describe("XinyingService", () => {
     expect(migrated.name).toBe("旧项目");
     expect(migrated.modelName).toBe("Seedance 2.5 全能参考");
     expect(migrated.platformUrl).toBe("");
+    expect(service.getJob("legacy-job")).toMatchObject({
+      status: "running",
+      automationStage: "monitoring",
+      recoveryState: "none",
+      nextRetryAt: null,
+    });
   });
 
   it("rejects unsafe platform URLs and out-of-range durations", () => {
@@ -499,7 +514,7 @@ describe("XinyingService", () => {
     expect(service.listJobEvents(job.id).at(-1)?.code).toBe("JOB_RESUMED");
   });
 
-  it("pauses an interrupted submitting job instead of risking a duplicate submit", () => {
+  it("recovers an interrupted submitting job by verifying the persisted pending reference first", () => {
     const project = service.createProject({ name: "中断恢复", prompt: "固定机位", mode: "text-to-video" });
     const job = service.submitGeneration(project.id);
     service.updateJob(job.id, {
@@ -509,10 +524,26 @@ describe("XinyingService", () => {
     });
     const recovered = service.recoverInterruptedJobs();
     expect(recovered).toHaveLength(1);
-    expect(recovered[0].status).toBe("needs-human");
+    expect(recovered[0].status).toBe("queued");
+    expect(recovered[0].automationStage).toBe("recovering");
+    expect(recovered[0].recoveryState).toBe("scheduled");
     expect(recovered[0].errorCode).toBe("APP_RESTART_DURING_SUBMIT");
     expect(recovered[0].platformTaskId).toBe("pending-chat:project:session:3");
-    expect(service.listJobEvents(job.id).at(-1)?.code).toBe("APP_RESTART_DURING_SUBMIT");
+    expect(service.listJobEvents(job.id).at(-1)?.code).toBe("APP_RESTART_AUTO_RECOVERY");
+  });
+
+  it("deduplicates a director batch by request id to prevent duplicate charges", () => {
+    const project = service.createProject({ name: "防重复提交", prompt: "固定机位", mode: "text-to-video" });
+    const first = service.submitGenerationBatch(project.id, 2, "codex-request-001");
+    const second = service.submitGenerationBatch(project.id, 2, "codex-request-001");
+
+    expect(second.batchId).toBe(first.batchId);
+    expect(first.deduplicated).toBe(false);
+    expect(second.deduplicated).toBe(true);
+    expect(second.jobs.map((job) => job.id)).toEqual(first.jobs.map((job) => job.id));
+    expect(service.listJobsByKind("generation")).toHaveLength(2);
+    expect(service.listJobEvents(first.jobs[0].id).at(-1)?.code).toBe("DIRECTOR_RUN_DEDUPLICATED");
+    expect(() => service.submitGenerationBatch(project.id, 1, "codex-request-001")).toThrow(/防止重复扣费/);
   });
 
   it("exports a completed result without replacing the result-library source", async () => {

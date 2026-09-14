@@ -150,6 +150,29 @@ function StatusPill({ status }: { status: JobStatus }) {
   return <span className={`status-pill status-${status}`}>{statusLabels[status]}</span>;
 }
 
+const automationStageLabels: Record<Job["automationStage"], string> = {
+  queued: "等待执行",
+  preparing: "准备素材与参数",
+  authorizing: "上传并授权人像",
+  submitting: "正在确认提交",
+  submitted: "心影已接收",
+  monitoring: "等待心影审核",
+  recovering: "自动恢复中",
+  attention: "等待人工确认",
+  completed: "流程已完成",
+  failed: "流程已停止",
+  cancelled: "已取消",
+};
+
+function RecoveryPill({ job }: { job: Job }) {
+  if (job.recoveryState === "none") return null;
+  const label = job.recoveryState === "scheduled" ? "等待自动修复"
+    : job.recoveryState === "recovering" ? "自动修复中"
+      : job.recoveryState === "exhausted" ? "修复次数已用完"
+        : "需要人工确认";
+  return <span className={`recovery-pill recovery-${job.recoveryState}`}><RefreshCw size={10} className={job.recoveryState === "recovering" ? "spinning" : ""} />{label}</span>;
+}
+
 function EmptyState({ title, description, action }: { title: string; description: string; action?: React.ReactNode }) {
   return <div className="empty-state"><Sparkles size={28} /><h3>{title}</h3><p>{description}</p>{action}</div>;
 }
@@ -850,7 +873,7 @@ function PortraitsPage({ portraits, platformPortraits, projects, selectedProject
   </div>;
 }
 
-type JobFilter = "all" | "active" | "completed" | "failed" | "attention" | "cancelled";
+type JobFilter = "all" | "active" | "recovering" | "completed" | "failed" | "attention" | "cancelled";
 
 function JobsPage({ jobs, projects, portraits, run }: { jobs: Job[]; projects: Project[]; portraits: PortraitAsset[]; run: (action: () => Promise<unknown>, success?: string) => Promise<void> }) {
   const [detail, setDetail] = useState<{ job: Job; events: JobEvent[] } | null>(null);
@@ -870,12 +893,14 @@ function JobsPage({ jobs, projects, portraits, run }: { jobs: Job[]; projects: P
   const terminal = (job: Job) => ["completed", "failed", "cancelled"].includes(job.status);
   const attention = (job: Job) => ["needs-human", "needs-login"].includes(job.status);
   const active = (job: Job) => ["draft", "queued", "submitting", "running"].includes(job.status);
+  const recovering = (job: Job) => ["scheduled", "recovering"].includes(job.recoveryState);
   const displayName = (job: Job) => job.kind === "generation"
     ? projects.find((project) => project.id === job.projectId)?.name ?? "已删除项目"
     : portraits.find((portrait) => portrait.id === job.portraitId)?.name ?? "已删除人像素材";
   const filters: Array<{ key: JobFilter; label: string; count: number }> = [
     { key: "all", label: "全部", count: jobs.length },
     { key: "active", label: "进行中", count: jobs.filter(active).length },
+    { key: "recovering", label: "自动修复", count: jobs.filter(recovering).length },
     { key: "completed", label: "已完成", count: jobs.filter((job) => job.status === "completed").length },
     { key: "failed", label: "失败", count: jobs.filter((job) => job.status === "failed").length },
     { key: "attention", label: "待处理", count: jobs.filter(attention).length },
@@ -885,6 +910,7 @@ function JobsPage({ jobs, projects, portraits, run }: { jobs: Job[]; projects: P
   const visibleJobs = jobs.filter((job) => {
     const matchesFilter = filter === "all"
       || (filter === "active" && active(job))
+      || (filter === "recovering" && recovering(job))
       || (filter === "attention" && attention(job))
       || job.status === filter;
     const haystack = `${displayName(job)} ${job.id} ${job.platformTaskId ?? ""} ${job.platformExecutionId ?? ""}`.toLowerCase();
@@ -906,11 +932,12 @@ function JobsPage({ jobs, projects, portraits, run }: { jobs: Job[]; projects: P
 
   return <div className="jobs-page">
     <div className="page-heading"><div><span className="eyebrow">TASK CENTER</span><h1>任务队列</h1><p>自动同步心影真实进度、成功与失败状态；记录可以集中筛选和清理。</p></div><div className="heading-actions"><button className="button secondary" disabled={!runningGenerationIds.length} onClick={() => void run(() => window.xinying.jobs.refresh(runningGenerationIds), "已同步心影任务状态")}><RefreshCw size={16} />同步状态</button><button className={`button ${manageMode ? "primary" : "ghost"}`} onClick={() => { setManageMode((current) => !current); setSelectedIds(new Set()); }}><CheckSquare2 size={16} />{manageMode ? "退出管理" : "管理记录"}</button></div></div>
+    <section className="panel self-heal-panel"><div className="self-heal-icon"><ShieldAlert size={19} /></div><div><strong>自动修复中心</strong><span>心影Pro 会保存当前阶段，遇到连接、页面、表单或平台繁忙时有限重试；提交确认中断会先查重，不会直接再次点击生成。</span></div><div className="self-heal-counts"><b>{jobs.filter(recovering).length}<small>修复中</small></b><b>{jobs.filter(attention).length}<small>待人工</small></b></div></section>
     <section className="job-summary-grid">
       <div><span>进行中</span><strong>{jobs.filter(active).length}</strong><small>含排队与提交</small></div>
+      <div><span>自动修复</span><strong>{jobs.filter(recovering).length}</strong><small>按检查点安全续跑</small></div>
       <div><span>已完成</span><strong>{jobs.filter((job) => job.status === "completed").length}</strong><small>心影已确认成功</small></div>
       <div><span>失败 / 待处理</span><strong>{jobs.filter((job) => job.status === "failed" || attention(job)).length}</strong><small>可恢复或查看原因</small></div>
-      <div><span>全部记录</span><strong>{jobs.length}</strong><small>本地任务台账</small></div>
     </section>
     <section className="panel job-toolbar">
       <div className="result-filter-chips">{filters.map((item) => <button key={item.key} className={filter === item.key ? "active" : ""} onClick={() => setFilter(item.key)}><span>{item.label}</span><b>{item.count}</b></button>)}</div>
@@ -920,9 +947,9 @@ function JobsPage({ jobs, projects, portraits, run }: { jobs: Job[]; projects: P
     <section className="panel table-panel job-table-panel"><table><thead><tr>{manageMode && <th className="job-select-column">选择</th>}<th>任务</th><th>类型</th><th>状态</th><th>生成进度</th><th>心影任务号</th><th>更新时间</th><th>操作</th></tr></thead><tbody>{visibleJobs.map((job) => {
       const resumeMessage = job.platformTaskId?.startsWith("pending-chat:") || job.errorCode === "APP_RESTART_DURING_SUBMIT" ? "该任务曾在生成提交阶段中断。请先在原网页确认没有对应的新对话；确认后恢复才可能再次点击生成，是否继续？" : "请确认已经在原网页完成登录、合规、付费或页面检查等人工步骤。现在恢复任务？";
       const progress = job.status === "completed" ? 100 : job.progress;
-      return <tr key={job.id} className={selectedIds.has(job.id) ? "selected-job-row" : ""}>{manageMode && <td className="job-select-column"><button className={`job-row-check ${selectedIds.has(job.id) ? "checked" : ""}`} onClick={() => toggleSelected(job.id)}>{selectedIds.has(job.id) ? <CheckSquare2 size={17} /> : <Square size={17} />}</button></td>}<td><strong>{displayName(job)}</strong><span>任务 {job.id.slice(0, 8)}</span></td><td>{job.kind === "generation" ? "视频生成" : "人像审核"}</td><td><StatusPill status={job.status} />{job.requiresHumanReason && <small className="human-reason">{job.requiresHumanReason}</small>}</td><td><div className={`job-progress ${progress === null && active(job) ? "indeterminate" : ""}`}><div><i style={{ width: `${progress ?? 0}%` }} /></div><span>{progress === null ? (active(job) ? "状态同步中" : "—") : `${Math.round(progress)}%`}</span></div>{job.progressLabel && <small className="job-progress-label" title={job.progressLabel}>{job.progressLabel}</small>}</td><td className="task-id-cell">{job.platformExecutionId ? `#${job.platformExecutionId}` : job.platformTaskId ?? "—"}</td><td>{formatDate(job.updatedAt)}{job.lastCheckedAt && <small className="job-checked-at">查询 {formatDate(job.lastCheckedAt)}</small>}</td><td><div className="table-actions"><button className="icon-button" title="查看任务详情与事件" onClick={() => void run(async () => setDetail({ job, events: await window.xinying.jobs.events(job.id) }))}><ListTree size={15} /></button>{job.status === "completed" && job.kind === "generation" && <button className="icon-button" title="下载" onClick={() => void run(() => window.xinying.jobs.download(job.id), "结果已保存")}><Download size={15} /></button>}{["needs-human", "needs-login", "failed"].includes(job.status) && <button className="icon-button" title="人工处理完成后恢复" onClick={() => confirm(resumeMessage) && void run(() => window.xinying.jobs.resume(job.id), "任务已恢复")}><RefreshCw size={15} /></button>}{["queued", "needs-human", "needs-login"].includes(job.status) && <button className="icon-button" title="取消尚未运行的任务" onClick={() => confirm("取消这项尚未运行的任务？") && void run(() => window.xinying.jobs.cancel(job.id), "任务已取消")}><X size={15} /></button>}{terminal(job) && <button className="icon-button danger" title="永久删除本地任务记录" onClick={() => removeJobs([job.id], "删除这条已结束的任务记录")}><Trash2 size={15} /></button>}</div></td></tr>;
+      return <tr key={job.id} className={selectedIds.has(job.id) ? "selected-job-row" : ""}>{manageMode && <td className="job-select-column"><button className={`job-row-check ${selectedIds.has(job.id) ? "checked" : ""}`} onClick={() => toggleSelected(job.id)}>{selectedIds.has(job.id) ? <CheckSquare2 size={17} /> : <Square size={17} />}</button></td>}<td><strong>{displayName(job)}</strong><span>任务 {job.id.slice(0, 8)}</span></td><td>{job.kind === "generation" ? "视频生成" : "人像审核"}</td><td><StatusPill status={job.status} /><RecoveryPill job={job} />{job.requiresHumanReason && <small className="human-reason">{job.requiresHumanReason}</small>}</td><td><div className={`job-progress ${progress === null && active(job) ? "indeterminate" : ""}`}><div><i style={{ width: `${progress ?? 0}%` }} /></div><span>{progress === null ? (active(job) ? "状态同步中" : "—") : `${Math.round(progress)}%`}</span></div><small className="job-stage-label">{automationStageLabels[job.automationStage]}</small>{job.progressLabel && <small className="job-progress-label" title={job.progressLabel}>{job.progressLabel}</small>}</td><td className="task-id-cell">{job.platformExecutionId ? `#${job.platformExecutionId}` : job.platformTaskId ?? "—"}</td><td>{formatDate(job.updatedAt)}{job.nextRetryAt && <small className="job-retry-at">重试 {formatDate(job.nextRetryAt)}</small>}{job.lastCheckedAt && <small className="job-checked-at">查询 {formatDate(job.lastCheckedAt)}</small>}</td><td><div className="table-actions"><button className="icon-button" title="查看任务详情与事件" onClick={() => void run(async () => setDetail({ job, events: await window.xinying.jobs.events(job.id) }))}><ListTree size={15} /></button>{job.status === "completed" && job.kind === "generation" && <button className="icon-button" title="下载" onClick={() => void run(() => window.xinying.jobs.download(job.id), "结果已保存")}><Download size={15} /></button>}{["needs-human", "needs-login", "failed"].includes(job.status) && <button className="icon-button" title="人工处理完成后恢复" onClick={() => confirm(resumeMessage) && void run(() => window.xinying.jobs.resume(job.id), "任务已恢复")}><RefreshCw size={15} /></button>}{["queued", "needs-human", "needs-login"].includes(job.status) && <button className="icon-button" title="取消尚未运行的任务" onClick={() => confirm("取消这项尚未运行的任务？") && void run(() => window.xinying.jobs.cancel(job.id), "任务已取消")}><X size={15} /></button>}{terminal(job) && <button className="icon-button danger" title="永久删除本地任务记录" onClick={() => removeJobs([job.id], "删除这条已结束的任务记录")}><Trash2 size={15} /></button>}</div></td></tr>;
     })}</tbody></table>{!visibleJobs.length && <EmptyState title={jobs.length ? "没有匹配的任务" : "暂无任务"} description={jobs.length ? "换一个状态或搜索关键词。" : "从生成工作台提交任务后，会出现在这里。"} />}</section>
-    {detail && <div className="modal-backdrop"><section className="confirm-modal job-detail-modal"><div className="panel-heading compact"><div><span className="eyebrow">TASK AUDIT</span><h2>任务详情</h2></div><StatusPill status={detail.job.status} /></div><dl className="job-facts"><div><dt>本地任务 ID</dt><dd>{detail.job.id}</dd></div><div><dt>心影会话定位</dt><dd>{detail.job.platformTaskId ?? "尚未生成"}</dd></div><div><dt>心影任务号</dt><dd>{detail.job.platformExecutionId ? `#${detail.job.platformExecutionId}` : "尚未绑定（旧任务将回退到对话查询）"}</dd></div><div><dt>生成进度</dt><dd>{detail.job.progress === null ? "等待心影返回" : `${detail.job.progress}%`} · {detail.job.progressLabel || "暂无说明"}</dd></div><div><dt>创建 / 更新</dt><dd>{formatDate(detail.job.createdAt)} / {formatDate(detail.job.updatedAt)}</dd></div>{detail.job.errorMessage && <div><dt>错误</dt><dd className="danger-text">{detail.job.errorCode} · {detail.job.errorMessage}</dd></div>}{detail.job.requiresHumanReason && <div><dt>人工处理</dt><dd className="warning-text">{detail.job.requiresHumanReason}</dd></div>}</dl>{detail.job.kind === "generation" && <><h3 className="detail-section-title">提交快照</h3><div className="snapshot-box"><span>{detail.job.promptSnapshot || "无提示词"}</span>{Object.entries(detail.job.parameters).map(([key, value]) => <small key={key}>{key}: {String(value)}</small>)}{detail.job.references.map((reference, index) => <small key={reference.id}>@素材{index + 1} · {reference.role} · {reference.name}</small>)}</div></>}<h3 className="detail-section-title">事件记录</h3><div className="event-list">{detail.events.map((event) => <div key={event.id}><span>{formatDate(event.createdAt)}</span><strong>{event.code}</strong><p>{event.message}</p></div>)}{!detail.events.length && <span className="muted-text">暂无事件</span>}</div><div className="modal-actions"><button className="button primary" onClick={() => setDetail(null)}>关闭</button></div></section></div>}
+    {detail && <div className="modal-backdrop"><section className="confirm-modal job-detail-modal"><div className="panel-heading compact"><div><span className="eyebrow">TASK AUDIT</span><h2>任务详情</h2></div><div className="detail-status"><StatusPill status={detail.job.status} /><RecoveryPill job={detail.job} /></div></div><dl className="job-facts"><div><dt>本地任务 ID</dt><dd>{detail.job.id}</dd></div><div><dt>自动化检查点</dt><dd>{automationStageLabels[detail.job.automationStage]} · 已恢复 {detail.job.retryCount} 次{detail.job.nextRetryAt ? ` · 下次 ${formatDate(detail.job.nextRetryAt)}` : ""}</dd></div><div><dt>心影会话定位</dt><dd>{detail.job.platformTaskId ?? "尚未生成"}</dd></div><div><dt>心影任务号</dt><dd>{detail.job.platformExecutionId ? `#${detail.job.platformExecutionId}` : "尚未绑定（旧任务将回退到对话查询）"}</dd></div><div><dt>生成进度</dt><dd>{detail.job.progress === null ? "等待心影返回" : `${detail.job.progress}%`} · {detail.job.progressLabel || "暂无说明"}</dd></div><div><dt>创建 / 更新</dt><dd>{formatDate(detail.job.createdAt)} / {formatDate(detail.job.updatedAt)}</dd></div>{detail.job.lastRecoveryCode && <div><dt>最近恢复原因</dt><dd>{detail.job.lastRecoveryCode}</dd></div>}{detail.job.errorMessage && <div><dt>错误</dt><dd className="danger-text">{detail.job.errorCode} · {detail.job.errorMessage}</dd></div>}{detail.job.requiresHumanReason && <div><dt>人工处理</dt><dd className="warning-text">{detail.job.requiresHumanReason}</dd></div>}</dl>{detail.job.kind === "generation" && <><h3 className="detail-section-title">提交快照</h3><div className="snapshot-box"><span>{detail.job.promptSnapshot || "无提示词"}</span>{Object.entries(detail.job.parameters).map(([key, value]) => <small key={key}>{key}: {String(value)}</small>)}{detail.job.references.map((reference, index) => <small key={reference.id}>@素材{index + 1} · {reference.role} · {reference.name}</small>)}</div></>}<h3 className="detail-section-title">事件记录</h3><div className="event-list">{detail.events.map((event) => <div key={event.id}><span>{formatDate(event.createdAt)}</span><strong>{event.code}</strong><p>{event.message}</p></div>)}{!detail.events.length && <span className="muted-text">暂无事件</span>}</div><div className="modal-actions"><button className="button primary" onClick={() => setDetail(null)}>关闭</button></div></section></div>}
   </div>;
 }
 

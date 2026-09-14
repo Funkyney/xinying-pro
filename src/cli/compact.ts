@@ -84,6 +84,10 @@ export function compactJob(job: Job) {
     platformExecutionId: job.platformExecutionId,
     progress: job.progress,
     progressLabel: job.progressLabel,
+    automationStage: job.automationStage,
+    recoveryState: job.recoveryState,
+    nextRetryAt: job.nextRetryAt,
+    lastRecoveryCode: job.lastRecoveryCode,
     errorCode: job.errorCode,
     errorMessage: job.errorMessage,
     requiresHumanReason: job.requiresHumanReason,
@@ -99,6 +103,7 @@ export function compactBatch(batch: GenerationBatch) {
   return {
     batchId: batch.batchId,
     count: batch.count,
+    deduplicated: batch.deduplicated,
     jobs: batch.jobs.map(compactJob),
   };
 }

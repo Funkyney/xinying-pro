@@ -2,6 +2,7 @@ import type { Job } from "../shared/contracts";
 import type { XinyingService } from "../core/service";
 import { asAppError } from "../core/errors";
 import type { PlaywrightXinyingAdapter, AdapterOutcome } from "./playwright-adapter";
+import { classifyAutomationFailure, classifyThrownAutomationError, type RecoveryDecision } from "./recovery-engine";
 
 type AutomationViewRunner = <T>(operation: () => Promise<T>, label?: string) => Promise<T>;
 type BackgroundAutomationRunner = <T>(operation: () => Promise<T>) => Promise<T | undefined>;
@@ -9,8 +10,6 @@ type BackgroundAutomationRunner = <T>(operation: () => Promise<T>) => Promise<T 
 const PORTRAIT_MONITOR_INTERVAL_MS = 10_000;
 const PORTRAIT_INSPECTION_TIMEOUT_MS = 5_000;
 const PORTRAIT_RETRY_AFTER_SKIP_MS = 5_000;
-const PORTRAIT_AUTOMATION_RETRY_LIMIT = 5;
-const GENERATION_AUTOMATION_RETRY_LIMIT = 3;
 
 function portraitMonitorDelay(job: Job, attempt: number, now = Date.now()): number {
   const submittedAt = Date.parse(job.submittedAt ?? job.createdAt);
@@ -31,22 +30,6 @@ function integerJobParameter(job: Job, key: string): number | null {
   return Number.isInteger(value) ? Number(value) : null;
 }
 
-function shouldRetryAutomationCheckpoint(job: Job, outcome: AdapterOutcome): boolean {
-  if (outcome.status !== "needs-human") return false;
-  if (job.kind === "portrait-review") {
-    if (job.retryCount >= PORTRAIT_AUTOMATION_RETRY_LIMIT) return false;
-    if (outcome.checkpoint.reason === "page-changed") return true;
-    return outcome.checkpoint.reason === "approval"
-      && /表单|提交条件|未关闭|素材槽位|角色库/.test(outcome.checkpoint.message);
-  }
-  if (job.retryCount >= GENERATION_AUTOMATION_RETRY_LIMIT) return false;
-  if (outcome.checkpoint.reason === "page-changed") {
-    return /认证角色库|虚拟人像|素材槽位|生成页|上传入口|确认按钮|实际编号|页面.*加载/.test(outcome.checkpoint.message);
-  }
-  return outcome.checkpoint.reason === "approval"
-    && /认证角色库|所选虚拟人像|素材槽位/.test(outcome.checkpoint.message);
-}
-
 export class JobWorker {
   private queueTimer: NodeJS.Timeout | null = null;
   private monitorTimer: NodeJS.Timeout | null = null;
@@ -63,9 +46,9 @@ export class JobWorker {
 
   start(): void {
     if (this.queueTimer) return;
-    this.queueTimer = setInterval(() => void this.processQueue(), 2_000);
-    this.monitorTimer = setInterval(() => void this.monitorRunning(), PORTRAIT_MONITOR_INTERVAL_MS);
-    void this.processQueue();
+    this.queueTimer = setInterval(() => this.kickQueue(), 2_000);
+    this.monitorTimer = setInterval(() => this.kickMonitor(), PORTRAIT_MONITOR_INTERVAL_MS);
+    this.kickQueue();
   }
 
   stop(): void {
@@ -73,6 +56,22 @@ export class JobWorker {
     if (this.monitorTimer) clearInterval(this.monitorTimer);
     this.queueTimer = null;
     this.monitorTimer = null;
+  }
+
+  private kickQueue(): void {
+    void this.processQueue().catch((error: unknown) => {
+      // Never let an infrastructure failure escape the timer as an unhandled
+      // main-process rejection. A later tick will retry reading the queue.
+      const appError = asAppError(error);
+      process.stderr.write(`[job-worker] queue tick failed: ${appError.code} ${appError.message}\n`);
+    });
+  }
+
+  private kickMonitor(): void {
+    void this.monitorRunning().catch((error: unknown) => {
+      const appError = asAppError(error);
+      process.stderr.write(`[job-worker] monitor tick failed: ${appError.code} ${appError.message}\n`);
+    });
   }
 
   async refreshGenerationJobs(ids?: string[]): Promise<Job[]> {
@@ -123,10 +122,22 @@ export class JobWorker {
 
   private async processQueue(): Promise<void> {
     if (this.processing) return;
-    const job = this.service.nextQueuedJob();
-    if (!job) return;
+    const queuedJob = this.service.nextQueuedJob();
+    if (!queuedJob) return;
     this.processing = true;
+    let job = queuedJob;
     try {
+      if (job.recoveryState === "scheduled") {
+        job = this.service.updateJob(job.id, {
+          automationStage: "recovering",
+          recoveryState: "recovering",
+          nextRetryAt: null,
+          progressLabel: `自动修复第 ${job.retryCount} 次：正在恢复心影操作`,
+        });
+        this.service.addJobEvent(job.id, "info", "AUTO_RECOVERY_STARTED", `开始第 ${job.retryCount} 次自动恢复`, {
+          previousCode: job.lastRecoveryCode,
+        });
+      }
       let reuseFromPlatformTaskId: string | undefined;
       if (job.kind === "generation") {
         reuseFromPlatformTaskId = stringJobParameter(job, "reuseFromPlatformTaskId") || undefined;
@@ -136,14 +147,27 @@ export class JobWorker {
           const predecessor = this.service.findGenerationBatchTake(batchId, takeNumber - 1);
           if (!predecessor || !["running", "completed"].includes(predecessor.status) || !predecessor.platformTaskId?.startsWith("chat:")) {
             const message = `批次第 ${takeNumber - 1} 条尚未在心影确认提交，无法安全复用生成第 ${takeNumber} 条`;
-            this.service.updateJob(job.id, { status: "needs-human", requiresHumanReason: message });
+            this.service.updateJob(job.id, {
+              status: "needs-human",
+              automationStage: "attention",
+              recoveryState: "manual",
+              nextRetryAt: null,
+              lastRecoveryCode: "REUSE_SOURCE_UNAVAILABLE",
+              requiresHumanReason: message,
+            });
             this.service.addJobEvent(job.id, "warning", "REUSE_SOURCE_UNAVAILABLE", message, { batchId, takeNumber });
             return;
           }
           reuseFromPlatformTaskId = predecessor.platformTaskId;
         }
       }
-      this.service.updateJob(job.id, { status: "submitting", submittedAt: new Date().toISOString() });
+      job = this.service.updateJob(job.id, {
+        status: "submitting",
+        automationStage: job.kind === "generation" ? "preparing" : "authorizing",
+        recoveryState: job.recoveryState === "recovering" ? "recovering" : "none",
+        nextRetryAt: null,
+        submittedAt: job.submittedAt ?? new Date().toISOString(),
+      });
       this.service.addJobEvent(
         job.id,
         "info",
@@ -157,15 +181,8 @@ export class JobWorker {
       job.kind === "generation" ? "正在向心影提交视频生成" : "正在向心影提交虚拟人像审核");
       this.applyOutcome(job, outcome);
     } catch (error) {
-      const appError = asAppError(error);
-      const status = appError.code === "PLAYWRIGHT_NOT_CONNECTED" || appError.code === "PLATFORM_PAGE_NOT_FOUND" ? "needs-login" : "failed";
-      this.service.updateJob(job.id, {
-        status,
-        errorCode: appError.code,
-        errorMessage: appError.message,
-        requiresHumanReason: status === "needs-login" ? "请打开 APP 并完成飞书扫码登录" : null,
-      });
-      this.service.addJobEvent(job.id, "error", appError.code, appError.message);
+      const current = this.service.getJob(job.id);
+      this.applyRecoveryDecision(current, classifyThrownAutomationError(current, error));
     } finally {
       this.processing = false;
     }
@@ -235,47 +252,109 @@ export class JobWorker {
     }
   }
 
+  private applyRecoveryDecision(job: Job, decision: RecoveryDecision): void {
+    if (decision.action === "retry") {
+      const retryCount = job.retryCount + 1;
+      const nextRetryAt = new Date(Date.now() + decision.delayMs).toISOString();
+      this.service.updateJob(job.id, {
+        status: "queued",
+        automationStage: "recovering",
+        recoveryState: "scheduled",
+        nextRetryAt,
+        lastRecoveryCode: decision.code,
+        errorCode: decision.code,
+        errorMessage: decision.message,
+        requiresHumanReason: null,
+        retryCount,
+        progressLabel: `自动修复 ${retryCount}/${decision.maxAttempts}：${decision.message}`,
+      });
+      if (job.kind === "portrait-review" && job.portraitId) {
+        this.service.updatePortraitReviewState(job.portraitId, "queued", `自动修复 ${retryCount}/${decision.maxAttempts}：${decision.message}`);
+      }
+      this.service.addJobEvent(job.id, "warning", "AUTO_RECOVERY_SCHEDULED", decision.message, {
+        category: decision.category,
+        failureCode: decision.code,
+        retryCount,
+        maxAttempts: decision.maxAttempts,
+        nextRetryAt,
+        verifiesPendingSubmission: job.platformTaskId?.startsWith("pending-chat:") || false,
+      });
+      return;
+    }
+
+    if (decision.action === "manual") {
+      const exhausted = decision.maxAttempts > 0 && job.retryCount >= decision.maxAttempts;
+      const status = decision.category === "login" ? "needs-login" : "needs-human";
+      this.service.updateJob(job.id, {
+        status,
+        automationStage: "attention",
+        recoveryState: exhausted ? "exhausted" : "manual",
+        nextRetryAt: null,
+        lastRecoveryCode: decision.code,
+        errorCode: decision.code,
+        errorMessage: decision.message,
+        requiresHumanReason: decision.category === "login" ? "请在心影Pro完成飞书扫码登录，任务会保留当前检查点" : decision.message,
+        progressLabel: exhausted ? "自动修复次数已用完，等待人工确认" : "需要人工完成安全检查",
+      });
+      this.service.addJobEvent(job.id, "warning", exhausted ? "AUTO_RECOVERY_EXHAUSTED" : "AUTO_RECOVERY_NEEDS_HUMAN", decision.message, {
+        category: decision.category,
+        failureCode: decision.code,
+        retryCount: job.retryCount,
+      });
+      return;
+    }
+
+    this.service.updateJob(job.id, {
+      status: "failed",
+      automationStage: "failed",
+      recoveryState: "exhausted",
+      nextRetryAt: null,
+      lastRecoveryCode: decision.code,
+      errorCode: decision.code,
+      errorMessage: decision.message,
+      requiresHumanReason: null,
+      progressLabel: decision.message,
+      completedAt: new Date().toISOString(),
+    });
+    if (job.kind === "portrait-review" && job.portraitId) {
+      this.service.updatePortraitReviewState(job.portraitId, "rejected", decision.message);
+    }
+    this.service.addJobEvent(job.id, "error", decision.code, decision.message, { category: decision.category });
+  }
+
   private applyOutcome(job: Job, outcome: AdapterOutcome, logRunning = true): void {
     if (outcome.status === "needs-login") {
-      this.service.updateJob(job.id, { status: "needs-login", requiresHumanReason: outcome.message });
-      this.service.addJobEvent(job.id, "warning", "NEEDS_LOGIN", outcome.message);
+      this.applyRecoveryDecision(job, classifyAutomationFailure(job, {
+        code: "NEEDS_LOGIN",
+        message: outcome.message,
+        reason: "login",
+      }));
       return;
     }
     if (outcome.status === "needs-human") {
-      if (shouldRetryAutomationCheckpoint(job, outcome)) {
-        const retryCount = job.retryCount + 1;
-        this.service.updateJob(job.id, {
-          status: "queued",
-          platformTaskId: outcome.platformTaskId ?? job.platformTaskId,
-          requiresHumanReason: null,
-          retryCount,
-        });
-        if (job.kind === "portrait-review" && job.portraitId) {
-          this.service.updatePortraitReviewState(job.portraitId, "queued", `自动恢复第 ${retryCount} 次：${outcome.checkpoint.message}`);
-        }
-        this.service.addJobEvent(
-          job.id,
-          "warning",
-          "AUTOMATION_RETRY",
-          `页面临时状态未完成，APP 将自动清理草稿并重试（${retryCount}/${job.kind === "portrait-review" ? PORTRAIT_AUTOMATION_RETRY_LIMIT : GENERATION_AUTOMATION_RETRY_LIMIT}）`,
-          { reason: outcome.checkpoint.reason, previousMessage: outcome.checkpoint.message, retryCount },
-        );
-        return;
-      }
-      this.service.updateJob(job.id, {
-        status: "needs-human",
-        platformTaskId: outcome.platformTaskId ?? job.platformTaskId,
-        requiresHumanReason: outcome.checkpoint.message,
-      });
-      if (job.kind === "portrait-review" && job.portraitId) {
-        this.service.updatePortraitReviewState(job.portraitId, "needs-human", outcome.checkpoint.message);
-      }
-      this.service.addJobEvent(job.id, "warning", `NEEDS_${outcome.checkpoint.reason.toUpperCase()}`, outcome.checkpoint.message);
+      const current = outcome.platformTaskId && outcome.platformTaskId !== job.platformTaskId
+        ? this.service.updateJob(job.id, { platformTaskId: outcome.platformTaskId })
+        : job;
+      this.applyRecoveryDecision(current, classifyAutomationFailure(current, {
+        code: `NEEDS_${outcome.checkpoint.reason.toUpperCase()}`,
+        message: outcome.checkpoint.message,
+        reason: outcome.checkpoint.reason,
+        pendingSubmission: current.platformTaskId?.startsWith("pending-chat:") || false,
+      }));
       return;
     }
     if (outcome.status === "failed") {
+      const decision = classifyAutomationFailure(job, { code: outcome.code, message: outcome.message });
+      if (decision.action !== "fail") {
+        this.applyRecoveryDecision(job, decision);
+        return;
+      }
       this.service.updateJob(job.id, {
         status: "failed",
+        automationStage: "failed",
+        recoveryState: "exhausted",
+        nextRetryAt: null,
+        lastRecoveryCode: outcome.code,
         platformTaskId: outcome.platformTaskId ?? job.platformTaskId,
         platformExecutionId: outcome.platformExecutionId ?? job.platformExecutionId,
         progress: outcome.progress ?? job.progress,
@@ -295,6 +374,10 @@ export class JobWorker {
     if (outcome.status === "completed") {
       this.service.updateJob(job.id, {
         status: "completed",
+        automationStage: "completed",
+        recoveryState: "none",
+        nextRetryAt: null,
+        lastRecoveryCode: null,
         platformTaskId: outcome.platformTaskId ?? job.platformTaskId,
         platformExecutionId: outcome.platformExecutionId ?? job.platformExecutionId,
         progress: outcome.progress ?? 100,
@@ -303,6 +386,8 @@ export class JobWorker {
         outputUrl: outcome.outputPath ? null : outcome.outputUrl ?? null,
         outputPath: outcome.outputPath ?? null,
         completedAt: new Date().toISOString(),
+        errorCode: null,
+        errorMessage: null,
         requiresHumanReason: null,
       });
       if (job.kind === "portrait-review" && job.portraitId) {
@@ -314,11 +399,17 @@ export class JobWorker {
     }
     this.service.updateJob(job.id, {
       status: "running",
+      automationStage: job.kind === "generation" ? "submitted" : "monitoring",
+      recoveryState: "none",
+      nextRetryAt: null,
+      lastRecoveryCode: null,
       platformTaskId: outcome.platformTaskId ?? job.platformTaskId,
       platformExecutionId: outcome.platformExecutionId ?? job.platformExecutionId,
       progress: outcome.progress ?? job.progress,
       progressLabel: outcome.progressLabel ?? outcome.message,
       lastCheckedAt: job.kind === "generation" ? new Date().toISOString() : job.lastCheckedAt,
+      errorCode: null,
+      errorMessage: null,
       requiresHumanReason: null,
     });
     if (job.kind === "generation" && job.projectId) {
@@ -334,7 +425,3 @@ export class JobWorker {
     if (logRunning) this.service.addJobEvent(job.id, "info", "RUNNING", outcome.message);
   }
 }
-
-export const jobWorkerInternals = {
-  shouldRetryAutomationCheckpoint,
-};

@@ -65,10 +65,10 @@ Seedance 2.5 默认写 `videoFormat: "mp4"` 与 `networkEnabled: true`；用户�
 安全门禁满足后，首选只调用一次心影Pro MCP `generate`：
 
 ```json
-{"manifestPath":"<absolute-manifest-path>","confirm":true}
+{"manifestPath":"<absolute-manifest-path>","requestId":"<stable-id-for-this-user-request>","confirm":true}
 ```
 
-用户明确改变数量时增加 `count: N`。MCP 会保持到整个流程返回，不要同时再启动 CLI 或第二次 `generate`。
+同一次用户生成指令必须始终复用相同的 `requestId`，包括 MCP 返回中断后的重试；用户明确要求再生成一批时才更换 `requestId`。这样 APP 会复用已有任务，防止重复点击生成和重复扣费。用户明确改变数量时增加 `count: N`。MCP 会保持到整个流程返回，不要同时再启动 CLI 或第二次 `generate`。
 
 当前 Codex 会话没有心影Pro MCP 时，才执行：
 
@@ -82,7 +82,7 @@ director run --manifest "<absolute-manifest-path>" --confirm
 
 1. 校验清单并按顺序配置本地项目；
 2. 复用相同文件已通过的虚拟人像，其他含人图片/视频分别使用干净表单，自动填写名称、默认资料和合规承诺后排队审核；
-3. 在 APP 内部等待审核、自动恢复临时表单错误、回绑新角色，并把人物素材在原位置替换为已授权虚拟人像；
+3. 在 APP 内部等待审核、持久化阶段检查点、自动恢复临时表单/连接错误、回绑新角色，并把人物素材在原位置替换为已授权虚拟人像；
 4. 按 `count` 依次提交，后续条目复用上一条心影对话；
 5. 所有任务达到 `running` 或 `completed` 后返回一个精简 JSON。
 
@@ -92,6 +92,7 @@ director run --manifest "<absolute-manifest-path>" --confirm
 
 - `APP_NOT_RUNNING/needs-login`：让用户启动 APP 或扫码后，继续原任务。
 - 上传表单残留、资料下拉框暂时不可用、角色库刚审核完尚未重绘、角色卡编号或图片/视频类型变化：全部由 APP 内部自动清理、重试、回绑和重写编号；不要执行 `job resume`，不要让用户删除重传、改提示词或进入网页补操作。
+- MCP 连接中断、`write EOF`、页面上下文失效、SQLite 暂时繁忙或心影提示任务占用：APP 会按检查点有限重试；如果生成按钮附近已经记录 `pending-chat`，每次恢复都必须先查重，绝不能直接再次点击生成。
 - `DIRECTOR_AUTHORIZATION_BLOCKED/needs-human`：只报告命令最终返回的真实原因。只有登录失效、心影明确驳回、授权/权限不足、付费确认或平台持续故障才让用户进入“原网页模式”处理。
 - 多人、背脸、远景或人物不完整：仍按含人素材送审，不得自行拆图或降级。只有心影表单、接口或审核任务明确返回失败后才暂停。
 - `DIRECTOR_NOT_READY/PROJECT_NOT_READY`：按返回的精简 `warnings` 修复引用、模型、参数或项目绑定。

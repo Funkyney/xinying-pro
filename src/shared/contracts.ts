@@ -3,6 +3,19 @@ export type VideoFormat = "mp4" | "mov";
 export type ReferenceRole = "first-frame" | "last-frame" | "character" | "scene" | "product" | "style" | "motion" | "other";
 export type ProjectStatus = "draft" | "ready" | "archived";
 export type JobKind = "generation" | "portrait-review";
+export type JobAutomationStage =
+  | "queued"
+  | "preparing"
+  | "authorizing"
+  | "submitting"
+  | "submitted"
+  | "monitoring"
+  | "recovering"
+  | "attention"
+  | "completed"
+  | "failed"
+  | "cancelled";
+export type JobRecoveryState = "none" | "scheduled" | "recovering" | "manual" | "exhausted";
 export type JobStatus =
   | "draft"
   | "queued"
@@ -198,6 +211,7 @@ export interface DirectorRunRequest {
   manifestPath: string;
   count?: number;
   timeoutMs?: number;
+  requestId?: string;
   confirm: boolean;
 }
 
@@ -205,6 +219,7 @@ export interface GenerationBatch {
   batchId: string;
   count: number;
   jobs: Job[];
+  deduplicated: boolean;
 }
 
 export interface ResultReuseInput {
@@ -367,6 +382,10 @@ export interface Job {
   errorMessage: string | null;
   requiresHumanReason: string | null;
   retryCount: number;
+  automationStage: JobAutomationStage;
+  recoveryState: JobRecoveryState;
+  nextRetryAt: string | null;
+  lastRecoveryCode: string | null;
   createdAt: string;
   submittedAt: string | null;
   completedAt: string | null;

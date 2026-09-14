@@ -133,6 +133,10 @@ interface JobRow {
   error_message: string | null;
   requires_human_reason: string | null;
   retry_count: number;
+  automation_stage: Job["automationStage"];
+  recovery_state: Job["recoveryState"];
+  next_retry_at: string | null;
+  last_recovery_code: string | null;
   created_at: string;
   submitted_at: string | null;
   completed_at: string | null;
@@ -315,6 +319,10 @@ export class XinyingDatabase {
         error_message TEXT,
         requires_human_reason TEXT,
         retry_count INTEGER NOT NULL DEFAULT 0,
+        automation_stage TEXT NOT NULL DEFAULT 'queued',
+        recovery_state TEXT NOT NULL DEFAULT 'none',
+        next_retry_at TEXT,
+        last_recovery_code TEXT,
         created_at TEXT NOT NULL,
         submitted_at TEXT,
         completed_at TEXT,
@@ -438,6 +446,28 @@ export class XinyingDatabase {
     if (!jobColumns.has("last_checked_at")) {
       this.db.exec("ALTER TABLE jobs ADD COLUMN last_checked_at TEXT");
     }
+    if (!jobColumns.has("automation_stage")) {
+      this.db.exec("ALTER TABLE jobs ADD COLUMN automation_stage TEXT NOT NULL DEFAULT 'queued'");
+      this.db.exec(`UPDATE jobs SET automation_stage = CASE status
+        WHEN 'submitting' THEN 'submitting'
+        WHEN 'running' THEN 'monitoring'
+        WHEN 'completed' THEN 'completed'
+        WHEN 'failed' THEN 'failed'
+        WHEN 'needs-login' THEN 'attention'
+        WHEN 'needs-human' THEN 'attention'
+        WHEN 'cancelled' THEN 'cancelled'
+        ELSE 'queued' END`);
+    }
+    if (!jobColumns.has("recovery_state")) {
+      this.db.exec("ALTER TABLE jobs ADD COLUMN recovery_state TEXT NOT NULL DEFAULT 'none'");
+    }
+    if (!jobColumns.has("next_retry_at")) {
+      this.db.exec("ALTER TABLE jobs ADD COLUMN next_retry_at TEXT");
+    }
+    if (!jobColumns.has("last_recovery_code")) {
+      this.db.exec("ALTER TABLE jobs ADD COLUMN last_recovery_code TEXT");
+    }
+    this.db.exec("CREATE INDEX IF NOT EXISTS idx_jobs_retry ON jobs(status, next_retry_at, created_at)");
   }
 
   mapProject(row: ProjectRow): Project {
@@ -575,6 +605,10 @@ export class XinyingDatabase {
       errorMessage: row.error_message,
       requiresHumanReason: row.requires_human_reason,
       retryCount: row.retry_count,
+      automationStage: row.automation_stage,
+      recoveryState: row.recovery_state,
+      nextRetryAt: row.next_retry_at,
+      lastRecoveryCode: row.last_recovery_code,
       createdAt: row.created_at,
       submittedAt: row.submitted_at,
       completedAt: row.completed_at,
@@ -619,6 +653,7 @@ export class XinyingDatabase {
       progress, progress_label, last_checked_at, '' AS prompt_snapshot,
       '{}' AS parameters_json, '[]' AS references_json, output_path, output_url,
       error_code, error_message, requires_human_reason, retry_count, created_at,
+      automation_stage, recovery_state, next_retry_at, last_recovery_code,
       submitted_at, completed_at, updated_at
       FROM jobs ORDER BY created_at DESC`).all() as JobRow[],
     jobsByKind: (kind: JobKind) =>
@@ -630,6 +665,10 @@ export class XinyingDatabase {
         AND json_extract(parameters_json, '$.batchId') = ?
         AND json_extract(parameters_json, '$.takeNumber') = ?
       LIMIT 1`).get(batchId, takeNumber) as JobRow | undefined,
+    generationJobsByDirectorRun: (directorRunKey: string) => this.db.prepare(`SELECT * FROM jobs
+      WHERE kind = 'generation'
+        AND json_extract(parameters_json, '$.directorRunKey') = ?
+      ORDER BY CAST(json_extract(parameters_json, '$.takeNumber') AS INTEGER) ASC, created_at ASC`).all(directorRunKey) as JobRow[],
     jobsByStatus: (status: JobStatus) =>
       this.db.prepare("SELECT * FROM jobs WHERE status = ? ORDER BY created_at DESC").all(status) as JobRow[],
     jobsByProject: (projectId: string) =>
@@ -639,7 +678,7 @@ export class XinyingDatabase {
     queuedJobs: () =>
       this.db.prepare("SELECT * FROM jobs WHERE status = 'queued' ORDER BY created_at ASC").all() as JobRow[],
     nextQueuedJob: () =>
-      this.db.prepare("SELECT * FROM jobs WHERE status = 'queued' ORDER BY created_at ASC LIMIT 1").get() as JobRow | undefined,
+      this.db.prepare("SELECT * FROM jobs WHERE status = 'queued' AND (next_retry_at IS NULL OR next_retry_at <= ?) ORDER BY created_at ASC LIMIT 1").get(new Date().toISOString()) as JobRow | undefined,
     job: (id: string) => this.db.prepare("SELECT * FROM jobs WHERE id = ?").get(id) as JobRow | undefined,
     events: (jobId: string) =>
       this.db.prepare("SELECT * FROM job_events WHERE job_id = ? ORDER BY id ASC").all(jobId) as EventRow[],

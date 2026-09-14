@@ -113,7 +113,8 @@ describe("JobWorker", () => {
     const paused = service.getJob(queued.id);
     expect(paused.status).toBe("needs-human");
     expect(paused.requiresHumanReason).toBe("请人工确认付费");
-    expect(service.listJobEvents(queued.id).at(-1)?.code).toBe("NEEDS_PAYMENT");
+    expect(paused.recoveryState).toBe("manual");
+    expect(service.listJobEvents(queued.id).at(-1)?.code).toBe("AUTO_RECOVERY_NEEDS_HUMAN");
   });
 
   it("automatically resets and retries transient portrait form failures", async () => {
@@ -135,11 +136,58 @@ describe("JobWorker", () => {
 
     await (worker as unknown as { processQueue(): Promise<void> }).processQueue();
     expect(service.getJob(queued.id)).toMatchObject({ status: "queued", retryCount: 1, requiresHumanReason: null });
-    expect(service.listJobEvents(queued.id).at(-1)?.code).toBe("AUTOMATION_RETRY");
+    expect(service.getJob(queued.id)).toMatchObject({ automationStage: "recovering", recoveryState: "scheduled" });
+    expect(service.listJobEvents(queued.id).at(-1)?.code).toBe("AUTO_RECOVERY_SCHEDULED");
 
+    service.updateJob(queued.id, { nextRetryAt: new Date(Date.now() - 1).toISOString() });
     await (worker as unknown as { processQueue(): Promise<void> }).processQueue();
     expect(service.getJob(queued.id)).toMatchObject({ status: "running", platformTaskId: "portrait:approved-next" });
     expect(adapter.submitPortraitReview).toHaveBeenCalledTimes(2);
+  });
+
+  it("recovers from a main-process EOF without creating or submitting a second job", async () => {
+    const project = service.createProject({ name: "断线续跑", prompt: "固定机位", mode: "text-to-video" });
+    const queued = service.submitGeneration(project.id);
+    const adapter = {
+      submitGeneration: vi.fn()
+        .mockImplementationOnce(async () => {
+          service.updateJob(queued.id, { platformTaskId: "pending-chat:platform-project:test-session:0" });
+          throw new Error("write EOF");
+        })
+        .mockResolvedValueOnce({
+          status: "running",
+          platformTaskId: "chat:platform-project:test-session:0",
+          message: "已在心影生成中",
+        }),
+      submitPortraitReview: vi.fn(),
+    } as unknown as PlaywrightXinyingAdapter;
+    const worker = new JobWorker(service, adapter);
+
+    await (worker as unknown as { processQueue(): Promise<void> }).processQueue();
+    expect(service.getJob(queued.id)).toMatchObject({
+      status: "queued",
+      retryCount: 1,
+      recoveryState: "scheduled",
+      platformTaskId: "pending-chat:platform-project:test-session:0",
+    });
+    expect(service.listJobsByKind("generation")).toHaveLength(1);
+    expect(service.listJobEvents(queued.id).at(-1)?.metadata).toMatchObject({ verifiesPendingSubmission: true });
+
+    service.updateJob(queued.id, { nextRetryAt: new Date(Date.now() - 1).toISOString() });
+    await (worker as unknown as { processQueue(): Promise<void> }).processQueue();
+
+    expect(service.getJob(queued.id)).toMatchObject({
+      status: "running",
+      platformTaskId: "chat:platform-project:test-session:0",
+      recoveryState: "none",
+      automationStage: "submitted",
+    });
+    expect(service.listJobsByKind("generation")).toHaveLength(1);
+    expect(adapter.submitGeneration).toHaveBeenCalledTimes(2);
+    expect(adapter.submitGeneration).toHaveBeenLastCalledWith(
+      expect.objectContaining({ id: queued.id, platformTaskId: "pending-chat:platform-project:test-session:0" }),
+      undefined,
+    );
   });
 
   it("submits the first take normally and chains later takes through Heart reuse editing", async () => {

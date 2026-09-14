@@ -1389,7 +1389,7 @@ export class XinyingService {
       `已从结果库复用并加入队列（第 ${index + 1}/${input.count} 条）`,
       { resultId: result.id, sourcePlatformTaskId: result.platformTaskId, batchId },
     ));
-    return { batchId, count: input.count, jobs: jobIds.map((id) => this.getJob(id)) };
+    return { batchId, count: input.count, jobs: jobIds.map((id) => this.getJob(id)), deduplicated: false };
   }
 
   syncPlatformResults(projectId: string, results: PlatformResult[], source: PlatformResultSource = "personal"): PlatformResult[] {
@@ -1425,9 +1425,15 @@ export class XinyingService {
       if (job.status === "completed") continue;
       this.updateJob(job.id, {
         status: "completed",
+        automationStage: "completed",
+        recoveryState: "none",
+        nextRetryAt: null,
+        lastRecoveryCode: null,
         outputUrl: result.outputPath ? null : result.outputUrl,
         outputPath: result.outputPath,
         completedAt: result.createdAt || syncedAt,
+        errorCode: null,
+        errorMessage: null,
         requiresHumanReason: null,
       });
       this.addJobEvent(job.id, "info", "COMPLETED_ON_RESULT_SYNC", "同步结果库时检测到对应心影视频，本地任务已标记完成");
@@ -1655,9 +1661,26 @@ export class XinyingService {
     return this.submitGenerationBatch(projectId, 1).jobs[0];
   }
 
-  submitGenerationBatch(projectId: string, count: number): GenerationBatch {
+  submitGenerationBatch(projectId: string, count: number, directorRunKey?: string): GenerationBatch {
     if (!Number.isInteger(count) || count < 1 || count > 20) {
       throw new AppError("INVALID_GENERATION_COUNT", "单次批量生成数量必须是 1 到 20 的整数");
+    }
+    const normalizedRunKey = directorRunKey?.trim() || "";
+    if (normalizedRunKey) {
+      const existing = this.database.rows.generationJobsByDirectorRun(normalizedRunKey).map((row) => this.database.mapJob(row));
+      if (existing.length) {
+        if (existing.some((job) => job.projectId !== projectId) || existing.length !== count) {
+          throw new AppError("DIRECTOR_RUN_KEY_CONFLICT", "自动生成请求标识与已有任务不一致，已停止以防止重复扣费");
+        }
+        const batchId = String(existing[0].parameters.batchId ?? "");
+        if (!batchId || existing.some((job) => job.parameters.batchId !== batchId)) {
+          throw new AppError("DIRECTOR_RUN_KEY_CONFLICT", "已有自动生成任务的批次记录不完整，已停止以防止重复扣费");
+        }
+        for (const job of existing) {
+          this.addJobEvent(job.id, "info", "DIRECTOR_RUN_DEDUPLICATED", "检测到同一自动生成请求，已复用原任务而未重复提交", { directorRunKey: normalizedRunKey });
+        }
+        return { batchId, count, jobs: existing, deduplicated: true };
+      }
     }
     const preview = this.previewSubmission(projectId);
     if (!preview.ready) {
@@ -1711,6 +1734,7 @@ export class XinyingService {
             materialOrder: preview.project.materialOrder,
             platformPortraits: preview.selectedPortraits,
             batchId,
+            directorRunKey: normalizedRunKey || undefined,
             takeNumber: takeIndex + 1,
             takeCount: count,
           }),
@@ -1732,7 +1756,7 @@ export class XinyingService {
         ? "生成任务已加入本地队列"
         : `批次 ${batchId.slice(0, 8)} 的第 ${index + 1}/${count} 条生成任务已加入本地队列`, { batchId, takeNumber: index + 1, takeCount: count });
     }
-    return { batchId, count, jobs: prepared.map((item) => this.getJob(item.id)) };
+    return { batchId, count, jobs: prepared.map((item) => this.getJob(item.id)), deduplicated: false };
   }
 
   submitPortraitReview(portraitId: string, projectId?: string): Job {
@@ -1803,8 +1827,31 @@ export class XinyingService {
   recoverInterruptedJobs(): Job[] {
     const interrupted = this.database.rows.jobsByStatus("submitting").map((row) => this.database.mapJob(row));
     for (const job of interrupted) {
+      if (job.kind === "generation" && job.platformTaskId?.startsWith("pending-chat:")) {
+        this.updateJob(job.id, {
+          status: "queued",
+          automationStage: "recovering",
+          recoveryState: "scheduled",
+          nextRetryAt: now(),
+          lastRecoveryCode: "APP_RESTART_DURING_SUBMIT",
+          errorCode: "APP_RESTART_DURING_SUBMIT",
+          errorMessage: "APP 在提交确认阶段退出；将先核对心影会话，再决定是否继续",
+          requiresHumanReason: null,
+        });
+        this.addJobEvent(
+          job.id,
+          "warning",
+          "APP_RESTART_AUTO_RECOVERY",
+          "检测到提交前已保存心影会话位置；APP 将先查重，确认未提交后才会安全续跑",
+        );
+        continue;
+      }
       this.updateJob(job.id, {
         status: "needs-human",
+        automationStage: "attention",
+        recoveryState: "manual",
+        nextRetryAt: null,
+        lastRecoveryCode: "APP_RESTART_DURING_SUBMIT",
         errorCode: "APP_RESTART_DURING_SUBMIT",
         errorMessage: "APP 在提交阶段退出，无法安全判断心影是否已经收到任务",
         requiresHumanReason: "请在原网页模式检查是否出现了对应的新对话；确认后再恢复任务，避免重复提交",
@@ -1852,6 +1899,8 @@ export class XinyingService {
       output_path = @outputPath,
       output_url = @outputUrl, error_code = @errorCode, error_message = @errorMessage,
       requires_human_reason = @requiresHumanReason, retry_count = @retryCount,
+      automation_stage = @automationStage, recovery_state = @recoveryState,
+      next_retry_at = @nextRetryAt, last_recovery_code = @lastRecoveryCode,
       submitted_at = @submittedAt, completed_at = @completedAt, updated_at = @updatedAt
       WHERE id = @id`).run(next);
     return this.getJob(id);
@@ -1894,6 +1943,9 @@ export class XinyingService {
     }
     const updated = this.updateJob(id, {
       status: "cancelled",
+      automationStage: "cancelled",
+      recoveryState: "none",
+      nextRetryAt: null,
       completedAt: now(),
       errorCode: null,
       errorMessage: null,
@@ -1913,6 +1965,9 @@ export class XinyingService {
     }
     const updated = this.updateJob(id, {
       status: "queued",
+      automationStage: "queued",
+      recoveryState: "none",
+      nextRetryAt: null,
       errorCode: null,
       errorMessage: null,
       requiresHumanReason: null,
