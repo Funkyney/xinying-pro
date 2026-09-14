@@ -20,6 +20,7 @@ import {
   LayoutDashboard,
   ListTree,
   LogIn,
+  MoreHorizontal,
   Moon,
   Plus,
   RefreshCw,
@@ -78,6 +79,7 @@ import { PlatformPanel } from "./components/PlatformPanel";
 import { InteractionGate, userFacingError } from "./interaction";
 import { useDragMultiSelect, withSelectionState } from "./use-drag-multi-select";
 import dashboardDirector from "./assets/dashboard-director.webp";
+import dashboardDirectorDark from "./assets/dashboard-director-dark.jpg";
 import xinyingLogo from "./assets/xinying-logo.svg";
 
 type PageKey = "dashboard" | "projects" | "studio" | "portraits" | "jobs" | "results" | "codex" | "platform";
@@ -127,6 +129,56 @@ function platformSessionId(platformUrl: string | undefined): string {
 
 function AppLogo() {
   return <div className="app-logo"><div className="logo-mark"><img src={xinyingLogo} alt="心影Pro Logo" /></div><div><strong>心影Pro</strong><span>AgentLab Pro</span></div></div>;
+}
+
+const primaryNavigation = navigation.filter((item) => ["dashboard", "studio", "portraits", "results"].includes(item.key));
+const secondaryNavigation = navigation.filter((item) => ["projects", "jobs", "codex", "platform"].includes(item.key));
+
+function GlobalTabBar({ page, compact, moreOpen, theme, updateState, busy, onNavigate, onExpand, onToggleMore, onToggleTheme, onUpdate, onRefresh }: {
+  page: PageKey;
+  compact: boolean;
+  moreOpen: boolean;
+  theme: "light" | "dark";
+  updateState: AppUpdateState;
+  busy: boolean;
+  onNavigate: (page: PageKey) => void;
+  onExpand: () => void;
+  onToggleMore: () => void;
+  onToggleTheme: () => void;
+  onUpdate: () => void;
+  onRefresh: () => void;
+}) {
+  const secondaryActive = secondaryNavigation.some((item) => item.key === page);
+  const activeIndex = secondaryActive ? primaryNavigation.length : Math.max(0, primaryNavigation.findIndex((item) => item.key === page));
+  return <>
+    {moreOpen && <section className="global-nav-popover" aria-label="更多功能">
+      <div className="global-nav-popover-links">{secondaryNavigation.map((item) => {
+        const Icon = item.icon;
+        return <button key={item.key} type="button" className={page === item.key ? "active" : ""} onClick={() => onNavigate(item.key)}><Icon size={17} /><span>{item.label}</span><ChevronRight size={14} /></button>;
+      })}</div>
+      <div className="global-nav-utilities">
+        <button type="button" onClick={onToggleTheme}>{theme === "light" ? <Moon size={16} /> : <Sun size={16} />}<span>{theme === "light" ? "夜间模式" : "日间模式"}</span></button>
+        <UpdateControl state={updateState} onClick={onUpdate} />
+        <button type="button" onClick={onRefresh}><RefreshCw size={16} className={busy ? "spinning" : ""} /><span>刷新工作台</span></button>
+      </div>
+    </section>}
+    <nav className={`global-tabbar ${compact ? "compact" : ""}`} aria-label="主要导航">
+    <span className="global-tab-lens" style={{ transform: `translateX(${activeIndex * 100}%)` }} aria-hidden="true" />
+    {primaryNavigation.map((item, index) => {
+      const Icon = item.icon;
+      const active = page === item.key;
+      return <button
+        key={item.key}
+        type="button"
+        className={`global-tab-item ${active ? "active" : ""}`}
+        aria-current={active ? "page" : undefined}
+        aria-label={item.label}
+        onClick={() => compact && active ? onExpand() : onNavigate(item.key)}
+      ><Icon size={17} strokeWidth={active ? 2.25 : 1.8} /><span>{item.label}</span></button>;
+    })}
+    <button type="button" className={`global-tab-item ${secondaryActive || moreOpen ? "active" : ""}`} aria-expanded={moreOpen} aria-label="更多" onClick={() => compact ? onExpand() : onToggleMore()}><MoreHorizontal size={18} /><span>更多</span></button>
+  </nav>
+  </>;
 }
 
 function UpdateControl({ state, onClick }: { state: AppUpdateState; onClick: () => void }) {
@@ -197,11 +249,41 @@ export function App() {
   const portraitLoadSequenceRef = useRef(0);
   const resultLoadSequenceRef = useRef(0);
   const [libraryRevision, setLibraryRevision] = useState(0);
+  const [tabBarCompact, setTabBarCompact] = useState(false);
+  const [moreNavigationOpen, setMoreNavigationOpen] = useState(false);
+  const pageContentRef = useRef<HTMLDivElement>(null);
+  const lastScrollTopRef = useRef(0);
+  const dashboardResultRefreshKey = snapshot?.jobs
+    .map((job) => `${job.id}:${job.status}:${job.updatedAt}`)
+    .join("|") ?? "";
+
+  const navigate = useCallback((nextPage: PageKey) => {
+    setPage(nextPage);
+    setTabBarCompact(false);
+    setMoreNavigationOpen(false);
+    window.requestAnimationFrame(() => pageContentRef.current?.scrollTo({ top: 0, behavior: "auto" }));
+  }, []);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
     localStorage.setItem("xinying:theme", theme);
   }, [theme]);
+
+  useEffect(() => {
+    const content = pageContentRef.current;
+    if (!content) return;
+    lastScrollTopRef.current = content.scrollTop;
+    const onScroll = () => {
+      const next = content.scrollTop;
+      const delta = next - lastScrollTopRef.current;
+      if (next < 28) setTabBarCompact(false);
+      else if (delta > 5) setTabBarCompact(true);
+      else if (delta < -5) setTabBarCompact(false);
+      lastScrollTopRef.current = next;
+    };
+    content.addEventListener("scroll", onScroll, { passive: true });
+    return () => content.removeEventListener("scroll", onScroll);
+  }, [page]);
 
   const refresh = useCallback(async (clearPreviousError = false) => {
     const sequence = ++refreshSequenceRef.current;
@@ -247,6 +329,14 @@ export function App() {
 
   useEffect(() => {
     const sequence = ++resultLoadSequenceRef.current;
+    if (page === "dashboard") {
+      void window.xinying.results.list().then((items) => {
+        if (sequence === resultLoadSequenceRef.current) setResults(items);
+      }).catch((cause) => {
+        if (sequence === resultLoadSequenceRef.current) setError(userFacingError(cause));
+      });
+      return;
+    }
     if (!selectedProjectId || page !== "results") {
       setResults([]);
       return;
@@ -256,7 +346,7 @@ export function App() {
     }).catch((cause) => {
       if (sequence === resultLoadSequenceRef.current) setError(userFacingError(cause));
     });
-  }, [page, selectedProjectId, libraryRevision]);
+  }, [page, selectedProjectId, libraryRevision, dashboardResultRefreshKey]);
 
   useEffect(() => {
     if (!toast) return;
@@ -272,10 +362,10 @@ export function App() {
   }, []);
 
   useEffect(() => window.xinying.session.onLoginCompleted(() => {
-    setPage("dashboard");
+    navigate("dashboard");
     setToast("飞书登录成功，已返回工作台");
     void refresh(true);
-  }), [refresh]);
+  }), [navigate, refresh]);
 
   useEffect(() => window.xinying.platformView.onAutomationStateChange(setPlatformAutomation), []);
 
@@ -328,47 +418,28 @@ export function App() {
   const session = snapshot?.session;
 
   return (
-    <div className="app-shell" aria-busy={busy}>
-      <aside className="sidebar">
-        <AppLogo />
-        <nav>
-          <span className="nav-section">工作空间</span>
-          {navigation.map((item) => {
-            const Icon = item.icon;
-            return <button key={item.key} className={page === item.key ? "active" : ""} onClick={() => setPage(item.key)}><Icon size={18} /><span>{item.label}</span>{page === item.key && <ChevronRight size={14} />}</button>;
-          })}
-        </nav>
-        <div className="sidebar-spacer" />
-        <div className={`session-card session-${session?.status ?? "unknown"}`}>
-          <div className="session-dot" />
-          <div><strong>{session?.status === "logged-in" ? "心影已连接" : session?.status === "needs-human" ? "等待扫码确认" : "心影未连接"}</strong><span>{session?.status === "logged-in" ? (session.accountLabel ?? "飞书会话有效") : session?.status === "needs-human" ? "请在手机飞书确认" : "请扫码登录"}</span></div>
-          {session?.status !== "logged-in" && <button title="登录心影" aria-label="登录心影" onClick={() => { setPage("platform"); void run(() => window.xinying.session.openLogin()); }}><LogIn size={15} /></button>}
-        </div>
-        <div className="codex-card"><Bot size={18} /><div><strong>Codex Ready</strong><span>xinying CLI · JSON</span></div></div>
-      </aside>
+    <div className={`app-shell ${tabBarCompact ? "tabbar-is-compact" : ""}`} aria-busy={busy}>
+      <aside className="sidebar" aria-hidden="true" />
 
       <main className="main-content">
         <header className="topbar">
-          <div className="breadcrumb"><span>心影Pro</span><ChevronRight size={14} /><strong>{navigation.find((item) => item.key === page)?.label}</strong></div>
+          <div className="topbar-leading"><AppLogo /><div className="breadcrumb"><span>工作空间</span><ChevronRight size={14} /><strong>{navigation.find((item) => item.key === page)?.label}</strong></div></div>
           <div className="topbar-actions">
-            <button className="icon-button theme-toggle" onClick={() => setTheme((current) => current === "light" ? "dark" : "light")} title={theme === "light" ? "切换到夜间模式" : "切换到日间模式"} aria-label={theme === "light" ? "切换到夜间模式" : "切换到日间模式"}>{theme === "light" ? <Moon size={16} /> : <Sun size={16} />}</button>
-            <UpdateControl state={updateState} onClick={() => void handleUpdate()} />
-            <button className="platform-context-button" onClick={() => setPage("projects")} title="切换个人/团队空间或心影项目"><Building2 size={15} /><span><small>{selectedPlatformWorkspace?.kind === "personal" ? "个人空间" : selectedPlatformWorkspace?.name ?? "尚未选择心影空间"}</small><strong>{selectedPlatformProject?.name ?? (selectedProject?.platformProjectId ? selectedProject.name : "选择项目后开始生成")}</strong></span><ChevronRight size={14} /></button>
-            {selectedProject && <select value={selectedProjectId} onChange={(event) => setSelectedProjectId(event.target.value)}>{snapshot?.projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select>}
-            <button className="icon-button" onClick={() => void refresh(true)} title="刷新" aria-label="刷新工作台"><RefreshCw size={16} className={busy ? "spinning" : ""} /></button>
+            <button className="platform-context-button" onClick={() => navigate("projects")} title="切换个人/团队空间或心影项目"><Building2 size={15} /><span><small>{selectedPlatformWorkspace?.kind === "personal" ? "个人空间" : selectedPlatformWorkspace?.name ?? "尚未选择心影空间"}</small><strong>{selectedPlatformProject?.name ?? (selectedProject?.platformProjectId ? selectedProject.name : "选择项目后开始生成")}</strong></span><ChevronRight size={14} /></button>
+            <button className={`connection-chip connection-${session?.status ?? "unknown"}`} onClick={() => { if (session?.status !== "logged-in") { navigate("platform"); void run(() => window.xinying.session.openLogin()); } }} title={session?.status === "logged-in" ? session.accountLabel ?? "心影连接正常" : "登录心影"}><span className="session-dot" /><span>{session?.status === "logged-in" ? "心影已连接" : session?.status === "needs-human" ? "等待扫码" : "登录心影"}</span>{session?.status !== "logged-in" && <LogIn size={14} />}</button>
           </div>
         </header>
 
         {error && <div className="error-banner"><ShieldAlert size={17} /><span>{error}</span><button onClick={() => setError("")}>×</button></div>}
         {toast && <div className="toast"><CheckCircle2 size={17} />{toast}</div>}
 
-        <div className="page-content">
+        <div className={`page-content ${page === "platform" ? "page-content-platform" : ""}`} ref={pageContentRef}>
           {!snapshot ? <div className="loading-screen"><div className="loader" /><span>正在载入本地工作台…</span></div> : (
             <div key={page} className={`page-stage page-stage-${page}`}>
-              {page === "dashboard" && <DashboardPage snapshot={snapshot} onNavigate={setPage} />}
-              {page === "projects" && <PlatformProjectsPage snapshot={snapshot} run={run} onOpened={(project) => { setSelectedProjectId(project.id); setPage("studio"); }} />}
-              {page === "studio" && <StudioPage project={selectedProject} projects={snapshot.projects} portraits={snapshot.portraits} platformPortraits={platformPortraits} jobs={snapshot.jobs} onSelect={setSelectedProjectId} onNavigate={setPage} run={run} onOpenPlatform={(url) => run(async () => { await window.xinying.session.openUrl(url); setPage("platform"); })} onDelete={(id) => run(async () => { await window.xinying.projects.remove(id); setSelectedProjectId(""); setPage("dashboard"); }, "项目及其本地素材已删除")} />}
-              {page === "portraits" && <PortraitsPage portraits={snapshot.portraits} platformPortraits={platformPortraits} projects={snapshot.projects} selectedProject={selectedProject} workspaceName={selectedPlatformWorkspace?.name ?? "当前心影空间"} onSelectProject={setSelectedProjectId} run={run} onNavigate={setPage} />}
+              {page === "dashboard" && <DashboardPage snapshot={snapshot} results={results} activeProject={selectedProject} onNavigate={navigate} onOpenProject={(projectId) => { setSelectedProjectId(projectId); navigate("studio"); }} />}
+              {page === "projects" && <PlatformProjectsPage snapshot={snapshot} run={run} onOpened={(project) => { setSelectedProjectId(project.id); navigate("studio"); }} />}
+              {page === "studio" && <StudioPage project={selectedProject} projects={snapshot.projects} portraits={snapshot.portraits} platformPortraits={platformPortraits} jobs={snapshot.jobs} onSelect={setSelectedProjectId} onNavigate={navigate} run={run} onOpenPlatform={(url) => run(async () => { await window.xinying.session.openUrl(url); navigate("platform"); })} onDelete={(id) => run(async () => { await window.xinying.projects.remove(id); setSelectedProjectId(""); navigate("dashboard"); }, "项目及其本地素材已删除")} />}
+              {page === "portraits" && <PortraitsPage portraits={snapshot.portraits} platformPortraits={platformPortraits} projects={snapshot.projects} selectedProject={selectedProject} workspaceName={selectedPlatformWorkspace?.name ?? "当前心影空间"} onSelectProject={setSelectedProjectId} run={run} onNavigate={navigate} />}
               {page === "jobs" && <JobsPage jobs={snapshot.jobs} projects={snapshot.projects} portraits={snapshot.portraits} run={run} />}
               {page === "results" && <ResultsPage results={results} projects={snapshot.projects} selectedProject={selectedProject} onSelectProject={setSelectedProjectId} run={run} />}
               {page === "codex" && <CodexExtensionPage />}
@@ -377,6 +448,7 @@ export function App() {
           )}
         </div>
       </main>
+      <GlobalTabBar page={page} compact={tabBarCompact} moreOpen={moreNavigationOpen} theme={theme} updateState={updateState} busy={busy} onNavigate={navigate} onExpand={() => setTabBarCompact(false)} onToggleMore={() => setMoreNavigationOpen((current) => !current)} onToggleTheme={() => setTheme((current) => current === "light" ? "dark" : "light")} onUpdate={() => void handleUpdate()} onRefresh={() => void refresh(true)} />
       {(busy || platformAutomation.phase !== "idle") && <div className="busy-overlay" role="status" aria-live="polite"><div className="loader" /><span><strong>{platformAutomation.phase === "queued" ? `排队等待：${platformAutomation.label}` : platformAutomation.label || "正在处理…"}</strong><small>{platformAutomation.detail || (busy ? "正在更新本地工作台" : "")}{platformAutomation.pendingCount > 0 ? ` · 后面还有 ${platformAutomation.pendingCount} 项` : ""}</small>{platformAutomation.total && platformAutomation.current !== null ? <em>{platformAutomation.current} / {platformAutomation.total}</em> : null}</span></div>}
     </div>
   );
@@ -486,38 +558,70 @@ function CodexExtensionPage() {
   </div>;
 }
 
-function DashboardPage({ snapshot, onNavigate }: { snapshot: DashboardSnapshot; onNavigate: (page: PageKey) => void }) {
-  const running = snapshot.jobs.filter((job) => ["queued", "submitting", "running"].includes(job.status)).length;
-  const needsHuman = snapshot.jobs.filter((job) => ["needs-human", "needs-login"].includes(job.status)).length;
-  const completed = snapshot.jobs.filter((job) => job.status === "completed").length;
-  return <div className="dashboard-page">
-    <section className="hero-panel">
-      <div className="hero-copy"><span className="eyebrow">CREATIVE OPERATIONS</span><h1>心影让你当指挥家，心影Pro让你直接把片交了。</h1><p>整理参考图、锁定编号、管理虚拟人像与生成任务；需要时随时切回心影原网页。</p><div className="hero-actions"><button className="button primary" onClick={() => onNavigate("studio")}><Clapperboard size={17} />进入生成工作台</button><button className="button ghost" onClick={() => onNavigate("platform")}><ExternalLink size={17} />打开心影原网页</button></div></div>
-      <div className="hero-visual" aria-hidden="true"><img src={dashboardDirector} alt="" /></div>
-    </section>
-    <section className="metric-grid">
-      <Metric icon={FolderKanban} value={snapshot.projects.length} label="创作项目" tone="purple" />
-      <Metric icon={Clock3} value={running} label="运行中任务" tone="blue" />
-      <Metric icon={CheckCircle2} value={completed} label="已完成结果" tone="green" />
-      <Metric icon={ShieldAlert} value={needsHuman} label="需要人工处理" tone="amber" />
-    </section>
-    <div className="dashboard-columns">
-      <section className="panel">
-        <div className="panel-heading compact"><div><span className="eyebrow">RECENT ACTIVITY</span><h2>最近任务</h2></div><button className="link-button" onClick={() => onNavigate("jobs")}>查看全部<ChevronRight size={14} /></button></div>
-        <div className="activity-list">{snapshot.jobs.slice(0, 6).map((job) => <div className="activity-row" key={job.id}><div className="activity-icon"><Video size={16} /></div><div><strong>{snapshot.projects.find((project) => project.id === job.projectId)?.name ?? (job.kind === "portrait-review" ? "虚拟人像审核" : "未知项目")}</strong><span>{formatDate(job.updatedAt)} · {job.id.slice(0, 8)}</span></div><StatusPill status={job.status} /></div>)}{!snapshot.jobs.length && <EmptyState title="还没有任务" description="创建项目并提交第一条生成任务。" />}</div>
-      </section>
-      <section className="panel project-entry-panel">
-        <div className="panel-heading compact"><div><span className="eyebrow">XINYING CONTEXT</span><h2>先选空间与项目</h2></div><Building2 size={20} /></div>
-        <div className="project-entry-facts"><span><strong>{snapshot.platformCatalog.workspaces.length}</strong> 个空间</span><span><strong>{snapshot.platformCatalog.projects.length}</strong> 个可见项目</span><span><strong>{snapshot.platformPortraitCount ?? snapshot.platformPortraits.filter((item) => item.available).length}</strong> 个授权人像</span></div>
-        <button className="button secondary full" onClick={() => onNavigate("projects")}><FolderKanban size={16} />选择或新建心影项目</button>
-        <p className="fine-print">个人空间内容仅自己可见；团队空间的项目、生成记录与虚拟人像可供团队成员协作。</p>
-      </section>
-    </div>
-  </div>;
+function isImagePreviewUrl(value: string | null | undefined) {
+  if (!value) return false;
+  try {
+    return /\.(?:avif|gif|jpe?g|png|webp)$/i.test(new URL(value).pathname);
+  } catch {
+    return /\.(?:avif|gif|jpe?g|png|webp)(?:$|[?#])/i.test(value);
+  }
 }
 
-function Metric({ icon: Icon, value, label, tone }: { icon: typeof Video; value: number; label: string; tone: string }) {
-  return <div className={`metric-card tone-${tone}`}><div className="metric-icon"><Icon size={20} /></div><div><strong>{value}</strong><span>{label}</span></div></div>;
+function DashboardCoverMedia({ result, fallbackPosition }: { result?: PlatformResult; fallbackPosition: string }) {
+  const [failed, setFailed] = useState(false);
+  useEffect(() => setFailed(false), [result?.id]);
+
+  const localUrl = result?.outputPath ? window.xinying.references.mediaUrl(result.outputPath) : null;
+  const imageUrl = result?.mediaKind === "image"
+    ? result.previewUrl ?? localUrl ?? result.outputUrl
+    : isImagePreviewUrl(result?.previewUrl) ? result?.previewUrl : null;
+  const videoUrl = result?.mediaKind === "video"
+    ? localUrl ?? platformPlaybackVideoUrl(result.outputUrl, result.previewUrl)
+    : null;
+
+  if (!failed && imageUrl) {
+    return <img src={imageUrl} alt="" onError={() => setFailed(true)} />;
+  }
+  if (!failed && videoUrl) {
+    return <video src={videoUrl} muted playsInline preload="metadata" onError={() => setFailed(true)} aria-hidden="true" />;
+  }
+  return <img src={dashboardDirector} alt="" style={{ objectPosition: fallbackPosition }} />;
+}
+
+function DashboardPage({ snapshot, results, activeProject, onNavigate, onOpenProject }: { snapshot: DashboardSnapshot; results: PlatformResult[]; activeProject: Project | null | undefined; onNavigate: (page: PageKey) => void; onOpenProject: (projectId: string) => void }) {
+  const featuredProject = activeProject ?? snapshot.projects[0];
+  const featuredJob = featuredProject ? snapshot.jobs.find((job) => job.projectId === featuredProject.id) : undefined;
+  const featuredProgress = featuredJob?.progress ?? (featuredJob?.status === "completed" ? 100 : null);
+  const featuredStatus = featuredJob ? statusLabels[featuredJob.status] : featuredProject ? "项目已就绪" : "等待选择项目";
+  const featuredIndeterminate = Boolean(featuredJob && featuredProgress === null && ["queued", "submitting", "running"].includes(featuredJob.status));
+  const featuredProgressLabel = !featuredProject ? "未选择" : !featuredJob ? "待生成" : featuredProgress === null ? featuredStatus : `${featuredProgress}%`;
+  const latestResultByProject = new Map<string, PlatformResult>();
+  for (const result of [...results].sort((left, right) => right.createdAt.localeCompare(left.createdAt))) {
+    if (result.available && !latestResultByProject.has(result.projectId)) latestResultByProject.set(result.projectId, result);
+  }
+  return <div className="dashboard-page">
+    <section className="hero-panel dashboard-feature">
+      <div className="hero-visual" aria-hidden="true"><img className="hero-image-light" src={dashboardDirector} alt="" /><img className="hero-image-dark" src={dashboardDirectorDark} alt="" /></div>
+      <div className="hero-copy"><span className="eyebrow">CREATIVE OPERATIONS</span><h1>心影让你当指挥家，心影Pro让你直接把片交了。</h1><p>整理参考图、锁定编号、管理虚拟人像与生成任务；需要时随时切回心影原网页。</p><div className="hero-actions"><button className="button primary" onClick={() => onNavigate("studio")}><Clapperboard size={17} />进入生成工作台</button><button className="button ghost" onClick={() => onNavigate("platform")}><ExternalLink size={17} />打开心影原网页</button></div></div>
+      <div className="featured-project-glass">
+        <div className="featured-project-title"><span>{featuredProject ? "当前项目" : "创作空间"}</span><strong>{featuredProject?.name ?? "选择项目后开始生成"}</strong></div>
+        <div className="featured-specs"><span>{featuredProject ? modeLabels[featuredProject.mode] : "Seedance"}</span>{featuredProject && <><i /><span>{featuredProject.aspectRatio}</span><i /><span>{featuredProject.duration}s</span><i /><span>{resolutionLabel(featuredProject.resolution)}</span></>}</div>
+        <div className={`featured-progress ${featuredIndeterminate ? "indeterminate" : ""}`}><span><b>{featuredStatus}</b><em>{featuredProgressLabel}</em></span><div><i style={featuredProgress === null ? undefined : { transform: `scaleX(${featuredProgress / 100})` }} /></div></div>
+        <button className="button primary featured-continue" onClick={() => featuredProject ? onOpenProject(featuredProject.id) : onNavigate("projects")}><span>{featuredProject ? "继续创作" : "选择项目"}</span><ChevronRight size={16} /></button>
+      </div>
+    </section>
+    <section className="dashboard-spaces">
+      <div className="dashboard-section-heading"><div><span className="eyebrow">CREATIVE SPACES</span><h2>创作空间</h2></div><button className="button ghost" onClick={() => onNavigate("projects")}>查看全部<ChevronRight size={14} /></button></div>
+      <div className="dashboard-cover-strip">
+        {snapshot.projects.slice(0, 8).map((project, index) => <button className="dashboard-cover-card" key={project.id} onClick={() => onOpenProject(project.id)}>
+          <DashboardCoverMedia result={latestResultByProject.get(project.id)} fallbackPosition={`${54 + (index % 3) * 7}% center`} />
+          <span className="dashboard-cover-shade" aria-hidden="true" />
+          <span className="dashboard-cover-copy"><strong>{project.name}</strong><small>{modeLabels[project.mode]} · {project.aspectRatio} · {project.duration}s</small></span>
+        </button>)}
+        {!snapshot.projects.length && <button className="dashboard-cover-card dashboard-cover-empty" onClick={() => onNavigate("projects")}><span><Plus size={25} /><strong>建立第一个项目</strong><small>从心影空间选择项目与对话</small></span></button>}
+      </div>
+    </section>
+  </div>;
 }
 
 function PlatformProjectsPage({ snapshot, run, onOpened }: { snapshot: DashboardSnapshot; run: (action: () => Promise<unknown>, success?: string) => Promise<void>; onOpened: (project: Project) => void }) {

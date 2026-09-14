@@ -2,6 +2,22 @@ import { useEffect, useRef, useState } from "react";
 import { ExternalLink, RefreshCw, ShieldCheck } from "lucide-react";
 import { InteractionGate, userFacingError } from "../interaction";
 
+export const PLATFORM_BOTTOM_SAFE_AREA = 96;
+
+export function fitPlatformPanelBounds(
+  bounds: { x: number; y: number; width: number; height: number },
+  viewport: { width: number; height: number },
+) {
+  const x = Math.max(0, Math.round(bounds.x));
+  const y = Math.max(0, Math.round(bounds.y));
+  return {
+    x,
+    y,
+    width: Math.max(320, Math.round(Math.min(bounds.width, viewport.width - x))),
+    height: Math.max(240, Math.round(Math.min(bounds.height, viewport.height - PLATFORM_BOTTOM_SAFE_AREA - y))),
+  };
+}
+
 export function PlatformPanel() {
   const containerRef = useRef<HTMLDivElement>(null);
   const refreshGateRef = useRef(new InteractionGate());
@@ -16,7 +32,10 @@ export function PlatformPanel() {
     const updateBounds = () => {
       const rect = containerRef.current?.getBoundingClientRect();
       if (!rect) return;
-      void window.xinying.platformView.setBounds({ x: rect.x, y: rect.y, width: rect.width, height: rect.height });
+      void window.xinying.platformView.setBounds(fitPlatformPanelBounds(
+        { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+        { width: window.innerWidth, height: window.innerHeight },
+      ));
     };
     const observer = new ResizeObserver(updateBounds);
     if (containerRef.current) observer.observe(containerRef.current);
