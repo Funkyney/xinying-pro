@@ -364,7 +364,7 @@ export function App() {
 
         <div className="page-content">
           {!snapshot ? <div className="loading-screen"><div className="loader" /><span>正在载入本地工作台…</span></div> : (
-            <>
+            <div key={page} className={`page-stage page-stage-${page}`}>
               {page === "dashboard" && <DashboardPage snapshot={snapshot} onNavigate={setPage} />}
               {page === "projects" && <PlatformProjectsPage snapshot={snapshot} run={run} onOpened={(project) => { setSelectedProjectId(project.id); setPage("studio"); }} />}
               {page === "studio" && <StudioPage project={selectedProject} projects={snapshot.projects} portraits={snapshot.portraits} platformPortraits={platformPortraits} jobs={snapshot.jobs} onSelect={setSelectedProjectId} onNavigate={setPage} run={run} onOpenPlatform={(url) => run(async () => { await window.xinying.session.openUrl(url); setPage("platform"); })} onDelete={(id) => run(async () => { await window.xinying.projects.remove(id); setSelectedProjectId(""); setPage("dashboard"); }, "项目及其本地素材已删除")} />}
@@ -373,7 +373,7 @@ export function App() {
               {page === "results" && <ResultsPage results={results} projects={snapshot.projects} selectedProject={selectedProject} onSelectProject={setSelectedProjectId} run={run} />}
               {page === "codex" && <CodexExtensionPage />}
               {page === "platform" && <PlatformPanel />}
-            </>
+            </div>
           )}
         </div>
       </main>
