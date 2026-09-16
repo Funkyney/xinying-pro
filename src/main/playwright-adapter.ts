@@ -82,12 +82,13 @@ interface PlatformPortraitApiSnapshot {
   pendingTotal: number | null;
 }
 
-interface PortraitManagementApiSession {
+interface PortraitApiSession {
   listUrl: string;
   deleteUrl: string;
   headers: Record<string, string>;
   listTemplate: Record<string, unknown>;
   teamId: string;
+  originalModel: string;
 }
 
 interface PlatformCatalogApiData {
@@ -283,14 +284,22 @@ function matchSyncedPlatformPortraitApiRecord(
       platformPortraitIdentity(record.displayName, record.previewUrl).platformAssetId === targetAssetId
     ));
     if (assetMatches.length === 1) return { record: assetMatches[0], ambiguous: false };
-    if (assetMatches.length > 1) return { record: null, ambiguous: true };
+    if (assetMatches.length > 1) {
+      const namedAssetMatches = assetMatches.filter((record) => record.displayName.trim() === portrait.displayName.trim());
+      if (namedAssetMatches.length === 1) return { record: namedAssetMatches[0], ambiguous: false };
+      return { record: null, ambiguous: true };
+    }
   }
 
   const targetUrl = normalizedRemoteAssetUrl(portrait.previewUrl);
   if (targetUrl) {
     const urlMatches = records.filter((record) => normalizedRemoteAssetUrl(record.previewUrl) === targetUrl);
     if (urlMatches.length === 1) return { record: urlMatches[0], ambiguous: false };
-    if (urlMatches.length > 1) return { record: null, ambiguous: true };
+    if (urlMatches.length > 1) {
+      const namedUrlMatches = urlMatches.filter((record) => record.displayName.trim() === portrait.displayName.trim());
+      if (namedUrlMatches.length === 1) return { record: namedUrlMatches[0], ambiguous: false };
+      return { record: null, ambiguous: true };
+    }
   }
 
   const nameMatches = records.filter((record) => record.displayName.trim() === portrait.displayName.trim());
@@ -1796,70 +1805,95 @@ export class PlaywrightXinyingAdapter {
     return index >= 0 ? cards.nth(index) : null;
   }
 
-  private async openPortraitManagementApiSession(page: Page, projectId: string): Promise<PortraitManagementApiSession> {
-    const listResponsePromise = page.waitForResponse((response) => {
-      try {
-        return response.request().method() === "POST" && new URL(response.url()).pathname === "/api/portraits/list";
-      } catch {
-        return false;
-      }
-    }, { timeout: 20_000 }).catch(() => null);
-    const portraitUrl = `${this.selectors.baseUrl.replace(/\/$/, "")}${this.selectors.portrait.pagePath}?projectId=${encodeURIComponent(projectId)}`;
-    let current: URL | null = null;
-    try {
-      current = new URL(page.url());
-    } catch {
-      current = null;
-    }
-    if (current?.pathname === this.selectors.portrait.pagePath && current.searchParams.get("projectId") === projectId) {
-      await page.reload({ waitUntil: "domcontentloaded", timeout: 30_000 });
-    } else {
-      await page.goto(portraitUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
+  private async openPortraitApiSession(page: Page, target: URL, modelName: string): Promise<PortraitApiSession> {
+    const projectId = target.searchParams.get("projectId") ?? "";
+    if (!matchesGenerationTarget(page.url(), target)) {
+      await page.goto(target.toString(), { waitUntil: "domcontentloaded", timeout: 30_000 });
     }
     this.requireAuthenticatedPage(page);
-    const listResponse = await listResponsePromise;
-    if (!listResponse) throw new AppError("PORTRAIT_LIBRARY_API_UNAVAILABLE", "心影角色库没有返回列表数据，请刷新后重试");
-    const listPayload = await listResponse.json().catch(() => null) as unknown;
-    const listMutation = platformMutationResult(listPayload, listResponse.ok());
-    if (!listMutation.ok) {
-      throw new AppError("PORTRAIT_LIBRARY_API_REJECTED", listMutation.message || "心影角色库列表读取失败");
-    }
+    const composer = await this.waitForVisible(page, this.selectors.generation.composer, 20_000);
+    if (!composer) throw new AppError("GENERATION_PAGE_NOT_READY", "心影内容生成页未完成加载");
+    const modelToggle = await firstVisible(page, this.selectors.generation.modelToggle);
+    const originalModel = (await modelToggle?.innerText().catch(() => ""))?.trim() ?? "";
+    const modelCheckpoint = await this.configureModel(page, modelName);
+    if (modelCheckpoint) throw new AppError("PORTRAIT_MODEL_UNAVAILABLE", modelCheckpoint.message);
 
-    const request = listResponse.request();
-    const sourceHeaders = await request.allHeaders();
-    const allowedHeaders = ["accept", "content-type", "authorization", "mb-token", "accept-language"];
-    const headers: Record<string, string> = {};
-    for (const name of allowedHeaders) {
-      const value = sourceHeaders[name];
-      if (value) headers[name] = value;
-    }
-    headers.accept ||= "application/json, text/plain, */*";
-    headers["content-type"] ||= "application/json";
-    headers.origin = sourceHeaders.origin || new URL(listResponse.url()).origin;
-    headers.referer = sourceHeaders.referer || portraitUrl;
-    if (!headers.authorization && !headers["mb-token"]) {
-      throw new AppError("PORTRAIT_LIBRARY_AUTH_UNAVAILABLE", "心影角色库请求缺少登录凭证，请刷新原网页后重试");
-    }
-
-    let listTemplate: Record<string, unknown> = {};
+    let dialog: Locator | null = null;
     try {
-      listTemplate = recordValue(request.postDataJSON());
-    } catch {
-      listTemplate = {};
+      const existingDialog = await firstVisible(page, this.selectors.generation.portraitDialog);
+      if (existingDialog) {
+        const cancel = existingDialog.getByText("取消", { exact: true }).filter({ visible: true }).last();
+        if ((await cancel.count()) > 0) await clickDom(cancel).catch(() => undefined);
+        await existingDialog.waitFor({ state: "hidden", timeout: 5_000 }).catch(() => undefined);
+      }
+      const entry = await firstVisible(page, this.selectors.generation.portraitEntry);
+      if (!entry) throw new AppError("PORTRAIT_PICKER_NOT_FOUND", "当前心影模型未显示“+V角色”入口");
+      const listResponsePromise = page.waitForResponse((response) => {
+        try {
+          if (response.request().method() !== "POST" || new URL(response.url()).pathname !== "/api/portraits/list") return false;
+          return String(recordValue(response.request().postDataJSON()).project_id ?? "") === projectId;
+        } catch {
+          return false;
+        }
+      }, { timeout: 20_000 }).catch(() => null);
+      await clickDom(entry);
+      dialog = await this.waitForVisible(page, this.selectors.generation.portraitDialog, 8_000);
+      if (!dialog) throw new AppError("PORTRAIT_PICKER_NOT_FOUND", "心影认证角色库未打开");
+      const listResponse = await listResponsePromise;
+      if (!listResponse) throw new AppError("PORTRAIT_LIBRARY_API_UNAVAILABLE", "心影角色选择器没有返回列表数据，请刷新后重试");
+      const listPayload = await listResponse.json().catch(() => null) as unknown;
+      const listMutation = platformMutationResult(listPayload, listResponse.ok());
+      if (!listMutation.ok) {
+        throw new AppError("PORTRAIT_LIBRARY_API_REJECTED", listMutation.message || "心影角色列表读取失败");
+      }
+
+      const request = listResponse.request();
+      const sourceHeaders = await request.allHeaders();
+      const allowedHeaders = ["accept", "content-type", "authorization", "mb-token", "accept-language"];
+      const headers: Record<string, string> = {};
+      for (const name of allowedHeaders) {
+        const value = sourceHeaders[name];
+        if (value) headers[name] = value;
+      }
+      headers.accept ||= "application/json, text/plain, */*";
+      headers["content-type"] ||= "application/json";
+      headers.origin = sourceHeaders.origin || new URL(listResponse.url()).origin;
+      headers.referer = sourceHeaders.referer || target.toString();
+      if (!headers.authorization && !headers["mb-token"]) {
+        throw new AppError("PORTRAIT_LIBRARY_AUTH_UNAVAILABLE", "心影角色库请求缺少登录凭证，请刷新原网页后重试");
+      }
+
+      let listTemplate: Record<string, unknown> = {};
+      try {
+        listTemplate = recordValue(request.postDataJSON());
+      } catch {
+        listTemplate = {};
+      }
+      const teamId = typeof listTemplate.team_id === "string" ? listTemplate.team_id : "";
+      return {
+        listUrl: listResponse.url(),
+        deleteUrl: new URL("/api/portraits/delete", listResponse.url()).toString(),
+        headers,
+        listTemplate: { ...listTemplate, project_id: projectId },
+        teamId,
+        originalModel,
+      };
+    } catch (error) {
+      if (originalModel && originalModel !== modelName && safeGenerationUrl(page.url())) {
+        await this.configureModel(page, originalModel).catch(() => undefined);
+      }
+      throw error;
+    } finally {
+      if (dialog && (await dialog.isVisible().catch(() => false))) {
+        const cancel = dialog.getByText("取消", { exact: true }).filter({ visible: true }).last();
+        if ((await cancel.count()) > 0) await clickDom(cancel).catch(() => undefined);
+      }
     }
-    const teamId = typeof listTemplate.team_id === "string" ? listTemplate.team_id : "";
-    return {
-      listUrl: listResponse.url(),
-      deleteUrl: new URL("/api/portraits/delete", listResponse.url()).toString(),
-      headers,
-      listTemplate: { ...listTemplate, project_id: projectId },
-      teamId,
-    };
   }
 
   private async queryPortraitManagementApi(
     page: Page,
-    session: PortraitManagementApiSession,
+    session: PortraitApiSession,
     keyword: string,
   ): Promise<PlatformPortraitApiRecord[]> {
     const response = await page.context().request.post(session.listUrl, {
@@ -1883,7 +1917,7 @@ export class PlaywrightXinyingAdapter {
 
   async deletePlatformPortraits(
     targetUrl: string,
-    _modelName: string,
+    modelName: string,
     portraits: PlatformPortrait[],
     onProgress?: (progress: PlatformPortraitDeleteProgress) => void,
   ): Promise<PlatformPortraitDeleteResult> {
@@ -1915,8 +1949,10 @@ export class PlaywrightXinyingAdapter {
     if (!projectId) throw new AppError("GENERATION_PROJECT_REQUIRED", "当前心影项目缺少 projectId，无法管理角色库");
     let currentPortrait: PlatformPortrait | null = portraits[0] ?? null;
     let currentIndex = 0;
+    let originalModel = "";
     try {
-      const session = await this.openPortraitManagementApiSession(page, projectId);
+      const session = await this.openPortraitApiSession(page, target, modelName);
+      originalModel = session.originalModel;
       const resolved: Array<{ portrait: PlatformPortrait; record: PlatformPortraitApiRecord; index: number }> = [];
       for (const [index, portrait] of portraits.entries()) {
         currentPortrait = portrait;
@@ -1994,6 +2030,9 @@ export class PlaywrightXinyingAdapter {
       }
       throw error;
     } finally {
+      if (originalModel && originalModel !== modelName && safeGenerationUrl(page.url())) {
+        await this.configureModel(page, originalModel).catch(() => undefined);
+      }
       if (originalUrl !== page.url()) {
         let restore: URL | null = null;
         try {

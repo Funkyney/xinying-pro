@@ -301,6 +301,19 @@ describe("Playwright adapter task references", () => {
       previewUrl: "https://cdn.bluemediacdn.com/team/asset-b.png?x-tos-process=image/quality,q_40",
       platformAssetId: "asset-b",
     }, records)).toEqual({ record: expect.objectContaining({ portraitId: "portrait-b" }), ambiguous: false });
+    const sharedSourceRecords = adapterInternals.platformPortraitApiRecords({
+      data: {
+        portraits: [
+          { portrait_id: "portrait-field", display_name: "足球场现场场景", thumbnail_url: "https://cdn.bluemediacdn.com/team/shared-field.png", asset_type: "Image" },
+          { portrait_id: "portrait-field-copy", display_name: "足球场现场场景_1", thumbnail_url: "https://cdn.bluemediacdn.com/team/shared-field.png", asset_type: "Image" },
+        ],
+      },
+    });
+    expect(adapterInternals.matchSyncedPlatformPortraitApiRecord({
+      displayName: "足球场现场场景",
+      previewUrl: "https://cdn.bluemediacdn.com/team/shared-field.png?x-tos-process=image/quality,q_40",
+      platformAssetId: "shared-field",
+    }, sharedSourceRecords)).toEqual({ record: expect.objectContaining({ portraitId: "portrait-field" }), ambiguous: false });
     expect(adapterInternals.matchSyncedPlatformPortraitApiRecord({
       displayName: "唯一角色",
       previewUrl: "",
