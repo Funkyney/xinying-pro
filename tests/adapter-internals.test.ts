@@ -285,11 +285,37 @@ describe("Playwright adapter task references", () => {
     expect(adapterInternals.platformMutationResult({ code: 0 }, false).ok).toBe(false);
   });
 
-  it("only commits a local portrait deletion after finding, deleting, and remotely rechecking the target", () => {
-    expect(adapterInternals.platformPortraitDeletionConfirmed(true, false, true)).toBe(true);
-    expect(adapterInternals.platformPortraitDeletionConfirmed(false, false, true)).toBe(false);
-    expect(adapterInternals.platformPortraitDeletionConfirmed(true, true, true)).toBe(false);
-    expect(adapterInternals.platformPortraitDeletionConfirmed(true, false, false)).toBe(false);
+  it("resolves a synced portrait to the unique Heart management API record", () => {
+    const records = adapterInternals.platformPortraitApiRecords({
+      data: {
+        portraits: [
+          { portrait_id: "portrait-a", display_name: "同名角色", thumbnail_url: "https://cdn.bluemediacdn.com/team/asset-a.png", asset_type: "Image" },
+          { portrait_id: "portrait-b", display_name: "同名角色", thumbnail_url: "https://cdn.bluemediacdn.com/team/asset-b.png", asset_type: "Image" },
+          { portrait_id: "portrait-c", display_name: "唯一角色", thumbnail_url: "https://cdn.bluemediacdn.com/team/asset-c.png", asset_type: "Image" },
+        ],
+      },
+    });
+
+    expect(adapterInternals.matchSyncedPlatformPortraitApiRecord({
+      displayName: "同名角色",
+      previewUrl: "https://cdn.bluemediacdn.com/team/asset-b.png?x-tos-process=image/quality,q_40",
+      platformAssetId: "asset-b",
+    }, records)).toEqual({ record: expect.objectContaining({ portraitId: "portrait-b" }), ambiguous: false });
+    expect(adapterInternals.matchSyncedPlatformPortraitApiRecord({
+      displayName: "唯一角色",
+      previewUrl: "",
+      platformAssetId: "unknown",
+    }, records)).toEqual({ record: expect.objectContaining({ portraitId: "portrait-c" }), ambiguous: false });
+    expect(adapterInternals.matchSyncedPlatformPortraitApiRecord({
+      displayName: "同名角色",
+      previewUrl: "",
+      platformAssetId: "unknown",
+    }, records)).toEqual({ record: null, ambiguous: true });
+    expect(adapterInternals.matchSyncedPlatformPortraitApiRecord({
+      displayName: "已删除角色",
+      previewUrl: "",
+      platformAssetId: "unknown",
+    }, records)).toEqual({ record: null, ambiguous: false });
   });
 
   it("does not treat an untouched portrait select placeholder as a valid other value", () => {

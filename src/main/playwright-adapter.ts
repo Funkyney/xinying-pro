@@ -82,6 +82,14 @@ interface PlatformPortraitApiSnapshot {
   pendingTotal: number | null;
 }
 
+interface PortraitManagementApiSession {
+  listUrl: string;
+  deleteUrl: string;
+  headers: Record<string, string>;
+  listTemplate: Record<string, unknown>;
+  teamId: string;
+}
+
 interface PlatformCatalogApiData {
   currentRemoteId: string;
   currentWorkspaceKey: string;
@@ -265,8 +273,29 @@ function platformPortraitCardMatches(
   return !cardUrl || !targetUrl || cardUrl === targetUrl;
 }
 
-function platformPortraitDeletionConfirmed(targetFound: boolean, verificationMatched: boolean, queryConfirmed: boolean): boolean {
-  return targetFound && queryConfirmed && !verificationMatched;
+function matchSyncedPlatformPortraitApiRecord(
+  portrait: Pick<PlatformPortrait, "displayName" | "previewUrl" | "platformAssetId">,
+  records: PlatformPortraitApiRecord[],
+): { record: PlatformPortraitApiRecord | null; ambiguous: boolean } {
+  const targetAssetId = portrait.platformAssetId.trim();
+  if (targetAssetId && targetAssetId !== "unknown") {
+    const assetMatches = records.filter((record) => (
+      platformPortraitIdentity(record.displayName, record.previewUrl).platformAssetId === targetAssetId
+    ));
+    if (assetMatches.length === 1) return { record: assetMatches[0], ambiguous: false };
+    if (assetMatches.length > 1) return { record: null, ambiguous: true };
+  }
+
+  const targetUrl = normalizedRemoteAssetUrl(portrait.previewUrl);
+  if (targetUrl) {
+    const urlMatches = records.filter((record) => normalizedRemoteAssetUrl(record.previewUrl) === targetUrl);
+    if (urlMatches.length === 1) return { record: urlMatches[0], ambiguous: false };
+    if (urlMatches.length > 1) return { record: null, ambiguous: true };
+  }
+
+  const nameMatches = records.filter((record) => record.displayName.trim() === portrait.displayName.trim());
+  if (nameMatches.length === 1) return { record: nameMatches[0], ambiguous: false };
+  return { record: null, ambiguous: nameMatches.length > 1 };
 }
 
 function platformWorkspaceIdentity(kind: PlatformWorkspace["kind"], name: string): string {
@@ -1767,45 +1796,94 @@ export class PlaywrightXinyingAdapter {
     return index >= 0 ? cards.nth(index) : null;
   }
 
-  private async searchPlatformPortraitCard(
-    page: Page,
-    dialog: Locator,
-    portrait: PlatformPortrait,
-  ): Promise<{ matched: Locator | null; queryConfirmed: boolean }> {
-    const search = dialog.locator(".search-round").filter({ visible: true }).first();
-    if ((await search.count()) === 0) return { matched: null, queryConfirmed: false };
-    await search.hover().catch(() => undefined);
-    const input = search.locator("input.search-input").first();
-    await input.waitFor({ state: "visible", timeout: 2_500 }).catch(() => undefined);
-    if ((await input.count()) === 0 || !(await input.isVisible().catch(() => false))) {
-      return { matched: null, queryConfirmed: false };
-    }
-
-    const responsePromise = page.waitForResponse((response) => {
+  private async openPortraitManagementApiSession(page: Page, projectId: string): Promise<PortraitManagementApiSession> {
+    const listResponsePromise = page.waitForResponse((response) => {
       try {
         return response.request().method() === "POST" && new URL(response.url()).pathname === "/api/portraits/list";
       } catch {
         return false;
       }
-    }, { timeout: 8_000 }).catch(() => null);
-    await input.fill(portrait.displayName);
-    await input.press("Enter");
-    const response = await responsePromise;
-    let queryConfirmed = false;
-    if (response) {
-      const payload = await response.json().catch(() => null) as unknown;
-      queryConfirmed = payload !== null && platformMutationResult(payload, response.ok()).ok;
+    }, { timeout: 20_000 }).catch(() => null);
+    const portraitUrl = `${this.selectors.baseUrl.replace(/\/$/, "")}${this.selectors.portrait.pagePath}?projectId=${encodeURIComponent(projectId)}`;
+    let current: URL | null = null;
+    try {
+      current = new URL(page.url());
+    } catch {
+      current = null;
     }
-    await page.waitForTimeout(250);
-    const cards = await firstCollectionWithin(dialog, this.selectors.generation.portraitCards);
-    if (!cards) return { matched: null, queryConfirmed };
-    await this.loadPortraitCards(cards, 8, 2, 250);
-    return { matched: await this.findPlatformPortraitCard(cards, portrait), queryConfirmed };
+    if (current?.pathname === this.selectors.portrait.pagePath && current.searchParams.get("projectId") === projectId) {
+      await page.reload({ waitUntil: "domcontentloaded", timeout: 30_000 });
+    } else {
+      await page.goto(portraitUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
+    }
+    this.requireAuthenticatedPage(page);
+    const listResponse = await listResponsePromise;
+    if (!listResponse) throw new AppError("PORTRAIT_LIBRARY_API_UNAVAILABLE", "心影角色库没有返回列表数据，请刷新后重试");
+    const listPayload = await listResponse.json().catch(() => null) as unknown;
+    const listMutation = platformMutationResult(listPayload, listResponse.ok());
+    if (!listMutation.ok) {
+      throw new AppError("PORTRAIT_LIBRARY_API_REJECTED", listMutation.message || "心影角色库列表读取失败");
+    }
+
+    const request = listResponse.request();
+    const sourceHeaders = await request.allHeaders();
+    const allowedHeaders = ["accept", "content-type", "authorization", "mb-token", "accept-language"];
+    const headers: Record<string, string> = {};
+    for (const name of allowedHeaders) {
+      const value = sourceHeaders[name];
+      if (value) headers[name] = value;
+    }
+    headers.accept ||= "application/json, text/plain, */*";
+    headers["content-type"] ||= "application/json";
+    headers.origin = sourceHeaders.origin || new URL(listResponse.url()).origin;
+    headers.referer = sourceHeaders.referer || portraitUrl;
+    if (!headers.authorization && !headers["mb-token"]) {
+      throw new AppError("PORTRAIT_LIBRARY_AUTH_UNAVAILABLE", "心影角色库请求缺少登录凭证，请刷新原网页后重试");
+    }
+
+    let listTemplate: Record<string, unknown> = {};
+    try {
+      listTemplate = recordValue(request.postDataJSON());
+    } catch {
+      listTemplate = {};
+    }
+    const teamId = typeof listTemplate.team_id === "string" ? listTemplate.team_id : "";
+    return {
+      listUrl: listResponse.url(),
+      deleteUrl: new URL("/api/portraits/delete", listResponse.url()).toString(),
+      headers,
+      listTemplate: { ...listTemplate, project_id: projectId },
+      teamId,
+    };
+  }
+
+  private async queryPortraitManagementApi(
+    page: Page,
+    session: PortraitManagementApiSession,
+    keyword: string,
+  ): Promise<PlatformPortraitApiRecord[]> {
+    const response = await page.context().request.post(session.listUrl, {
+      headers: session.headers,
+      data: {
+        ...session.listTemplate,
+        keyword,
+        page: 1,
+        page_size: 100,
+      },
+      failOnStatusCode: false,
+      timeout: 15_000,
+    });
+    const payload = await response.json().catch(() => null) as unknown;
+    const mutation = platformMutationResult(payload, response.ok());
+    if (!mutation.ok) {
+      throw new AppError("PORTRAIT_LIBRARY_QUERY_REJECTED", mutation.message || `心影角色库查询“${keyword}”失败`);
+    }
+    return platformPortraitApiRecords(payload).filter((record) => Boolean(record.portraitId));
   }
 
   async deletePlatformPortraits(
     targetUrl: string,
-    modelName: string,
+    _modelName: string,
     portraits: PlatformPortrait[],
     onProgress?: (progress: PlatformPortraitDeleteProgress) => void,
   ): Promise<PlatformPortraitDeleteResult> {
@@ -1833,118 +1911,89 @@ export class PlaywrightXinyingAdapter {
     const originalUrl = page.url();
     const target = safeGenerationUrl(targetUrl);
     if (!target) throw new AppError("GENERATION_PAGE_REQUIRED", "请先选择一个已绑定的心影项目，再删除虚拟人像");
-    if (safeGenerationUrl(page.url())?.toString() !== target.toString()) {
-      await page.goto(target.toString(), { waitUntil: "domcontentloaded", timeout: 30_000 });
-    }
-    this.requireAuthenticatedPage(page);
-    const composer = await this.waitForVisible(page, this.selectors.generation.composer, 20_000);
-    if (!composer) throw new AppError("GENERATION_PAGE_NOT_READY", "心影内容生成页未完成加载");
-    const modelToggle = await firstVisible(page, this.selectors.generation.modelToggle);
-    const originalModel = (await modelToggle?.innerText().catch(() => ""))?.trim() ?? "";
-    const modelCheckpoint = await this.configureModel(page, modelName);
-    if (modelCheckpoint) throw new AppError("PORTRAIT_MODEL_UNAVAILABLE", modelCheckpoint.message);
-    const entry = await firstVisible(page, this.selectors.generation.portraitEntry);
-    if (!entry) throw new AppError("PORTRAIT_PICKER_NOT_FOUND", "当前心影模型未显示“+V角色”入口");
-
-    let dialog: Locator | null = null;
+    const projectId = target.searchParams.get("projectId");
+    if (!projectId) throw new AppError("GENERATION_PROJECT_REQUIRED", "当前心影项目缺少 projectId，无法管理角色库");
+    let currentPortrait: PlatformPortrait | null = portraits[0] ?? null;
+    let currentIndex = 0;
     try {
-      await clickDom(entry);
-      dialog = await this.waitForVisible(page, this.selectors.generation.portraitDialog, 8_000);
-      if (!dialog) throw new AppError("PORTRAIT_PICKER_NOT_FOUND", "心影认证角色库未打开");
-      await this.setPortraitSourceFilter(page, dialog, "上传人像");
-      const initialCards = await firstCollectionWithin(dialog, this.selectors.generation.portraitCards);
-      // 心影的角色库是懒加载列表；全量滚动上千张卡片既慢，也不能证明某张卡不存在。
-      // 删除时优先使用官网自带搜索，让每个目标都由 /api/portraits/list 的新响应确认。
-      if (initialCards) await this.loadPortraitCards(initialCards, 4, 2, 250);
-
+      const session = await this.openPortraitManagementApiSession(page, projectId);
+      const resolved: Array<{ portrait: PlatformPortrait; record: PlatformPortraitApiRecord; index: number }> = [];
       for (const [index, portrait] of portraits.entries()) {
-        try {
-          report("deleting", index + 1, portrait, `正在删除 ${index + 1} / ${portraits.length}：${portrait.displayName}`);
-          const searched = await this.searchPlatformPortraitCard(page, dialog, portrait);
-          let matched = searched.matched;
-          if (!matched && !searched.queryConfirmed) {
-            const cards = await firstCollectionWithin(dialog, this.selectors.generation.portraitCards);
-            matched = cards ? await this.findPlatformPortraitCard(cards, portrait) : null;
-          }
-          if (!matched) {
-            throw new AppError(
-              "PLATFORM_PORTRAIT_DELETE_TARGET_UNCONFIRMED",
-              `心影生成页未返回“${portrait.displayName}”，无法据此判断整个人像库已删除；本地记录已保留`,
-            );
-          }
-          await matched.scrollIntoViewIfNeeded().catch(() => undefined);
-          const deleteIcon = matched.locator(".icon-shanchu").filter({ visible: true }).first();
-          if ((await deleteIcon.count()) === 0) {
-            throw new AppError("PLATFORM_PORTRAIT_DELETE_FORBIDDEN", `心影未提供“${portrait.displayName}”的删除权限`);
-          }
-          await clickDom(deleteIcon);
-          const title = page.getByText("确定删除角色", { exact: true }).filter({ visible: true }).last();
-          await title.waitFor({ state: "visible", timeout: 8_000 });
-          const popover = title.locator("xpath=ancestor::*[contains(@class,'el-popper') or contains(@class,'el-popover')][1]");
-          const confirmationScope = (await popover.count()) > 0 ? popover : title.locator("xpath=../..");
-          const irreversible = confirmationScope.getByText("删除后，角色将不可恢复。", { exact: true }).filter({ visible: true }).first();
-          if ((await irreversible.count()) === 0) throw new AppError("PLATFORM_DELETE_DIALOG_CHANGED", "心影删除确认框内容已变化，已停止操作");
-          const confirmDelete = confirmationScope.getByText("确定", { exact: true }).filter({ visible: true }).first();
-          if ((await confirmDelete.count()) === 0 || !(await confirmDelete.isEnabled())) {
-            throw new AppError("PLATFORM_DELETE_CONFIRM_UNAVAILABLE", "心影删除确认按钮不可用");
-          }
-          const deleteResponsePromise = page.waitForResponse((response) => {
-            try {
-              return response.request().method() === "POST" && new URL(response.url()).pathname === "/api/portraits/delete";
-            } catch {
-              return false;
-            }
-          }, { timeout: 20_000 }).catch(() => null);
-          await clickDom(confirmDelete);
-
-          const deleteResponse = await deleteResponsePromise;
-          if (deleteResponse) {
-            const payload = await deleteResponse.json().catch(() => null) as unknown;
-            const mutation = platformMutationResult(payload, deleteResponse.ok());
-            if (!mutation.ok) {
-              throw new AppError("PLATFORM_PORTRAIT_DELETE_REJECTED", mutation.message || `心影拒绝删除“${portrait.displayName}”`);
-            }
-          }
-
-          // 删除回包只表示请求已受理。重新走官网搜索接口，确认远端列表真的不再返回目标，
-          // 然后才允许 IPC 层隐藏本地卡片，避免“APP 显示成功、网页仍然存在”。
-          const deadline = Date.now() + 20_000;
-          let remotelyAbsent = false;
-          while (Date.now() < deadline) {
-            const verification = await this.searchPlatformPortraitCard(page, dialog, portrait);
-            if (platformPortraitDeletionConfirmed(true, Boolean(verification.matched), verification.queryConfirmed)) {
-              remotelyAbsent = true;
-              break;
-            }
-            await page.waitForTimeout(650);
-          }
-          if (!remotelyAbsent) {
-            throw new AppError(
-              "PLATFORM_PORTRAIT_DELETE_UNCONFIRMED",
-              `心影尚未确认删除“${portrait.displayName}”；本地记录已保留，请稍后重试`,
-            );
-          }
+        currentPortrait = portrait;
+        currentIndex = index + 1;
+        report("deleting", currentIndex, portrait, `正在核对 ${currentIndex} / ${portraits.length}：${portrait.displayName}`);
+        const records = await this.queryPortraitManagementApi(page, session, portrait.displayName);
+        const matched = matchSyncedPlatformPortraitApiRecord(portrait, records);
+        if (matched.ambiguous) {
+          throw new AppError(
+            "PLATFORM_PORTRAIT_DELETE_AMBIGUOUS",
+            `心影角色库中有多个同名的“${portrait.displayName}”，且素材地址无法唯一对应；为避免误删，本地记录已保留`,
+          );
+        }
+        if (!matched.record) {
           result.deletedIds.push(portrait.id);
-          report("deleted", index + 1, portrait, `已删除 ${index + 1} / ${portraits.length}：${portrait.displayName}`);
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          result.failed = { id: portrait.id, displayName: portrait.displayName, message };
-          report("failed", index + 1, portrait, `删除“${portrait.displayName}”失败：${message}`);
-          break;
+          result.alreadyAbsentIds.push(portrait.id);
+          report("deleted", currentIndex, portrait, `心影角色库已不存在“${portrait.displayName}”，已清理本地过期记录`);
+          continue;
+        }
+        resolved.push({ portrait, record: matched.record, index: currentIndex });
+      }
+
+      if (resolved.length > 0) {
+        currentPortrait = resolved[0].portrait;
+        currentIndex = resolved[0].index;
+        const deleteResponse = await page.context().request.post(session.deleteUrl, {
+          headers: session.headers,
+          data: {
+            portrait_ids: resolved.map(({ record }) => record.portraitId),
+            ...(session.teamId ? { team_id: session.teamId } : {}),
+          },
+          failOnStatusCode: false,
+          timeout: 20_000,
+        });
+        const deletePayload = await deleteResponse.json().catch(() => null) as unknown;
+        const deleteMutation = platformMutationResult(deletePayload, deleteResponse.ok());
+        if (!deleteMutation.ok) {
+          throw new AppError("PLATFORM_PORTRAIT_DELETE_REJECTED", deleteMutation.message || "心影拒绝批量删除虚拟人像");
+        }
+
+        // A successful mutation only means the server accepted the batch. Keep
+        // every local row until the management API no longer returns its real
+        // portrait_id, so the app and Heart cannot silently diverge again.
+        const pending = new Map(resolved.map((entry) => [entry.portrait.id, entry]));
+        const deadline = Date.now() + 20_000;
+        while (pending.size > 0 && Date.now() < deadline) {
+          for (const [id, entry] of [...pending.entries()]) {
+            currentPortrait = entry.portrait;
+            currentIndex = entry.index;
+            const records = await this.queryPortraitManagementApi(page, session, entry.portrait.displayName);
+            if (records.some((record) => record.portraitId === entry.record.portraitId)) continue;
+            pending.delete(id);
+            result.deletedIds.push(id);
+            report("deleted", entry.index, entry.portrait, `已从心影角色库删除：${entry.portrait.displayName}`);
+          }
+          if (pending.size > 0) await page.waitForTimeout(650);
+        }
+        if (pending.size > 0) {
+          const entry = pending.values().next().value as typeof resolved[number];
+          currentPortrait = entry.portrait;
+          currentIndex = entry.index;
+          throw new AppError(
+            "PLATFORM_PORTRAIT_DELETE_UNCONFIRMED",
+            `心影角色库尚未确认删除“${entry.portrait.displayName}”；本地记录已保留，请稍后重试`,
+          );
         }
       }
       return result;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (currentPortrait) {
+        result.failed = { id: currentPortrait.id, displayName: currentPortrait.displayName, message };
+        report("failed", currentIndex, currentPortrait, `删除“${currentPortrait.displayName}”失败：${message}`);
+        return result;
+      }
+      throw error;
     } finally {
-      if (dialog && (await dialog.isVisible().catch(() => false))) {
-        const popoverCancel = page.locator(".faceCard-delete-confirm").filter({ visible: true }).getByText("取消", { exact: true }).filter({ visible: true }).first();
-        if ((await popoverCancel.count()) > 0) await clickDom(popoverCancel).catch(() => undefined);
-        await this.setPortraitSourceFilter(page, dialog, "全部").catch(() => undefined);
-        const cancel = dialog.getByText("取消", { exact: true }).filter({ visible: true }).last();
-        if ((await cancel.count()) > 0) await clickDom(cancel).catch(() => undefined);
-      }
-      if (originalModel && originalModel !== modelName && safeGenerationUrl(page.url())) {
-        await this.configureModel(page, originalModel).catch(() => undefined);
-      }
       if (originalUrl !== page.url()) {
         let restore: URL | null = null;
         try {
@@ -3702,7 +3751,7 @@ export const adapterInternals = {
   resolvePortraitOptionValue,
   portraitOptionIsSelected,
   platformMutationResult,
-  platformPortraitDeletionConfirmed,
+  matchSyncedPlatformPortraitApiRecord,
   submittedPortraitIds,
   submittedPortraitId,
   platformPortraitApiRecords,
