@@ -86,6 +86,7 @@ interface PlatformPortraitRow {
   preview_url: string;
   platform_asset_id: string;
   workspace_id: string;
+  owner_type: PlatformPortrait["ownerType"];
   media_kind: PlatformPortrait["mediaKind"];
   sort_order: number;
   delete_sort_order: number | null;
@@ -268,6 +269,7 @@ export class XinyingDatabase {
         preview_url TEXT NOT NULL,
         platform_asset_id TEXT NOT NULL,
         workspace_id TEXT NOT NULL DEFAULT '',
+        owner_type TEXT NOT NULL DEFAULT 'unknown',
         media_kind TEXT NOT NULL DEFAULT 'unknown',
         sort_order INTEGER NOT NULL DEFAULT 0,
         delete_sort_order INTEGER,
@@ -400,6 +402,15 @@ export class XinyingDatabase {
     }
     if (!platformPortraitColumns.has("media_kind")) {
       this.db.exec("ALTER TABLE platform_portraits ADD COLUMN media_kind TEXT NOT NULL DEFAULT 'unknown'");
+    }
+    if (!platformPortraitColumns.has("owner_type")) {
+      this.db.exec("ALTER TABLE platform_portraits ADD COLUMN owner_type TEXT NOT NULL DEFAULT 'unknown'");
+      this.db.exec(`UPDATE platform_portraits
+        SET owner_type = CASE
+          WHEN delete_sort_order IS NOT NULL OR can_delete = 1 THEN 'team'
+          ELSE 'public'
+        END
+        WHERE owner_type = 'unknown'`);
     }
 
     const portraitColumns = new Set(
@@ -554,6 +565,7 @@ export class XinyingDatabase {
       previewUrl: row.preview_url,
       platformAssetId: row.platform_asset_id,
       workspaceId: row.workspace_id,
+      ownerType: row.owner_type,
       mediaKind: row.media_kind,
       sortOrder: row.sort_order,
       deleteSortOrder: row.delete_sort_order,

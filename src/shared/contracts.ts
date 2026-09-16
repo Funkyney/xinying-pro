@@ -35,6 +35,7 @@ export type SessionStatus = "unknown" | "logged-out" | "logged-in" | "needs-huma
 export type PlatformWorkspaceKind = "personal" | "team";
 export type ReferenceMediaKind = "image" | "video" | "audio";
 export type PlatformPortraitMediaKind = "image" | "video" | "unknown";
+export type PlatformPortraitOwnerType = "public" | "team" | "personal" | "unknown";
 
 export interface MediaAnalysisCacheEntry {
   path: string;
@@ -286,6 +287,7 @@ export interface PlatformPortrait {
   previewUrl: string;
   platformAssetId: string;
   workspaceId: string;
+  ownerType: PlatformPortraitOwnerType;
   mediaKind: PlatformPortraitMediaKind;
   sortOrder: number;
   deleteSortOrder: number | null;

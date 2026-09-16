@@ -1165,6 +1165,7 @@ export class XinyingService {
         displayName,
         platformAssetId,
         workspaceId: portrait.workspaceId || workspaceId,
+        ownerType: portrait.ownerType ?? existingById.get(id)?.ownerType ?? "unknown",
         mediaKind: portrait.mediaKind && portrait.mediaKind !== "unknown"
           ? portrait.mediaKind
           : existingById.get(id)?.mediaKind && existingById.get(id)?.mediaKind !== "unknown"
@@ -1187,10 +1188,10 @@ export class XinyingService {
       // 只有调用方明确提供权威快照时，才把本轮未出现的人像标记为不可用。
       if (authoritative) this.database.db.prepare("UPDATE platform_portraits SET available = 0 WHERE workspace_id = ?").run(workspaceId);
       const upsert = this.database.db.prepare(`INSERT INTO platform_portraits
-        (id, display_name, preview_url, platform_asset_id, workspace_id, media_kind, sort_order, delete_sort_order, can_delete, available, last_seen_at)
-        VALUES (@id, @displayName, @previewUrl, @platformAssetId, @workspaceId, @mediaKind, @sortOrder, @deleteSortOrder, @canDelete, 1, @lastSeenAt)
+        (id, display_name, preview_url, platform_asset_id, workspace_id, owner_type, media_kind, sort_order, delete_sort_order, can_delete, available, last_seen_at)
+        VALUES (@id, @displayName, @previewUrl, @platformAssetId, @workspaceId, @ownerType, @mediaKind, @sortOrder, @deleteSortOrder, @canDelete, 1, @lastSeenAt)
         ON CONFLICT(id) DO UPDATE SET display_name = excluded.display_name, preview_url = excluded.preview_url,
-          platform_asset_id = excluded.platform_asset_id, workspace_id = excluded.workspace_id, media_kind = excluded.media_kind,
+          platform_asset_id = excluded.platform_asset_id, workspace_id = excluded.workspace_id, owner_type = excluded.owner_type, media_kind = excluded.media_kind,
           sort_order = excluded.sort_order, delete_sort_order = excluded.delete_sort_order, can_delete = excluded.can_delete,
           available = 1, last_seen_at = excluded.last_seen_at`);
       for (const portrait of normalized) upsert.run({ ...portrait, canDelete: portrait.canDelete ? 1 : 0 });

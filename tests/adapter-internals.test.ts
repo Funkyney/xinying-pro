@@ -106,6 +106,7 @@ describe("Playwright adapter task references", () => {
         portraits: [{
           display_name: "WechatIMG-renamed-by-heart",
           thumbnail_url: "https://cdn.bluemediacdn.com/team/approved.png",
+          owner_type: "public",
           asset_type: "Image",
           source_info: { SourceInfo: { Md5: "ABC123", Size: 12_345 } },
         }],
@@ -114,6 +115,7 @@ describe("Playwright adapter task references", () => {
 
     expect(records).toEqual([expect.objectContaining({
       displayName: "WechatIMG-renamed-by-heart",
+      ownerType: "public",
       md5: "abc123",
       size: 12_345,
       mediaKind: "image",

@@ -709,7 +709,9 @@ function StudioPage({ project, projects, portraits, platformPortraits, jobs, onS
   const profile = modelProfile(draft.modelName);
   const selectedPortraitIds = draft.portraitIds ?? [];
   const materialOrder = reconcileMaterialOrder(draft.materialOrder, selectedPortraitIds, references.map((reference) => reference.id));
-  const availablePortraits = platformPortraits.filter((portrait) => portrait.available && (!portrait.workspaceId || portrait.workspaceId === project.platformWorkspaceId));
+  const availablePortraits = platformPortraits.filter((portrait) => portrait.available
+    && (!portrait.workspaceId || portrait.workspaceId === project.platformWorkspaceId)
+    && (portrait.ownerType !== "public" || selectedPortraitIds.includes(portrait.id)));
   const selectedPortraits = selectedPortraitIds.map((id) => availablePortraits.find((portrait) => portrait.id === id)).filter((portrait): portrait is PlatformPortrait => Boolean(portrait));
   const referencesById = new Map(references.map((reference) => [reference.id, reference]));
   const portraitsById = new Map(selectedPortraits.map((portrait) => [portrait.id, portrait]));
@@ -852,12 +854,18 @@ function PortraitsPage({ portraits, platformPortraits, projects, selectedProject
   const [deleteProgress, setDeleteProgress] = useState<PlatformPortraitDeleteProgress | null>(null);
   const [locallyDeletedIds, setLocallyDeletedIds] = useState<Set<string>>(() => new Set());
   const [portraitVisibleLimit, setPortraitVisibleLimit] = useState(portraitPageSize);
+  const [showPublicPortraits, setShowPublicPortraits] = useState(() => localStorage.getItem("xinying:show-public-portraits-v1") === "true");
+  const [localManageMode, setLocalManageMode] = useState(false);
+  const [selectedLocalPortraitIds, setSelectedLocalPortraitIds] = useState<Set<string>>(() => new Set());
+  const [localDeleteConfirmOpen, setLocalDeleteConfirmOpen] = useState(false);
   const updateConsent = (confirmed: boolean) => {
     setConsent(confirmed);
     if (confirmed) localStorage.setItem("xinying:portrait-compliance-v1", "confirmed");
     else localStorage.removeItem("xinying:portrait-compliance-v1");
   };
-  const availablePlatformPortraits = platformPortraits.filter((portrait) => !locallyDeletedIds.has(portrait.id) && portrait.available && (!selectedProject?.platformWorkspaceId || !portrait.workspaceId || portrait.workspaceId === selectedProject.platformWorkspaceId));
+  const scopedPlatformPortraits = platformPortraits.filter((portrait) => !locallyDeletedIds.has(portrait.id) && portrait.available && (!selectedProject?.platformWorkspaceId || !portrait.workspaceId || portrait.workspaceId === selectedProject.platformWorkspaceId));
+  const hiddenPublicPortraitCount = scopedPlatformPortraits.filter((portrait) => portrait.ownerType === "public").length;
+  const availablePlatformPortraits = scopedPlatformPortraits.filter((portrait) => showPublicPortraits || portrait.ownerType !== "public");
   const normalizedQuery = portraitQuery.trim().toLocaleLowerCase("zh-CN");
   const filteredPlatformPortraits = availablePlatformPortraits.filter((portrait) => !normalizedQuery || portrait.displayName.toLocaleLowerCase("zh-CN").includes(normalizedQuery));
   const managedPlatformPortraits = manageMode ? filteredPlatformPortraits.filter((portrait) => portrait.canDelete) : filteredPlatformPortraits;
@@ -882,6 +890,15 @@ function PortraitsPage({ portraits, platformPortraits, projects, selectedProject
       return withSelectionState(current, id, selected);
     }),
   });
+  const localPortraitLocked = (portrait: PortraitAsset) => ["queued", "reviewing", "needs-human"].includes(portrait.platformStatus);
+  const deletableLocalPortraits = portraits.filter((portrait) => !localPortraitLocked(portrait));
+  const selectedLocalPortraits = portraits.filter((portrait) => selectedLocalPortraitIds.has(portrait.id) && !localPortraitLocked(portrait));
+  const allDeletableLocalSelected = deletableLocalPortraits.length > 0 && selectedLocalPortraits.length === deletableLocalPortraits.length;
+  const localPortraitDragSelection = useDragMultiSelect({
+    enabled: localManageMode,
+    isSelected: (id) => selectedLocalPortraitIds.has(id),
+    setSelected: (id, selected) => setSelectedLocalPortraitIds((current) => withSelectionState(current, id, selected)),
+  });
   useEffect(() => {
     setManageMode(false);
     setSelectedDeleteIds(new Set());
@@ -891,6 +908,10 @@ function PortraitsPage({ portraits, platformPortraits, projects, selectedProject
     setLocallyDeletedIds(new Set());
     setPortraitVisibleLimit(portraitPageSize);
   }, [selectedProject?.id, selectedProject?.platformWorkspaceId]);
+  useEffect(() => {
+    const valid = new Set(deletableLocalPortraits.map((portrait) => portrait.id));
+    setSelectedLocalPortraitIds((current) => new Set([...current].filter((id) => valid.has(id))));
+  }, [portraits]);
   useEffect(() => setPortraitVisibleLimit(portraitPageSize), [portraitQuery, portraitSort, manageMode]);
   useEffect(() => window.xinying.portraits.onDeleteProgress((progress) => {
     setDeleteProgress(progress);
@@ -921,6 +942,20 @@ function PortraitsPage({ portraits, platformPortraits, projects, selectedProject
       return next;
     });
   };
+  const updatePublicPortraitVisibility = (visible: boolean) => {
+    setShowPublicPortraits(visible);
+    localStorage.setItem("xinying:show-public-portraits-v1", String(visible));
+    setPortraitVisibleLimit(portraitPageSize);
+  };
+  const toggleLocalPortraitSelection = (portrait: PortraitAsset) => {
+    if (localPortraitLocked(portrait)) return;
+    setSelectedLocalPortraitIds((current) => withSelectionState(current, portrait.id, !current.has(portrait.id)));
+  };
+  const toggleAllLocalPortraits = () => {
+    setSelectedLocalPortraitIds(allDeletableLocalSelected
+      ? new Set()
+      : new Set(deletableLocalPortraits.map((portrait) => portrait.id)));
+  };
   const addToCurrentProject = (portrait: PlatformPortrait) => {
     if (!selectedProject) return;
     const ids = selectedProject.portraitIds.includes(portrait.id) ? selectedProject.portraitIds : [...selectedProject.portraitIds, portrait.id];
@@ -941,6 +976,7 @@ function PortraitsPage({ portraits, platformPortraits, projects, selectedProject
             <option value="newest">最新上传优先</option>
             <option value="oldest">最早上传优先</option>
           </select>
+          {hiddenPublicPortraitCount > 0 && <button className="button ghost" onClick={() => updatePublicPortraitVisibility(!showPublicPortraits)}><UsersRound size={15} />{showPublicPortraits ? "隐藏官方公共库" : `显示官方公共库（${hiddenPublicPortraitCount}）`}</button>}
           <button className={`button ${manageMode ? "ghost" : "secondary"}`} disabled={!selectedProject || !availablePlatformPortraits.length} onClick={() => { setManageMode((current) => !current); setSelectedDeleteIds(new Set()); }}><Settings2 size={15} />{manageMode ? "退出管理" : "批量管理"}</button>
           <span className="library-count">{manageMode ? "可管理" : "显示"} {visiblePlatformPortraits.length} / {sortedPlatformPortraits.length}</span>
           {hasMorePlatformPortraits && <button className="library-show-all" onClick={() => setPortraitVisibleLimit(sortedPlatformPortraits.length)}>显示全部</button>}
@@ -973,8 +1009,27 @@ function PortraitsPage({ portraits, platformPortraits, projects, selectedProject
         {hasMorePlatformPortraits && <div className="portrait-load-more"><span>已显示 {visiblePlatformPortraits.length} / {sortedPlatformPortraits.length}</span><button className="button secondary" onClick={loadMorePlatformPortraits}>再显示 {Math.min(portraitPageSize, sortedPlatformPortraits.length - visiblePlatformPortraits.length)} 项</button><button className="button ghost" onClick={() => setPortraitVisibleLimit(sortedPlatformPortraits.length)}>显示全部</button></div>}
       </div>
     </section>
-    <section className="portrait-section"><div className="panel-heading compact"><div><span className="eyebrow">LOCAL UPLOADS</span><h2>本地待上传 / 审核</h2><p>名称自动取文件名，性别、年龄、人种默认“其他”；提交到当前项目所属空间并自动勾选承诺。</p></div></div><div className="portrait-grid">{portraits.map((portrait) => { const active = ["queued", "reviewing", "needs-human"].includes(portrait.platformStatus); const scope = portrait.applicationScope === "domestic" ? "国内版" : portrait.applicationScope === "overseas" ? "海外版" : "国内版 + 海外版"; return <article className="portrait-card" key={portrait.id}><div className="portrait-media">{portrait.mimeType.startsWith("video") ? <video src={window.xinying.references.mediaUrl(portrait.filePath)} /> : <img src={window.xinying.references.mediaUrl(portrait.filePath)} alt={portrait.displayName} />}<span className={`portrait-status portrait-${portrait.platformStatus}`}>{portrait.platformStatus}</span></div><div className="portrait-body"><strong>{portrait.displayName}</strong><span>{portrait.gender} · {portrait.ageGroup} · {portrait.ethnicity} · {scope}</span><span>{portrait.consentConfirmed ? "已记录合规确认" : "未确认合规承诺"}</span>{portrait.reviewNote && <p>{portrait.reviewNote}</p>}<div className="card-actions"><button className="button secondary" disabled={!selectedProject || !portrait.consentConfirmed || active || portrait.platformStatus === "approved"} onClick={() => selectedProject && run(() => window.xinying.portraits.submitReview(portrait.id, selectedProject.id), "上传审核任务已加入队列")}><UserRoundCheck size={15} />自动上传并授权</button><button className="icon-button danger" disabled={active} title={active ? "请先完成或取消关联审核任务" : "删除本地素材"} onClick={() => confirm("删除本地虚拟人像素材？") && run(() => window.xinying.portraits.remove(portrait.id), "素材已删除")}><Trash2 size={15} /></button></div></div></article>; })}{!portraits.length && <EmptyState title="暂无本地待上传素材" description="选择心影项目并确认合规声明后，可从这里上传图片或视频并自动授权。" />}</div></section>
+    <section className="portrait-section">
+      <div className="panel-heading compact">
+        <div><span className="eyebrow">LOCAL UPLOADS</span><h2>本地授权素材</h2><p>这是心影Pro为自动上传、审核重试和状态对应保留的本地副本；删除本地副本不会删除心影共享库中的已授权角色。</p></div>
+        <div className="portrait-toolbar"><button className={`button ${localManageMode ? "ghost" : "secondary"}`} disabled={!portraits.length} onClick={() => { setLocalManageMode((current) => !current); setSelectedLocalPortraitIds(new Set()); }}><Settings2 size={15} />{localManageMode ? "退出本地管理" : "批量清理"}</button><span className="library-count">本地 {portraits.length} 项</span></div>
+      </div>
+      {localManageMode && <div className="portrait-batch-bar"><div><strong>已选择 {selectedLocalPortraits.length} 项</strong><span>可以点击或按住鼠标拖过卡片多选。排队中、审核中或等待人工处理的素材需先到任务队列取消任务。</span></div><div><button className="button ghost" disabled={!deletableLocalPortraits.length} onClick={toggleAllLocalPortraits}>{allDeletableLocalSelected ? "取消全选" : `全选可删除项（${deletableLocalPortraits.length}）`}</button><button className="button ghost" disabled={!selectedLocalPortraits.length} onClick={() => setSelectedLocalPortraitIds(new Set())}>清空选择</button><button className="button danger" disabled={!selectedLocalPortraits.length} onClick={() => setLocalDeleteConfirmOpen(true)}><Trash2 size={15} />删除本地副本 {selectedLocalPortraits.length || ""} 项</button></div></div>}
+      <div className={`portrait-grid ${localManageMode ? "drag-select-surface" : ""} ${localPortraitDragSelection.isDragging ? "drag-select-active" : ""}`} {...localPortraitDragSelection.dragProps}>
+        {portraits.map((portrait) => {
+          const active = localPortraitLocked(portrait);
+          const selectedForDelete = selectedLocalPortraitIds.has(portrait.id);
+          const scope = portrait.applicationScope === "domestic" ? "国内版" : portrait.applicationScope === "overseas" ? "海外版" : "国内版 + 海外版";
+          return <article className={`portrait-card ${localManageMode ? "manage-portrait-card" : ""} ${selectedForDelete ? "selected-delete-card" : ""} ${localManageMode && active ? "delete-forbidden-card" : ""}`} key={portrait.id} data-drag-select-id={localManageMode && !active ? portrait.id : undefined} onClick={localManageMode ? () => { if (!localPortraitDragSelection.consumeSuppressedClick()) toggleLocalPortraitSelection(portrait); } : undefined} role={localManageMode ? "checkbox" : undefined} aria-checked={localManageMode ? selectedForDelete : undefined} aria-disabled={localManageMode ? active : undefined} tabIndex={localManageMode && !active ? 0 : undefined}>
+            <div className="portrait-media">{portrait.mimeType.startsWith("video") ? <video src={window.xinying.references.mediaUrl(portrait.filePath)} /> : <img src={window.xinying.references.mediaUrl(portrait.filePath)} alt={portrait.displayName} />}{localManageMode && <span className={`portrait-select-indicator ${selectedForDelete ? "checked" : ""}`}>{selectedForDelete ? "✓" : ""}</span>}<span className={`portrait-status portrait-${portrait.platformStatus}`}>{localManageMode && active ? "任务占用中" : portrait.platformStatus}</span></div>
+            <div className="portrait-body"><strong>{portrait.displayName}</strong><span>{portrait.gender} · {portrait.ageGroup} · {portrait.ethnicity} · {scope}</span><span>{portrait.consentConfirmed ? "已记录合规确认" : "未确认合规承诺"}</span>{portrait.reviewNote && <p>{portrait.reviewNote}</p>}{!localManageMode && <div className="card-actions"><button className="button secondary" disabled={!selectedProject || !portrait.consentConfirmed || active || portrait.platformStatus === "approved"} onClick={() => selectedProject && run(() => window.xinying.portraits.submitReview(portrait.id, selectedProject.id), "上传审核任务已加入队列")}><UserRoundCheck size={15} />自动上传并授权</button><button className="icon-button danger" disabled={active} title={active ? "请先完成或取消关联审核任务" : "删除本地素材"} onClick={() => confirm("只删除心影Pro中的本地副本？心影共享库中的已授权角色不会被删除。") && run(() => window.xinying.portraits.remove(portrait.id), "本地副本已删除")}><Trash2 size={15} /></button></div>}{localManageMode && <span className={active ? "delete-capability unavailable" : "delete-capability"}>{active ? "请先在任务队列取消关联任务" : selectedForDelete ? "已加入本地删除清单" : "点击卡片加入删除清单"}</span>}</div>
+          </article>;
+        })}
+        {!portraits.length && <EmptyState title="暂无本地授权素材" description="选择心影项目并确认合规声明后，可导入图片或视频并自动授权。" />}
+      </div>
+    </section>
     {deleteConfirmOpen && <div className="modal-backdrop"><section className="confirm-modal portrait-delete-modal"><div className="modal-icon danger-modal-icon"><Trash2 size={21} /></div><h2>永久删除 {selectedDeletePortraits.length} 个心影虚拟人像？</h2><p>目标空间：{workspaceName} · 调用项目：{selectedProject?.name ?? "未选择"}</p><div className="warning-box"><span><ShieldAlert size={14} />删除后不可恢复；这些角色会从心影个人或团队共享库中消失，并自动从本 APP 的相关项目参考素材中移除。</span></div><div className="portrait-delete-list">{selectedDeletePortraits.slice(0, 30).map((portrait, index) => <span key={portrait.id}><b>{index + 1}</b>{portrait.displayName}<small>可管理上传最新第 {(portrait.deleteSortOrder ?? portrait.sortOrder) + 1}</small></span>)}{selectedDeletePortraits.length > 30 && <em>另有 {selectedDeletePortraits.length - 30} 项，将按上方选择清单一并删除</em>}</div><label className="delete-confirm-check"><input type="checkbox" checked={deleteConsent} onChange={(event) => setDeleteConsent(event.target.checked)} /><span><strong>我确认永久删除以上虚拟人像</strong>此操作会真实修改心影共享库，无法撤销。</span></label><div className="modal-actions"><button className="button ghost" onClick={() => { setDeleteConfirmOpen(false); setDeleteConsent(false); }}>取消</button><button className="button danger" disabled={!deleteConsent || !selectedProject || !selectedDeletePortraits.length} onClick={() => { if (!selectedProject) return; const ids = selectedDeletePortraits.map((portrait) => portrait.id); setDeleteProgress({ status: "queued", requestedIds: ids, deletedIds: [], currentId: null, currentName: null, current: 0, total: ids.length, message: `已提交，等待删除 ${ids.length} 个虚拟人像` }); setDeleteConfirmOpen(false); setDeleteConsent(false); void run(async () => { await window.xinying.portraits.deletePlatform(selectedProject.id, ids); setSelectedDeleteIds(new Set()); setManageMode(false); }, `已确认心影中不再存在所选 ${ids.length} 个虚拟人像`); }}><Trash2 size={15} />确认永久删除</button></div></section></div>}
+    {localDeleteConfirmOpen && <div className="modal-backdrop"><section className="confirm-modal portrait-delete-modal"><div className="modal-icon danger-modal-icon"><Trash2 size={21} /></div><h2>删除 {selectedLocalPortraits.length} 个本地授权素材副本？</h2><div className="warning-box"><span><ShieldAlert size={14} />只会删除心影Pro数据库记录和本地复制文件，不会删除心影共享库中已经授权的人像，也不会删除你最初导入的原文件。</span></div><div className="portrait-delete-list">{selectedLocalPortraits.slice(0, 30).map((portrait, index) => <span key={portrait.id}><b>{index + 1}</b>{portrait.displayName}<small>{portrait.platformStatus}</small></span>)}{selectedLocalPortraits.length > 30 && <em>另有 {selectedLocalPortraits.length - 30} 项</em>}</div><div className="modal-actions"><button className="button ghost" onClick={() => setLocalDeleteConfirmOpen(false)}>取消</button><button className="button danger" disabled={!selectedLocalPortraits.length} onClick={() => { const ids = selectedLocalPortraits.map((portrait) => portrait.id); setLocalDeleteConfirmOpen(false); void run(async () => { for (const id of ids) await window.xinying.portraits.remove(id); setSelectedLocalPortraitIds(new Set()); setLocalManageMode(false); }, `已删除 ${ids.length} 个本地副本，心影共享库不受影响`); }}><Trash2 size={15} />确认删除本地副本</button></div></section></div>}
   </div>;
 }
 

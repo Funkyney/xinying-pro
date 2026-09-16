@@ -70,6 +70,7 @@ interface PlatformPortraitApiRecord {
   portraitId: string;
   displayName: string;
   previewUrl: string;
+  ownerType: PlatformPortrait["ownerType"];
   md5: string;
   size: number;
   mediaKind: PlatformPortrait["mediaKind"];
@@ -375,6 +376,10 @@ function platformPortraitApiRecords(payload: unknown): PlatformPortraitApiRecord
     const portraitId = nonEmptyString(portrait.portrait_id, portrait.portraitId);
     const sourceInfo = recordValue(recordValue(portrait.source_info).SourceInfo);
     const displayName = typeof portrait.display_name === "string" ? portrait.display_name.trim() : "";
+    const rawOwnerType = typeof portrait.owner_type === "string" ? portrait.owner_type.trim().toLowerCase() : "";
+    const ownerType: PlatformPortrait["ownerType"] = rawOwnerType === "public" || rawOwnerType === "team" || rawOwnerType === "personal"
+      ? rawOwnerType
+      : "unknown";
     const previewUrl = [portrait.thumbnail_url, portrait.cdn_url, portrait.post_cdn_url]
       .find((candidate): candidate is string => typeof candidate === "string" && candidate.startsWith("https://")) ?? "";
     const md5 = typeof sourceInfo.Md5 === "string" ? sourceInfo.Md5.trim().toLowerCase() : "";
@@ -384,7 +389,7 @@ function platformPortraitApiRecords(payload: unknown): PlatformPortraitApiRecord
       : assetType === "image" ? "image"
         : portraitMediaKindFromPreviewUrl(previewUrl);
     if (!displayName || !previewUrl) return null;
-    return { portraitId, displayName, previewUrl, md5, size: Number.isFinite(size) ? size : 0, mediaKind };
+    return { portraitId, displayName, previewUrl, ownerType, md5, size: Number.isFinite(size) ? size : 0, mediaKind };
   }).filter((record): record is PlatformPortraitApiRecord => Boolean(record));
 }
 
@@ -1687,6 +1692,7 @@ export class PlaywrightXinyingAdapter {
           displayName: item.displayName,
           previewUrl: item.previewUrl,
           workspaceId,
+          ownerType: "public",
           mediaKind: portraitMediaKindFromPreviewUrl(item.previewUrl),
           sortOrder: index,
           deleteSortOrder: null,
@@ -1708,6 +1714,7 @@ export class PlaywrightXinyingAdapter {
           displayName: item.displayName,
           previewUrl: item.previewUrl,
           workspaceId,
+          ownerType: "team",
           mediaKind: existing?.mediaKind ?? portraitMediaKindFromPreviewUrl(item.previewUrl),
           sortOrder: existing?.sortOrder ?? unique.size,
           deleteSortOrder: index,
@@ -3156,6 +3163,7 @@ export class PlaywrightXinyingAdapter {
           displayName: matched.displayName,
           previewUrl: matched.previewUrl,
           workspaceId,
+          ownerType: matched.ownerType,
           mediaKind: matched.mediaKind,
           sortOrder: 0,
           deleteSortOrder: null,

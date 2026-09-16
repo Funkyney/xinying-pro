@@ -914,6 +914,7 @@ describe("XinyingService", () => {
       previewUrl: `https://blueai-video-global.bluemediacdn.com/portrait-${index}.png`,
       platformAssetId: `asset-${index}`,
       workspaceId,
+      ownerType: "public" as const,
       mediaKind: "image" as const,
       sortOrder: index,
       deleteSortOrder: null,
@@ -925,6 +926,7 @@ describe("XinyingService", () => {
     service.syncPlatformPortraits(portraits.slice(0, 60), workspaceId, false);
 
     expect(service.listPlatformPortraits(workspaceId).filter((portrait) => portrait.available)).toHaveLength(120);
+    expect(service.listPlatformPortraits(workspaceId)[0].ownerType).toBe("public");
   });
 
   it("validates remote deletion permissions and removes deleted portraits from live projects only", () => {
