@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   Activity,
   Bot,
@@ -1263,7 +1264,7 @@ function ResultsPage({ results, projects, selectedProject, onSelectProject, run 
       </article>;
     })}{!currentResults.length && <EmptyState title={selectedProject ? (filter === "marked" ? "当前分类还没有已标记素材" : `${tabText}还没有这类素材`) : "请先选择项目"} description={selectedProject ? (filter === "marked" ? "审片时把鼠标放在卡片上按 1，即可快速加入这里。" : `点击“同步${tabText}”，APP 会读取对应的心影素材。`) : "选择一个已绑定的心影项目后同步。"} />}</div>
     {visibleResults.length < currentResults.length && <div className="result-load-more"><span>已显示 {visibleResults.length} / {currentResults.length}</span><button className="button secondary" onClick={() => setVisibleLimit((current) => current + 120)}>继续加载 120 个</button></div>}
-    {viewer && reuseDraft && <div className="modal-backdrop result-viewer-backdrop" onMouseDown={(event) => { if (event.currentTarget === event.target) closeViewer(); }}><section className={`result-viewer ${(mediaRatios[viewer.id] ?? 16 / 9) < 0.9 ? "portrait-viewer" : ""}`}>
+    {viewer && reuseDraft && createPortal(<div className="modal-backdrop result-viewer-backdrop" role="dialog" aria-modal="true" aria-label="结果详情" onMouseDown={(event) => { if (event.currentTarget === event.target) closeViewer(); }}><section className={`result-viewer ${(mediaRatios[viewer.id] ?? 16 / 9) < 0.9 ? "portrait-viewer" : ""}`}>
       <header><div><strong>{viewer.name || projects.find((project) => project.id === viewer.projectId)?.name || "心影素材"}</strong><span>{viewerIndex + 1} / {currentResults.length} · {formatDate(viewer.createdAt)}</span></div><div><button className={`button ${isMarked(viewer) ? "marked-action" : "ghost"}`} onClick={() => void setResultMarked(viewer.id)}><Star size={16} fill={isMarked(viewer) ? "currentColor" : "none"} />{isMarked(viewer) ? "已标记" : "按 1 标记"}</button><button className="button secondary" onClick={() => run(() => window.xinying.results.download(viewer.id), "原片已保存")}><Download size={16} />下载原{viewer.mediaKind === "image" ? "图" : "视频"}</button><button className="icon-button" onClick={closeViewer} title="关闭"><X size={19} /></button></div></header>
       <div className="result-viewer-body">
         <div className="result-viewer-stage"><button className="viewer-nav previous" onClick={() => moveViewer(-1)} title="上一个"><ChevronLeft size={30} /></button>{mediaUrl(viewer) ? viewer.mediaKind === "image" ? <img key={viewer.id} src={mediaUrl(viewer)!} alt={viewer.name || "心影图片素材"} onLoad={(event) => rememberMediaRatio(viewer.id, event.currentTarget.naturalWidth, event.currentTarget.naturalHeight)} /> : <video key={viewer.id} src={mediaUrl(viewer)!} poster={posterUrl(viewer)} controls autoPlay playsInline preload="metadata" onLoadedMetadata={(event) => rememberMediaRatio(viewer.id, event.currentTarget.videoWidth, event.currentTarget.videoHeight)} /> : <div className="viewer-missing"><Film size={42} /><span>请重新同步后查看</span></div>}<button className="viewer-nav next" onClick={() => moveViewer(1)} title="下一个"><ChevronRightIcon size={30} /></button></div>
@@ -1274,6 +1275,6 @@ function ResultsPage({ results, projects, selectedProject, onSelectProject, run 
           <div className="result-reuse-actions">{canReuse ? !reuseEditing ? <button className="button primary full" onClick={() => setReuseEditing(true)}><Repeat2 size={16} />复用并编辑</button> : <><button className="button ghost" onClick={() => setReuseEditing(false)}>取消编辑</button><button className="button primary" disabled={!reuseDraft.prompt.trim() || reuseDraft.count < 1 || reuseDraft.count > 20} onClick={() => void run(async () => { await window.xinying.results.reuse(viewer.id, reuseDraft); closeViewer(); }, `已复用提交 ${reuseDraft.count} 条，任务进入生成中`)}><Send size={16} />提交生成 {reuseDraft.count} 条</button></> : <p>项目素材库中的全员素材没有对应生成会话，不能直接复用提交。</p>}</div>
         </aside>
       </div>
-    </section></div>}
+    </section></div>, document.body)}
   </div>;
 }

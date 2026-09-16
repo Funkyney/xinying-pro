@@ -22,11 +22,11 @@ try {
     .find((candidate) => candidate.url().startsWith("file:") || candidate.url().includes("127.0.0.1:5173"));
   if (!page) throw new Error("找不到心影Pro主窗口");
   await page.reload({ waitUntil: "domcontentloaded" });
-  const select = page.locator(".topbar-actions > select");
-  await select.waitFor({ state: "visible", timeout: 15_000 });
-  await select.selectOption(projectId);
   await page.getByRole("button", { name: "结果库", exact: true }).click();
   await page.getByRole("heading", { name: "结果库", exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+  const select = page.locator(".heading-actions select");
+  await select.waitFor({ state: "visible", timeout: 15_000 });
+  await select.selectOption(projectId);
 
   const personalTab = page.getByRole("tab", { name: /我的生成/ });
   const projectTab = page.getByRole("tab", { name: /项目素材库（全员）/ });
@@ -46,6 +46,7 @@ try {
   const sizeSlider = page.getByRole("slider", { name: "结果卡片大小" });
   const gridBeforeResize = await grid.getAttribute("style");
   await sizeSlider.fill("360");
+  await sizeSlider.blur();
   const gridAfterResize = await grid.getAttribute("style");
   if (gridBeforeResize === gridAfterResize || !gridAfterResize?.includes("360px")) throw new Error("结果卡片大小滑块没有改变网格排列");
 
@@ -94,9 +95,27 @@ try {
   await dragAcross(page, first, cards.nth(dragTargetCount - 1));
   if ((await page.locator(".result-card.selected-result").count()) !== 0) throw new Error("结果库从已选卡片拖动没有批量取消");
 
-  await first.click();
+  const pageScrollTop = await page.locator(".page-content").evaluate((element) => {
+    element.scrollTop = element.scrollHeight;
+    return element.scrollTop;
+  });
+  await first.evaluate((element) => element.click());
   const viewer = page.locator(".result-viewer");
   await viewer.waitFor({ state: "visible", timeout: 8_000 });
+  const viewerPlacement = await page.locator(".result-viewer-backdrop").evaluate((backdrop) => {
+    const viewerElement = backdrop.querySelector(".result-viewer");
+    const rect = viewerElement?.getBoundingClientRect();
+    return {
+      host: backdrop.parentElement?.tagName,
+      position: getComputedStyle(backdrop).position,
+      top: rect?.top ?? -1,
+      bottom: rect?.bottom ?? Number.POSITIVE_INFINITY,
+      viewportHeight: window.innerHeight,
+    };
+  });
+  if (viewerPlacement.host !== "BODY" || viewerPlacement.position !== "fixed" || viewerPlacement.top < 0 || viewerPlacement.bottom > viewerPlacement.viewportHeight) {
+    throw new Error(`结果查看器没有固定在当前窗口内：${JSON.stringify(viewerPlacement)}`);
+  }
   if (portraitFixtureId && !(await viewer.getAttribute("class"))?.includes("portrait-viewer")) throw new Error("打开 9:16 视频后查看器没有进入竖屏布局");
   const viewerVideo = viewer.locator(".result-viewer-stage video");
   if ((await viewerVideo.count()) !== 1) throw new Error("视频详情没有创建可播放的 video 元素");
@@ -174,7 +193,7 @@ try {
   await page.waitForTimeout(100);
   const screenshot = path.resolve("test-results", "results-library-ui.png");
   await page.screenshot({ path: screenshot, fullPage: true });
-  process.stdout.write(`${JSON.stringify({ ok: true, projectId, personalResultCount: count, projectResultCount: projectItems.length, projectMediaKinds: [...new Set(projectItems.map((item) => item.mediaKind))], initialProjectCardCount, dragSelectedCount, dragDeselectChecked: true, keyboardMarkChecked: true, markedFilterChecked: true, hoverPlayback, viewerVideoState, gridBeforeResize, gridAfterResize, inspectorOverflow, reuseEditorChecked, markRestored: true, viewerBefore: before, viewerAfter: after, previewFit, viewerScreenshot, screenshot }, null, 2)}\n`);
+  process.stdout.write(`${JSON.stringify({ ok: true, projectId, personalResultCount: count, projectResultCount: projectItems.length, projectMediaKinds: [...new Set(projectItems.map((item) => item.mediaKind))], initialProjectCardCount, dragSelectedCount, dragDeselectChecked: true, keyboardMarkChecked: true, markedFilterChecked: true, hoverPlayback, pageScrollTop, viewerPlacement, viewerVideoState, gridBeforeResize, gridAfterResize, inspectorOverflow, reuseEditorChecked, markRestored: true, viewerBefore: before, viewerAfter: after, previewFit, viewerScreenshot, screenshot }, null, 2)}\n`);
 } catch (error) {
   process.stderr.write(`${JSON.stringify({ ok: false, error: error instanceof Error ? error.message : String(error) }, null, 2)}\n`);
   process.exitCode = 1;

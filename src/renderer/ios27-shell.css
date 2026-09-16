@@ -294,7 +294,7 @@ body,
 
 .page-stage {
   min-height: 100%;
-  animation: ios27-page-in .3s var(--ios27-ease-gentle) both;
+  animation: ios27-page-in .3s var(--ios27-ease-gentle) backwards;
 }
 
 .page-content-platform {
