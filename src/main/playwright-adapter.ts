@@ -265,6 +265,10 @@ function platformPortraitCardMatches(
   return !cardUrl || !targetUrl || cardUrl === targetUrl;
 }
 
+function platformPortraitDeletionConfirmed(targetFound: boolean, verificationMatched: boolean, queryConfirmed: boolean): boolean {
+  return targetFound && queryConfirmed && !verificationMatched;
+}
+
 function platformWorkspaceIdentity(kind: PlatformWorkspace["kind"], name: string): string {
   return crypto.createHash("sha256").update(`workspace\n${kind}\n${name.trim()}`).digest("hex");
 }
@@ -279,11 +283,15 @@ function recordValue(value: unknown): Record<string, unknown> {
 
 function platformMutationResult(payload: unknown, httpOk = true): { ok: boolean; message: string } {
   const root = recordValue(payload);
+  const data = recordValue(root.data);
   const rawCode = root.code;
   const code = typeof rawCode === "number" ? rawCode : typeof rawCode === "string" && rawCode.trim() ? Number(rawCode) : null;
-  const explicitSuccess = typeof root.success === "boolean" ? root.success : null;
+  const explicitSuccess = typeof root.success === "boolean"
+    ? root.success
+    : typeof data.success === "boolean"
+      ? data.success
+      : null;
   const ok = httpOk && (explicitSuccess ?? (code === null || code === 0 || code === 200));
-  const data = recordValue(root.data);
   const message = nonEmptyString(root.message, root.msg, root.error_message, data.message, data.msg);
   return { ok, message };
 }
@@ -1759,6 +1767,42 @@ export class PlaywrightXinyingAdapter {
     return index >= 0 ? cards.nth(index) : null;
   }
 
+  private async searchPlatformPortraitCard(
+    page: Page,
+    dialog: Locator,
+    portrait: PlatformPortrait,
+  ): Promise<{ matched: Locator | null; queryConfirmed: boolean }> {
+    const search = dialog.locator(".search-round").filter({ visible: true }).first();
+    if ((await search.count()) === 0) return { matched: null, queryConfirmed: false };
+    await search.hover().catch(() => undefined);
+    const input = search.locator("input.search-input").first();
+    await input.waitFor({ state: "visible", timeout: 2_500 }).catch(() => undefined);
+    if ((await input.count()) === 0 || !(await input.isVisible().catch(() => false))) {
+      return { matched: null, queryConfirmed: false };
+    }
+
+    const responsePromise = page.waitForResponse((response) => {
+      try {
+        return response.request().method() === "POST" && new URL(response.url()).pathname === "/api/portraits/list";
+      } catch {
+        return false;
+      }
+    }, { timeout: 8_000 }).catch(() => null);
+    await input.fill(portrait.displayName);
+    await input.press("Enter");
+    const response = await responsePromise;
+    let queryConfirmed = false;
+    if (response) {
+      const payload = await response.json().catch(() => null) as unknown;
+      queryConfirmed = payload !== null && platformMutationResult(payload, response.ok()).ok;
+    }
+    await page.waitForTimeout(250);
+    const cards = await firstCollectionWithin(dialog, this.selectors.generation.portraitCards);
+    if (!cards) return { matched: null, queryConfirmed };
+    await this.loadPortraitCards(cards, 8, 2, 250);
+    return { matched: await this.findPlatformPortraitCard(cards, portrait), queryConfirmed };
+  }
+
   async deletePlatformPortraits(
     targetUrl: string,
     modelName: string,
@@ -1808,34 +1852,25 @@ export class PlaywrightXinyingAdapter {
       dialog = await this.waitForVisible(page, this.selectors.generation.portraitDialog, 8_000);
       if (!dialog) throw new AppError("PORTRAIT_PICKER_NOT_FOUND", "心影认证角色库未打开");
       await this.setPortraitSourceFilter(page, dialog, "上传人像");
-      const initialCards = await waitForCollectionWithin(dialog, this.selectors.generation.portraitCards, 20_000);
-      // 删除可以选择最早上传的人像，因此必须比“全部人像”的增量同步窗口读得更深。
-      // 若远端已经没有任何上传人像，也仍需进入循环清理用户选中的本地过期记录。
-      if (initialCards) await this.loadPortraitCards(initialCards, 80, 6, 400);
-      let refreshedAfterMissingCard = false;
+      const initialCards = await firstCollectionWithin(dialog, this.selectors.generation.portraitCards);
+      // 心影的角色库是懒加载列表；全量滚动上千张卡片既慢，也不能证明某张卡不存在。
+      // 删除时优先使用官网自带搜索，让每个目标都由 /api/portraits/list 的新响应确认。
+      if (initialCards) await this.loadPortraitCards(initialCards, 4, 2, 250);
 
       for (const [index, portrait] of portraits.entries()) {
         try {
           report("deleting", index + 1, portrait, `正在删除 ${index + 1} / ${portraits.length}：${portrait.displayName}`);
-          let cards = await firstCollectionWithin(dialog, this.selectors.generation.portraitCards);
-          let matched = cards ? await this.findPlatformPortraitCard(cards, portrait) : null;
-          if (!matched && !refreshedAfterMissingCard) {
-            // 团队成员或上一次部分任务可能已经删除了这张卡。强制切换筛选刷新一次，
-            // 避免把暂时没有重绘的 DOM 当成权威结果；同一批后续项复用这份新快照。
-            await this.setPortraitSourceFilter(page, dialog, "全部");
-            await this.setPortraitSourceFilter(page, dialog, "上传人像");
-            cards = await waitForCollectionWithin(dialog, this.selectors.generation.portraitCards, 8_000);
-            if (cards) await this.loadPortraitCards(cards, 80, 6, 400);
+          const searched = await this.searchPlatformPortraitCard(page, dialog, portrait);
+          let matched = searched.matched;
+          if (!matched && !searched.queryConfirmed) {
+            const cards = await firstCollectionWithin(dialog, this.selectors.generation.portraitCards);
             matched = cards ? await this.findPlatformPortraitCard(cards, portrait) : null;
-            refreshedAfterMissingCard = true;
           }
           if (!matched) {
-            // 心影端最终状态已经是“不存在”。把本地增量缓存里的旧卡片视为已清理，
-            // 并继续处理整批，而不是让第一条过期记录永久卡住后续删除。
-            result.deletedIds.push(portrait.id);
-            result.alreadyAbsentIds.push(portrait.id);
-            report("deleted", index + 1, portrait, `心影中已不存在“${portrait.displayName}”，已清理本地过期记录并继续`);
-            continue;
+            throw new AppError(
+              "PLATFORM_PORTRAIT_DELETE_TARGET_UNCONFIRMED",
+              `心影生成页未返回“${portrait.displayName}”，无法据此判断整个人像库已删除；本地记录已保留`,
+            );
           }
           await matched.scrollIntoViewIfNeeded().catch(() => undefined);
           const deleteIcon = matched.locator(".icon-shanchu").filter({ visible: true }).first();
@@ -1863,29 +1898,32 @@ export class PlaywrightXinyingAdapter {
           await clickDom(confirmDelete);
 
           const deleteResponse = await deleteResponsePromise;
-          let apiConfirmed = false;
           if (deleteResponse) {
             const payload = await deleteResponse.json().catch(() => null) as unknown;
             const mutation = platformMutationResult(payload, deleteResponse.ok());
             if (!mutation.ok) {
               throw new AppError("PLATFORM_PORTRAIT_DELETE_REJECTED", mutation.message || `心影拒绝删除“${portrait.displayName}”`);
             }
-            apiConfirmed = true;
           }
 
-          // 心影接口成功后角色列表有时要延迟数秒才重绘。
-          // 优先信任权威删除回包，没捕到回包时才用卡片消失作为兼容降级。
-          const deadline = Date.now() + (apiConfirmed ? 3_000 : 20_000);
-          let disappeared = false;
+          // 删除回包只表示请求已受理。重新走官网搜索接口，确认远端列表真的不再返回目标，
+          // 然后才允许 IPC 层隐藏本地卡片，避免“APP 显示成功、网页仍然存在”。
+          const deadline = Date.now() + 20_000;
+          let remotelyAbsent = false;
           while (Date.now() < deadline) {
-            const currentCards = await firstCollectionWithin(dialog, this.selectors.generation.portraitCards);
-            if (!currentCards || !(await this.findPlatformPortraitCard(currentCards, portrait))) {
-              disappeared = true;
+            const verification = await this.searchPlatformPortraitCard(page, dialog, portrait);
+            if (platformPortraitDeletionConfirmed(true, Boolean(verification.matched), verification.queryConfirmed)) {
+              remotelyAbsent = true;
               break;
             }
-            await page.waitForTimeout(250);
+            await page.waitForTimeout(650);
           }
-          if (!apiConfirmed && !disappeared) throw new AppError("PLATFORM_PORTRAIT_DELETE_UNCONFIRMED", `心影未确认删除“${portrait.displayName}”`);
+          if (!remotelyAbsent) {
+            throw new AppError(
+              "PLATFORM_PORTRAIT_DELETE_UNCONFIRMED",
+              `心影尚未确认删除“${portrait.displayName}”；本地记录已保留，请稍后重试`,
+            );
+          }
           result.deletedIds.push(portrait.id);
           report("deleted", index + 1, portrait, `已删除 ${index + 1} / ${portraits.length}：${portrait.displayName}`);
         } catch (error) {
@@ -3664,6 +3702,7 @@ export const adapterInternals = {
   resolvePortraitOptionValue,
   portraitOptionIsSelected,
   platformMutationResult,
+  platformPortraitDeletionConfirmed,
   submittedPortraitIds,
   submittedPortraitId,
   platformPortraitApiRecords,

@@ -281,7 +281,15 @@ describe("Playwright adapter task references", () => {
     expect(adapterInternals.submittedPortraitIds({ data: { items: [{ portrait_id: 88 }, { portraitId: "89" }] } })).toEqual(["88", "89"]);
     expect(adapterInternals.submittedPortraitId({ data: { items: [{ portrait_id: 88 }] } })).toBe("88");
     expect(adapterInternals.platformMutationResult({ code: 500, message: "任务进行中" }, true)).toEqual({ ok: false, message: "任务进行中" });
+    expect(adapterInternals.platformMutationResult({ code: 0, data: { success: false, message: "删除未完成" } }, true)).toEqual({ ok: false, message: "删除未完成" });
     expect(adapterInternals.platformMutationResult({ code: 0 }, false).ok).toBe(false);
+  });
+
+  it("only commits a local portrait deletion after finding, deleting, and remotely rechecking the target", () => {
+    expect(adapterInternals.platformPortraitDeletionConfirmed(true, false, true)).toBe(true);
+    expect(adapterInternals.platformPortraitDeletionConfirmed(false, false, true)).toBe(false);
+    expect(adapterInternals.platformPortraitDeletionConfirmed(true, true, true)).toBe(false);
+    expect(adapterInternals.platformPortraitDeletionConfirmed(true, false, false)).toBe(false);
   });
 
   it("does not treat an untouched portrait select placeholder as a valid other value", () => {

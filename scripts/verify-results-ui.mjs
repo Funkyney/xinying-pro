@@ -94,6 +94,7 @@ try {
   if ((await page.locator(".result-viewer").count()) !== 0) throw new Error("结果库拖选后误打开了预览");
   await dragAcross(page, first, cards.nth(dragTargetCount - 1));
   if ((await page.locator(".result-card.selected-result").count()) !== 0) throw new Error("结果库从已选卡片拖动没有批量取消");
+  await page.waitForTimeout(50);
 
   const pageScrollTop = await page.locator(".page-content").evaluate((element) => {
     element.scrollTop = element.scrollHeight;
@@ -101,6 +102,11 @@ try {
   });
   await first.evaluate((element) => element.click());
   const viewer = page.locator(".result-viewer");
+  await page.waitForTimeout(100);
+  if ((await viewer.count()) === 0) {
+    const clickState = await first.evaluate((element) => ({ connected: element.isConnected, className: element.className }));
+    throw new Error(`点击结果卡片后没有创建详情弹层：${JSON.stringify(clickState)}`);
+  }
   await viewer.waitFor({ state: "visible", timeout: 8_000 });
   const viewerPlacement = await page.locator(".result-viewer-backdrop").evaluate((backdrop) => {
     const viewerElement = backdrop.querySelector(".result-viewer");
@@ -128,9 +134,18 @@ try {
     height: video.videoHeight,
     objectFit: getComputedStyle(video).objectFit,
     playsInline: video.playsInline,
+    rendered: video.getBoundingClientRect().toJSON(),
+    stage: video.parentElement?.getBoundingClientRect().toJSON(),
   }));
   if (portraitFixtureId && viewerVideoState.height <= viewerVideoState.width) throw new Error(`竖屏详情读取到了错误尺寸：${JSON.stringify(viewerVideoState)}`);
   if (viewerVideoState.objectFit !== "contain" || !viewerVideoState.playsInline) throw new Error(`竖屏详情播放器配置错误：${JSON.stringify(viewerVideoState)}`);
+  if (!viewerVideoState.stage
+    || viewerVideoState.rendered.left < viewerVideoState.stage.left - 1
+    || viewerVideoState.rendered.top < viewerVideoState.stage.top - 1
+    || viewerVideoState.rendered.right > viewerVideoState.stage.right + 1
+    || viewerVideoState.rendered.bottom > viewerVideoState.stage.bottom + 1) {
+    throw new Error(`竖屏详情视频超出可视舞台：${JSON.stringify(viewerVideoState)}`);
+  }
   const inspector = viewer.locator(".result-viewer-inspector");
   if ((await inspector.count()) !== 1) throw new Error("结果查看器没有可滚动详情栏");
   const inspectorOverflow = await inspector.evaluate((element) => getComputedStyle(element).overflowY);
