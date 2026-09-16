@@ -80,4 +80,18 @@ describe("automation recovery classification", () => {
       message: "心影任务失败",
     })).toMatchObject({ action: "fail", category: "permanent", maxAttempts: 0 });
   });
+
+  it("does not waste minutes retrying deterministic portrait metadata or identity failures", () => {
+    const portraitJob = job({ kind: "portrait-review", portraitId: "portrait-1" });
+    expect(classifyAutomationFailure(portraitJob, {
+      code: "NEEDS_PAGE-CHANGED",
+      message: "心影虚拟人像性别选项不可用：其他",
+      reason: "page-changed",
+    })).toMatchObject({ action: "manual", maxAttempts: 0 });
+    expect(classifyAutomationFailure(job(), {
+      code: "NEEDS_APPROVAL",
+      message: "APP 无法唯一确认它的实际编号",
+      reason: "approval",
+    })).toMatchObject({ action: "manual", maxAttempts: 0 });
+  });
 });

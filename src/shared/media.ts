@@ -88,13 +88,18 @@ export function promptMaterialLabels(prompt: string): string[] {
   return [...canonicalizePromptMaterialReferences(prompt).matchAll(/@(图|视频|音频)\d+/g)].map((match) => match[0]);
 }
 
-export function findAddedMediaLabel(before: string[], after: string[]): string | undefined {
+export function findAddedMediaLabels(before: string[], after: string[]): string[] {
   const remaining = new Map<string, number>();
   for (const label of before) remaining.set(label, (remaining.get(label) ?? 0) + 1);
+  const added: string[] = [];
   for (const label of after) {
     const count = remaining.get(label) ?? 0;
-    if (count === 0) return label;
-    remaining.set(label, count - 1);
+    if (count === 0) added.push(label);
+    else remaining.set(label, count - 1);
   }
-  return undefined;
+  return added;
+}
+
+export function findAddedMediaLabel(before: string[], after: string[]): string | undefined {
+  return findAddedMediaLabels(before, after)[0];
 }

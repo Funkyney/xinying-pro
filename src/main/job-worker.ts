@@ -7,17 +7,18 @@ import { classifyAutomationFailure, classifyThrownAutomationError, type Recovery
 type AutomationViewRunner = <T>(operation: () => Promise<T>, label?: string) => Promise<T>;
 type BackgroundAutomationRunner = <T>(operation: () => Promise<T>) => Promise<T | undefined>;
 
-const PORTRAIT_MONITOR_INTERVAL_MS = 10_000;
+const PORTRAIT_MONITOR_INTERVAL_MS = 5_000;
 const PORTRAIT_INSPECTION_TIMEOUT_MS = 5_000;
-const PORTRAIT_RETRY_AFTER_SKIP_MS = 5_000;
+const PORTRAIT_RETRY_AFTER_SKIP_MS = 3_000;
+const PORTRAIT_SUBMISSION_BATCH_SIZE = 20;
 
 function portraitMonitorDelay(job: Job, attempt: number, now = Date.now()): number {
   const submittedAt = Date.parse(job.submittedAt ?? job.createdAt);
   const reviewAge = Number.isFinite(submittedAt) ? Math.max(0, now - submittedAt) : 0;
   if (reviewAge >= 30 * 60_000) return 2 * 60_000;
-  if (reviewAge >= 10 * 60_000 || attempt >= 8) return 60_000;
-  if (attempt >= 4) return 30_000;
-  return 20_000;
+  if (reviewAge >= 10 * 60_000 || attempt >= 20) return 60_000;
+  if (reviewAge >= 2 * 60_000 || attempt >= 8) return 15_000;
+  return 5_000;
 }
 
 function stringJobParameter(job: Job, key: string): string {
@@ -127,6 +128,11 @@ export class JobWorker {
     this.processing = true;
     let job = queuedJob;
     try {
+      const portraitBatch = this.queuedPortraitBatch(job);
+      if (portraitBatch.length > 1) {
+        await this.processPortraitBatch(portraitBatch);
+        return;
+      }
       if (job.recoveryState === "scheduled") {
         job = this.service.updateJob(job.id, {
           automationStage: "recovering",
@@ -188,6 +194,66 @@ export class JobWorker {
     }
   }
 
+  private queuedPortraitBatch(first: Job): Job[] {
+    if (first.kind !== "portrait-review" || first.recoveryState !== "none" || first.retryCount > 0 || first.platformTaskId) return [first];
+    const firstPortrait = this.service.getPortrait(first.portraitId!);
+    const firstUrl = stringJobParameter(first, "platformUrl");
+    const firstWorkspace = stringJobParameter(first, "platformWorkspaceId");
+    const now = new Date().toISOString();
+    const queued = this.service.listQueuedJobs();
+    const start = queued.findIndex((candidate) => candidate.id === first.id);
+    if (start < 0) return [first];
+    const batch: Job[] = [];
+    for (const candidate of queued.slice(start)) {
+      if (batch.length >= PORTRAIT_SUBMISSION_BATCH_SIZE) break;
+      if (candidate.kind !== "portrait-review") break;
+      if (candidate.recoveryState !== "none" || candidate.retryCount > 0 || candidate.platformTaskId) break;
+      if (candidate.nextRetryAt && candidate.nextRetryAt > now) break;
+      if (candidate.projectId !== first.projectId
+        || stringJobParameter(candidate, "platformUrl") !== firstUrl
+        || stringJobParameter(candidate, "platformWorkspaceId") !== firstWorkspace) break;
+      const portrait = this.service.getPortrait(candidate.portraitId!);
+      if (portrait.applicationScope !== firstPortrait.applicationScope) break;
+      batch.push(candidate);
+    }
+    return batch.length ? batch : [first];
+  }
+
+  private async processPortraitBatch(jobs: Job[]): Promise<void> {
+    const submittedAt = new Date().toISOString();
+    const active = jobs.map((job) => {
+      const updated = this.service.updateJob(job.id, {
+        status: "submitting",
+        automationStage: "authorizing",
+        recoveryState: "none",
+        nextRetryAt: null,
+        submittedAt: job.submittedAt ?? submittedAt,
+        progressLabel: `正在批量提交 ${jobs.length} 项虚拟人像授权`,
+      });
+      this.service.addJobEvent(job.id, "info", "BATCH_SUBMITTING", `正在通过一个心影表单批量提交 ${jobs.length} 项虚拟人像`, {
+        batchSize: jobs.length,
+      });
+      return updated;
+    });
+    try {
+      const entries = active.map((job) => ({ job, portrait: this.service.getPortrait(job.portraitId!) }));
+      const outcomes = await this.runWithAutomationView(
+        () => this.adapter.submitPortraitReviews(entries),
+        `正在向心影批量提交 ${jobs.length} 项虚拟人像审核`,
+      );
+      const missing = active.find((job) => !outcomes.has(job.id));
+      if (missing) throw new Error(`心影批量提交未返回任务 ${missing.id} 的状态`);
+      for (const job of active) {
+        this.applyOutcome(job, outcomes.get(job.id)!);
+      }
+    } catch (error) {
+      for (const job of active) {
+        const current = this.service.getJob(job.id);
+        this.applyRecoveryDecision(current, classifyThrownAutomationError(current, error));
+      }
+    }
+  }
+
   private async monitorRunning(): Promise<void> {
     if (this.processing) return;
     this.processing = true;
@@ -206,6 +272,15 @@ export class JobWorker {
       const due = running.slice(0, 50);
       if (!due.length) return;
       const results = await this.runWithBackgroundAutomation(async () => {
+        if (typeof this.adapter.inspectPortraitReviews === "function") {
+          const entries = due.map((job) => ({ job, portrait: this.service.getPortrait(job.portraitId!) }));
+          try {
+            const outcomes = await this.adapter.inspectPortraitReviews(entries, { timeoutMs: PORTRAIT_INSPECTION_TIMEOUT_MS });
+            return due.map((job) => ({ job, outcome: outcomes.get(job.id), error: undefined }));
+          } catch (error) {
+            return due.map((job) => ({ job, outcome: undefined, error }));
+          }
+        }
         const inspected: Array<{ job: Job; outcome?: AdapterOutcome; error?: unknown }> = [];
         for (const job of due) {
           try {

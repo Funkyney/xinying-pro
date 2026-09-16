@@ -82,6 +82,16 @@ export function classifyAutomationFailure(job: Job, failure: RecoveryFailure): R
   if (/task.*running|任务正在运行|操作正在进行|稍后再试|too many requests|429|限流|busy/.test(normalized)) {
     return retry("platform-busy", 5, "心影当前繁忙，已排队等待后自动继续");
   }
+  if (/选项不可用|无法唯一确认.*实际编号|无法唯一确认.*编号/.test(failure.message)) {
+    return {
+      action: "manual",
+      category: "human-approval",
+      code: failure.code,
+      message: failure.message,
+      delayMs: 0,
+      maxAttempts: 0,
+    };
+  }
   if (failure.reason === "page-changed" || /selector|找不到|页面|素材槽位|表单|按钮|detached|execution context/.test(normalized)) {
     return retry("page-state", job.kind === "portrait-review" ? 5 : 4, "心影页面状态发生变化，正在重新定位并继续");
   }

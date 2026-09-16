@@ -277,9 +277,18 @@ describe("Playwright adapter task references", () => {
   it("trusts successful Heart mutation envelopes and captures the submitted portrait id", () => {
     expect(adapterInternals.platformMutationResult({ code: 0, data: { portrait_ids: ["portrait-9"] } }, true)).toEqual({ ok: true, message: "" });
     expect(adapterInternals.submittedPortraitId({ code: 0, data: { portrait_ids: ["portrait-9"] } })).toBe("portrait-9");
+    expect(adapterInternals.submittedPortraitIds({ code: 0, data: { portrait_ids: ["portrait-9", "portrait-10"] } })).toEqual(["portrait-9", "portrait-10"]);
+    expect(adapterInternals.submittedPortraitIds({ data: { items: [{ portrait_id: 88 }, { portraitId: "89" }] } })).toEqual(["88", "89"]);
     expect(adapterInternals.submittedPortraitId({ data: { items: [{ portrait_id: 88 }] } })).toBe("88");
     expect(adapterInternals.platformMutationResult({ code: 500, message: "任务进行中" }, true)).toEqual({ ok: false, message: "任务进行中" });
     expect(adapterInternals.platformMutationResult({ code: 0 }, false).ok).toBe(false);
+  });
+
+  it("does not treat an untouched portrait select placeholder as a valid other value", () => {
+    expect(adapterInternals.portraitOptionIsSelected("请选择", "其他")).toBe(false);
+    expect(adapterInternals.portraitOptionIsSelected("", "其他")).toBe(false);
+    expect(adapterInternals.portraitOptionIsSelected("女", "其他")).toBe(true);
+    expect(adapterInternals.portraitOptionIsSelected("青年（19-35）", "青年（19-35）")).toBe(true);
   });
 
 });

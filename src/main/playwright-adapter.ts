@@ -28,7 +28,7 @@ import { parseMaterialKey, portraitMaterialKey, referenceMaterialKey } from "../
 import {
   assignMediaLabels,
   canonicalizePromptMaterialReferences,
-  findAddedMediaLabel,
+  findAddedMediaLabels,
   mediaKindFromMime,
   portraitMediaKindFromPreviewUrl,
   promptMaterialLabels,
@@ -229,6 +229,12 @@ function resolvePortraitOptionValue(candidates: PortraitOptionCandidate[], reque
   return requested === "其他" ? available[0]?.value ?? null : null;
 }
 
+function portraitOptionIsSelected(current: string, requested: string): boolean {
+  const value = current.trim();
+  if (!value || /请选择|please select/i.test(value)) return false;
+  return value === requested || requested === "其他";
+}
+
 function platformPortraitIdentity(displayName: string, previewUrl: string, workspaceId = ""): { id: string; platformAssetId: string } {
   let platformAssetId = "";
   try {
@@ -282,7 +288,7 @@ function platformMutationResult(payload: unknown, httpOk = true): { ok: boolean;
   return { ok, message };
 }
 
-function submittedPortraitId(payload: unknown): string {
+function submittedPortraitIds(payload: unknown): string[] {
   const root = recordValue(payload);
   const data = recordValue(root.data);
   const portraitIdValue = (...values: unknown[]) => {
@@ -291,18 +297,27 @@ function submittedPortraitId(payload: unknown): string {
     return value === undefined ? "" : String(value).trim();
   };
   const direct = portraitIdValue(root.portrait_id, root.portraitId, data.portrait_id, data.portraitId);
-  if (direct) return direct;
+  if (direct) return [direct];
   const arrays = [root.portrait_ids, data.portrait_ids, data.items, data.list];
   for (const candidate of arrays) {
     if (!Array.isArray(candidate)) continue;
+    const ids: string[] = [];
     for (const item of candidate) {
-      if (typeof item === "string" || typeof item === "number") return String(item);
+      if (typeof item === "string" || typeof item === "number") {
+        ids.push(String(item));
+        continue;
+      }
       const value = recordValue(item);
       const id = portraitIdValue(value.portrait_id, value.portraitId);
-      if (id) return id;
+      if (id) ids.push(id);
     }
+    if (ids.length) return ids;
   }
-  return "";
+  return [];
+}
+
+function submittedPortraitId(payload: unknown): string {
+  return submittedPortraitIds(payload)[0] ?? "";
 }
 
 function platformPortraitApiRecords(payload: unknown): PlatformPortraitApiRecord[] {
@@ -2492,29 +2507,42 @@ export class PlaywrightXinyingAdapter {
         if (item?.kind !== "reference") continue;
         const reference = referencesById.get(item.id);
         if (!reference) return { status: "needs-human", checkpoint: { reason: "page-changed", message: `任务快照缺少参考素材：${item.id}` } };
+        const expectedKind = mediaKindFromMime(reference.mimeType);
+        const compatibleRun: Array<{ key: string; reference: Job["references"][number] }> = [];
+        for (let cursor = materialIndex; cursor < materialOrder.length; cursor += 1) {
+          const runItem = parseMaterialKey(materialOrder[cursor]);
+          if (runItem?.kind !== "reference") break;
+          const runReference = referencesById.get(runItem.id);
+          if (!runReference || mediaKindFromMime(runReference.mimeType) !== expectedKind) break;
+          compatibleRun.push({ key: materialOrder[cursor], reference: runReference });
+        }
         const beforeLabels = await this.uploadedMaterialLabels(page);
         const input = await this.referenceUploadInput(page, reference.mimeType);
         if (!input || (await input.count()) === 0) {
           return { status: "needs-human", checkpoint: { reason: "page-changed", message: `找不到心影${mediaKindFromMime(reference.mimeType) === "audio" ? "音频" : mediaKindFromMime(reference.mimeType) === "video" ? "视频" : "图片"}上传入口：${reference.name}` } };
         }
-        await input.setInputFiles(reference.filePath);
-        materialCount += 1;
+        const supportsMultiple = (await input.getAttribute("multiple")) !== null;
+        const uploadRun = supportsMultiple ? compatibleRun : compatibleRun.slice(0, 1);
+        await input.setInputFiles(uploadRun.map((entry) => entry.reference.filePath));
+        materialCount += uploadRun.length;
         if (!(await this.waitForMaterialCount(page, materialCount))) {
           await this.clearUploadedMaterials(page).catch(() => undefined);
-          return { status: "needs-human", checkpoint: { reason: "approval", message: `参考素材“${reference.name}”上传未完成或被心影拒绝` } };
+          return { status: "needs-human", checkpoint: { reason: "approval", message: `参考素材“${uploadRun.map((entry) => entry.reference.name).join("、")}”上传未完成或被心影拒绝` } };
         }
         const labels = await this.uploadedMaterialLabels(page);
-        const actual = findAddedMediaLabel(beforeLabels, labels) ?? "";
-        if (!actual) {
+        const addedLabels = findAddedMediaLabels(beforeLabels, labels)
+          .filter((label) => this.mediaKindFromPlatformLabel(label) === expectedKind)
+          .sort((left, right) => {
+            const leftIndex = Number(left.match(/\d+$/)?.[0] ?? 0);
+            const rightIndex = Number(right.match(/\d+$/)?.[0] ?? 0);
+            return leftIndex - rightIndex;
+          });
+        if (addedLabels.length !== uploadRun.length) {
           await this.clearUploadedMaterials(page);
-          return { status: "needs-human", checkpoint: { reason: "page-changed", message: `参考素材“${reference.name}”上传后没有产生可识别的新编号，已安全停止` } };
+          return { status: "needs-human", checkpoint: { reason: "page-changed", message: `心影批量接收了 ${uploadRun.length} 项${expectedKind === "audio" ? "音频" : expectedKind === "video" ? "视频" : "图片"}，但只返回 ${addedLabels.length} 个可识别编号，已安全停止` } };
         }
-        const expectedKind = mediaKindFromMime(reference.mimeType);
-        if (this.mediaKindFromPlatformLabel(actual) !== expectedKind) {
-          await this.clearUploadedMaterials(page);
-          return { status: "needs-human", checkpoint: { reason: "page-changed", message: `心影把“${reference.name}”编号为 @${actual}，与 APP 识别类型不一致，已安全停止` } };
-        }
-        actualLabelByKey.set(key, `@${actual}`);
+        uploadRun.forEach((entry, index) => actualLabelByKey.set(entry.key, `@${addedLabels[index]}`));
+        materialIndex += uploadRun.length - 1;
       }
       const actualLabels = materialOrder.map((key) => actualLabelByKey.get(key) ?? "");
       if (actualLabels.some((label) => !label) || new Set(actualLabels).size !== materialOrder.length) {
@@ -2766,6 +2794,159 @@ export class PlaywrightXinyingAdapter {
     return { status: "running", platformTaskId: `portrait-staged:${job.id}`, message: `虚拟人像“${portrait.displayName}”已自动勾选合规承诺并提交心影审核` };
   }
 
+  async submitPortraitReviews(entries: Array<{ job: Job; portrait: PortraitAsset }>): Promise<Map<string, AdapterOutcome>> {
+    const outcomes = new Map<string, AdapterOutcome>();
+    if (!entries.length) return outcomes;
+    if (entries.length === 1) {
+      const [{ job, portrait }] = entries;
+      outcomes.set(job.id, await this.submitPortraitReview(job, portrait));
+      return outcomes;
+    }
+    const finishAll = (outcome: AdapterOutcome): Map<string, AdapterOutcome> => {
+      for (const { job } of entries) outcomes.set(job.id, outcome);
+      return outcomes;
+    };
+    const missingConsent = entries.find(({ portrait }) => !portrait.consentConfirmed);
+    if (missingConsent) throw new AppError("CONSENT_REQUIRED", `未确认虚拟人像素材“${missingConsent.portrait.displayName}”的授权承诺`);
+
+    const page = await this.page();
+    const firstUrl = stringParameter(entries[0].job, "platformUrl");
+    const target = firstUrl ? safeGenerationUrl(firstUrl) : null;
+    if (firstUrl && !target) {
+      return finishAll({ status: "needs-human", checkpoint: { reason: "page-changed", message: "虚拟人像任务绑定的心影项目链接无效" } });
+    }
+    const currentUrl = new URL(page.url());
+    const targetProjectId = target?.searchParams.get("projectId") ?? currentUrl.searchParams.get("projectId");
+    if (!targetProjectId) {
+      return finishAll({ status: "needs-human", checkpoint: { reason: "page-changed", message: "请先在原网页模式打开心影首页或任一项目，再恢复虚拟人像任务" } });
+    }
+    if (currentUrl.pathname !== this.selectors.portrait.pagePath || currentUrl.searchParams.get("projectId") !== targetProjectId) {
+      await page.goto(`${this.selectors.baseUrl.replace(/\/$/, "")}${this.selectors.portrait.pagePath}?projectId=${encodeURIComponent(targetProjectId)}`, {
+        waitUntil: "domcontentloaded",
+        timeout: 30_000,
+      });
+    }
+    const checkpoint = await this.checkpoint(page);
+    if (checkpoint) {
+      return finishAll(checkpoint.reason === "login"
+        ? { status: "needs-login", message: checkpoint.message }
+        : { status: "needs-human", checkpoint });
+    }
+
+    await this.discardOpenPortraitUploadDialog(page);
+    const create = await this.waitForTextEntry(page, this.selectors.portrait.createTexts, 20_000);
+    if (!create) return finishAll({ status: "needs-human", checkpoint: { reason: "page-changed", message: "找不到“新建虚拟形象”入口" } });
+    await clickDom(create);
+    const localUpload = await this.waitForTextEntry(page, this.selectors.portrait.localUploadTexts, 8_000);
+    if (!localUpload) return finishAll({ status: "needs-human", checkpoint: { reason: "page-changed", message: "找不到虚拟人像“本地上传”入口" } });
+    await clickDom(localUpload);
+    const dialog = await this.waitForVisible(page, this.selectors.portrait.dialog, 8_000);
+    if (!dialog) return finishAll({ status: "needs-human", checkpoint: { reason: "page-changed", message: "新建虚拟人像表单未打开" } });
+
+    const formRows = dialog.locator(".image_card_wrapper").filter({ visible: true });
+    const beforeRowCount = await formRows.count();
+    const input = await firstExistingWithin(dialog, ["input[type='file']"])
+      ?? await firstExisting(page, this.selectors.portrait.uploadInput);
+    if (!input) return finishAll({ status: "needs-human", checkpoint: { reason: "page-changed", message: "找不到虚拟人像图片/视频上传控件" } });
+
+    await input.setInputFiles(entries.map(({ portrait }) => portrait.filePath));
+    const hasVideo = entries.some(({ portrait }) => portrait.mimeType.startsWith("video/"));
+    const uploadDeadline = Date.now() + (hasVideo ? 240_000 : 120_000);
+    const failure = dialog.getByText(/上传失败|文件不支持|素材解析失败|图片校验失败|视频校验失败/).filter({ visible: true }).first();
+    let addedRows: Locator[] = [];
+    let rowsReady = false;
+    while (Date.now() < uploadDeadline) {
+      if ((await failure.count()) > 0) {
+        return finishAll({ status: "failed", code: "PORTRAIT_UPLOAD_REJECTED", message: (await failure.innerText()).trim() });
+      }
+      const rowCount = await formRows.count();
+      if (rowCount >= beforeRowCount + entries.length) {
+        addedRows = entries.map((_, index) => formRows.nth(beforeRowCount + index));
+        const ready = await Promise.all(addedRows.map(async (row) => (
+          await row.locator("input[placeholder*='人像名称'], input[type='text']:not([role='combobox'])").filter({ visible: true }).first().count()
+        ) > 0));
+        if (ready.every(Boolean)) {
+          rowsReady = true;
+          break;
+        }
+      }
+      await page.waitForTimeout(150);
+    }
+    if (!rowsReady || addedRows.length !== entries.length) {
+      return finishAll({ status: "failed", code: "PORTRAIT_UPLOAD_TIMEOUT", message: `心影未在规定时间内完成 ${entries.length} 项虚拟人像素材的上传或解析` });
+    }
+
+    for (let index = 0; index < entries.length; index += 1) {
+      const { portrait } = entries[index];
+      const row = addedRows[index];
+      const nameInput = row.locator("input[placeholder*='人像名称'], input[type='text']:not([role='combobox'])").filter({ visible: true }).first();
+      if ((await nameInput.count()) === 0) {
+        return finishAll({ status: "needs-human", checkpoint: { reason: "page-changed", message: `心影已接收“${portrait.displayName}”，但新素材行缺少名称输入框` } });
+      }
+      await nameInput.fill(portrait.displayName);
+      for (const selection of configurablePortraitOptions(portrait)) {
+        if (!(await this.choosePortraitOption(page, row, selection.index, selection.value))) {
+          const fieldName = ["性别", "年龄", "人种"][selection.index] ?? "资料";
+          return finishAll({ status: "needs-human", checkpoint: { reason: "page-changed", message: `心影虚拟人像${fieldName}选项不可用：${selection.value}` } });
+        }
+      }
+    }
+
+    const scope = entries[0].portrait.applicationScope;
+    const domestic = scope === "domestic" || scope === "both";
+    const overseas = scope === "overseas" || scope === "both";
+    if (!(await this.setPortraitScope(dialog, "火山Seedance国内版", domestic)) || !(await this.setPortraitScope(dialog, "火山Seedance海外版", overseas))) {
+      return finishAll({ status: "needs-human", checkpoint: { reason: "page-changed", message: "无法确认虚拟人像国内/海外应用范围" } });
+    }
+    if (!(await this.setPortraitScope(dialog, "我已阅读并同意", true))) {
+      return finishAll({ status: "needs-human", checkpoint: { reason: "page-changed", message: "无法确认心影虚拟人像合规承诺复选框" } });
+    }
+    const submit = await firstVisible(page, this.selectors.portrait.submitButtons);
+    if (!submit || !(await submit.isEnabled())) {
+      return finishAll({ status: "needs-human", checkpoint: { reason: "approval", message: "心影虚拟人像批量表单尚未满足提交条件，请检查素材与合规承诺" } });
+    }
+    const submitResponsePromise = page.waitForResponse((response) => {
+      try {
+        return response.request().method() === "POST" && new URL(response.url()).pathname === "/api/v2/portraits/upload";
+      } catch {
+        return false;
+      }
+    }, { timeout: 60_000 }).catch(() => null);
+    await clickDom(submit);
+    const submitResponse = await submitResponsePromise;
+    if (submitResponse) {
+      const payload = await submitResponse.json().catch(() => null) as unknown;
+      const mutation = platformMutationResult(payload, submitResponse.ok());
+      if (!mutation.ok) {
+        return finishAll({ status: "failed", code: "PORTRAIT_UPLOAD_REJECTED", message: mutation.message || "心影拒绝了批量虚拟人像提交" });
+      }
+      const portraitIds = submittedPortraitIds(payload);
+      for (let index = 0; index < entries.length; index += 1) {
+        const { job, portrait } = entries[index];
+        const portraitId = portraitIds[index];
+        outcomes.set(job.id, {
+          status: "running",
+          platformTaskId: portraitId ? `portrait:${portraitId}` : `portrait-staged:${job.id}`,
+          message: `虚拟人像“${portrait.displayName}”已随 ${entries.length} 项批次自动提交心影审核`,
+        });
+      }
+      await dialog.waitFor({ state: "hidden", timeout: 5_000 }).catch(() => undefined);
+      this.portraitApiSnapshot = null;
+      return outcomes;
+    }
+    await dialog.waitFor({ state: "hidden", timeout: 10_000 }).catch(() => undefined);
+    if (await dialog.isVisible().catch(() => false)) {
+      return finishAll({ status: "needs-human", checkpoint: { reason: "approval", message: "心影未关闭虚拟人像批量提交表单，请检查页面提示" } });
+    }
+    this.portraitApiSnapshot = null;
+    for (const { job, portrait } of entries) outcomes.set(job.id, {
+      status: "running",
+      platformTaskId: `portrait-staged:${job.id}`,
+      message: `虚拟人像“${portrait.displayName}”已随 ${entries.length} 项批次提交心影审核`,
+    });
+    return outcomes;
+  }
+
   async inspectPortraitReview(job: Job, portrait: PortraitAsset, options: { timeoutMs?: number } = {}): Promise<AdapterOutcome> {
     const timeoutMs = Math.max(1_000, options.timeoutMs ?? 15_000);
     const inspectionDeadline = Date.now() + timeoutMs;
@@ -2815,13 +2996,6 @@ export class PlaywrightXinyingAdapter {
       const root = recordValue(payload);
       if (root.code === 401) return { status: "needs-login", message: "心影登录已失效，请重新完成飞书扫码登录" };
       const records = platformPortraitApiRecords(payload);
-      if (!records.length) {
-        return {
-          status: "running",
-          platformTaskId: job.platformTaskId ?? undefined,
-          message: `虚拟人像“${portrait.displayName}”已提交，等待心影角色库返回审核结果`,
-        };
-      }
       snapshot = {
         projectId: targetProjectId,
         capturedAt: Date.now(),
@@ -2887,6 +3061,24 @@ export class PlaywrightXinyingAdapter {
       platformTaskId: job.platformTaskId ?? undefined,
       message: `虚拟人像“${portrait.displayName}”已提交，正在等待心影角色库更新`,
     };
+  }
+
+  async inspectPortraitReviews(
+    entries: Array<{ job: Job; portrait: PortraitAsset }>,
+    options: { timeoutMs?: number } = {},
+  ): Promise<Map<string, AdapterOutcome>> {
+    const outcomes = new Map<string, AdapterOutcome>();
+    if (!entries.length) return outcomes;
+    // inspectPortraitReview caches the Heart list + batch-status response by
+    // project. Calling it for the whole group therefore performs one remote
+    // refresh and reconciles every local portrait against the same snapshot.
+    const totalTimeout = Math.max(2_000, options.timeoutMs ?? 15_000);
+    const deadline = Date.now() + totalTimeout;
+    for (const entry of entries) {
+      const remaining = Math.max(1_000, deadline - Date.now());
+      outcomes.set(entry.job.id, await this.inspectPortraitReview(entry.job, entry.portrait, { timeoutMs: remaining }));
+    }
+    return outcomes;
   }
 
   async inspectGenerationJobs(jobs: Job[]): Promise<Map<string, AdapterOutcome>> {
@@ -3357,17 +3549,13 @@ export class PlaywrightXinyingAdapter {
   private async choosePortraitOption(page: Page, row: Locator, index: number, value: string): Promise<boolean> {
     const input = row.locator("input[role='combobox']").nth(index);
     if ((await input.count()) === 0) return false;
-    for (let attempt = 0; attempt < 5; attempt += 1) {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
       const currentValue = (await input.inputValue()).trim();
-      if (currentValue === value || (value === "其他" && currentValue)) return true;
-      await page.waitForTimeout(attempt === 0 ? 500 : 750);
-      const inputBox = await input.boundingBox();
-      if (!inputBox) return false;
-      await page.mouse.click(inputBox.x + inputBox.width / 2, inputBox.y + inputBox.height / 2);
-      await page.waitForTimeout(350);
+      if (portraitOptionIsSelected(currentValue, value)) return true;
+      await input.click({ force: true, timeout: 1_500 }).catch(() => undefined);
       const control = await input.getAttribute("aria-controls");
       let options = control ? page.locator(`[id="${control}"] [role="option"]`) : page.locator("[role='option']:visible");
-      const optionsDeadline = Date.now() + 2_500;
+      const optionsDeadline = Date.now() + 1_200;
       while (Date.now() < optionsDeadline && (await options.count()) === 0) {
         // Element Plus may mount the dropdown in a body-level portal after aria-controls is assigned.
         // In that transient state, use only currently visible options from the open dropdown.
@@ -3385,16 +3573,13 @@ export class PlaywrightXinyingAdapter {
         // Element Plus 会在滚动时重建 option 节点，不持有旧节点；
         // 每次点击前按文字重新定位，避免 locator.evaluate 等待失效节点 30 秒。
         const option = page.getByRole("option", { name: selectedValue, exact: true }).filter({ visible: true }).last();
-        await option.scrollIntoViewIfNeeded({ timeout: 2_500 }).catch(() => undefined);
-        await option.click({ force: true, timeout: 3_000 }).catch(() => undefined);
+        await option.scrollIntoViewIfNeeded({ timeout: 1_000 }).catch(() => undefined);
+        await option.click({ force: true, timeout: 1_500 }).catch(() => undefined);
       }
-      const deadline = Date.now() + 3_000;
+      const deadline = Date.now() + 1_500;
       while (Date.now() < deadline) {
         const chosenValue = (await input.inputValue()).trim();
-        if (chosenValue === value || (value === "其他" && Boolean(chosenValue))) {
-          await page.waitForTimeout(750);
-          return true;
-        }
+        if (portraitOptionIsSelected(chosenValue, value)) return true;
         await page.waitForTimeout(50);
       }
       await page.keyboard.press("Escape").catch(() => undefined);
@@ -3477,7 +3662,9 @@ export const adapterInternals = {
   platformMaterialResult,
   configurablePortraitOptions,
   resolvePortraitOptionValue,
+  portraitOptionIsSelected,
   platformMutationResult,
+  submittedPortraitIds,
   submittedPortraitId,
   platformPortraitApiRecords,
   matchPlatformPortraitApiRecord,

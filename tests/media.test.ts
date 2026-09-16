@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { assignMediaLabels, findAddedMediaLabel, portraitMediaKindFromPreviewUrl } from "../src/shared/media";
+import { assignMediaLabels, findAddedMediaLabel, findAddedMediaLabels, portraitMediaKindFromPreviewUrl } from "../src/shared/media";
 
 describe("media helpers", () => {
   it("recognizes Heart video portrait snapshot URLs", () => {
@@ -15,5 +15,6 @@ describe("media helpers", () => {
   it("finds the newly assigned label even when Heart regroups media types", () => {
     expect(findAddedMediaLabel(["视频1"], ["图1", "视频1"])).toBe("图1");
     expect(findAddedMediaLabel(["图1", "视频1"], ["图1", "视频1", "视频2"])).toBe("视频2");
+    expect(findAddedMediaLabels(["图1"], ["图1", "图2", "图3"])).toEqual(["图2", "图3"]);
   });
 });

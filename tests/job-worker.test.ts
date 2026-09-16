@@ -145,6 +145,42 @@ describe("JobWorker", () => {
     expect(adapter.submitPortraitReview).toHaveBeenCalledTimes(2);
   });
 
+  it("submits consecutive compatible portraits through one Heart form", async () => {
+    const project = service.createProject({ name: "批量人像授权", prompt: "固定机位", mode: "text-to-video" });
+    const portraitPaths = ["portrait-a.png", "portrait-b.png", "portrait-c.png"].map((name) => path.join(tempDir, name));
+    portraitPaths.forEach((portraitPath) => fs.writeFileSync(portraitPath, "image"));
+    const portraits = service.addPortraits(portraitPaths, true);
+    const jobs = portraits.map((portrait) => service.submitPortraitReview(portrait.id, project.id));
+    const adapter = {
+      submitGeneration: vi.fn(),
+      submitPortraitReview: vi.fn(),
+      submitPortraitReviews: vi.fn().mockImplementation(async (entries: Array<{ job: { id: string } }>) => new Map(
+        entries.map(({ job }, index) => [job.id, {
+          status: "running",
+          platformTaskId: `portrait:remote-${index + 1}`,
+          message: "已批量提交",
+        }]),
+      )),
+    } as unknown as PlaywrightXinyingAdapter;
+    const worker = new JobWorker(service, adapter);
+
+    await (worker as unknown as { processQueue(): Promise<void> }).processQueue();
+
+    expect(adapter.submitPortraitReviews).toHaveBeenCalledOnce();
+    expect(adapter.submitPortraitReview).not.toHaveBeenCalled();
+    expect(adapter.submitPortraitReviews).toHaveBeenCalledWith(expect.arrayContaining([
+      expect.objectContaining({ job: expect.objectContaining({ id: jobs[0].id }), portrait: expect.objectContaining({ id: portraits[0].id }) }),
+      expect.objectContaining({ job: expect.objectContaining({ id: jobs[1].id }), portrait: expect.objectContaining({ id: portraits[1].id }) }),
+      expect.objectContaining({ job: expect.objectContaining({ id: jobs[2].id }), portrait: expect.objectContaining({ id: portraits[2].id }) }),
+    ]));
+    expect(jobs.map((job) => service.getJob(job.id).status)).toEqual(["running", "running", "running"]);
+    expect(jobs.map((job) => service.getJob(job.id).platformTaskId)).toEqual([
+      "portrait:remote-1",
+      "portrait:remote-2",
+      "portrait:remote-3",
+    ]);
+  });
+
   it("recovers from a main-process EOF without creating or submitting a second job", async () => {
     const project = service.createProject({ name: "断线续跑", prompt: "固定机位", mode: "text-to-video" });
     const queued = service.submitGeneration(project.id);
@@ -344,6 +380,32 @@ describe("JobWorker", () => {
 
     await (worker as unknown as { monitorRunning(): Promise<void> }).monitorRunning();
     expect(adapter.inspectPortraitReview).toHaveBeenCalledTimes(2);
+  });
+
+  it("uses one batch status refresh for all due portraits when supported", async () => {
+    const project = service.createProject({ name: "批量审核查询", prompt: "固定机位", mode: "text-to-video" });
+    const portraitPaths = [path.join(tempDir, "portrait-c.png"), path.join(tempDir, "portrait-d.png")];
+    portraitPaths.forEach((portraitPath) => fs.writeFileSync(portraitPath, "image"));
+    const portraits = service.addPortraits(portraitPaths, true);
+    const jobs = portraits.map((portrait) => service.submitPortraitReview(portrait.id, project.id));
+    jobs.forEach((job) => service.updateJob(job.id, { status: "running", platformTaskId: `portrait:${job.id}` }));
+    const inspectPortraitReviews = vi.fn().mockImplementation(async (entries: Array<{ job: { id: string } }>) => new Map(
+      entries.map(({ job }) => [job.id, { status: "running", platformTaskId: `portrait:${job.id}`, message: "仍在审核" }]),
+    ));
+    const adapter = {
+      inspectPortraitReview: vi.fn(),
+      inspectPortraitReviews,
+    } as unknown as PlaywrightXinyingAdapter;
+    const worker = new JobWorker(service, adapter);
+
+    await (worker as unknown as { monitorRunning(): Promise<void> }).monitorRunning();
+
+    expect(inspectPortraitReviews).toHaveBeenCalledOnce();
+    expect(inspectPortraitReviews).toHaveBeenCalledWith(expect.arrayContaining([
+      expect.objectContaining({ job: expect.objectContaining({ id: jobs[0].id }) }),
+      expect.objectContaining({ job: expect.objectContaining({ id: jobs[1].id }) }),
+    ]), { timeoutMs: 5_000 });
+    expect(adapter.inspectPortraitReview).not.toHaveBeenCalled();
   });
 
   it("defers portrait polling when foreground platform work is active", async () => {
