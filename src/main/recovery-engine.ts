@@ -25,6 +25,12 @@ export interface RecoveryDecision {
   message: string;
   delayMs: number;
   maxAttempts: number;
+  source?: "rules" | "typesafe" | "fallback";
+  confidence?: number;
+}
+
+export interface RecoveryAdvisor {
+  advise(job: Job, failure: RecoveryFailure, fallback: RecoveryDecision): Promise<RecoveryDecision>;
 }
 
 const PERMANENT_CODES = new Set([
@@ -65,16 +71,17 @@ export function classifyAutomationFailure(job: Job, failure: RecoveryFailure): R
     message: nextAttempt <= maxAttempts ? message : `自动修复已尝试 ${job.retryCount} 次：${failure.message}`,
     delayMs: backoffDelay(nextAttempt, category),
     maxAttempts,
+    source: "rules",
   });
 
   if (PERMANENT_CODES.has(failure.code)) {
-    return { action: "fail", category: "permanent", code: failure.code, message: failure.message, delayMs: 0, maxAttempts: 0 };
+    return { action: "fail", category: "permanent", code: failure.code, message: failure.message, delayMs: 0, maxAttempts: 0, source: "rules" };
   }
   if (failure.reason === "login" || /登录|扫码|login|unauthorized|401|403/.test(normalized)) {
-    return { action: "manual", category: "login", code: failure.code, message: failure.message, delayMs: 0, maxAttempts: 0 };
+    return { action: "manual", category: "login", code: failure.code, message: failure.message, delayMs: 0, maxAttempts: 0, source: "rules" };
   }
   if (failure.reason === "payment" || /付款|付费|余额|额度|验证码|captcha|实名|承诺|合规确认/.test(normalized)) {
-    return { action: "manual", category: "human-approval", code: failure.code, message: failure.message, delayMs: 0, maxAttempts: 0 };
+    return { action: "manual", category: "human-approval", code: failure.code, message: failure.message, delayMs: 0, maxAttempts: 0, source: "rules" };
   }
   if (/sqlite_busy|database is locked|out of memory|sqlite_nomem/.test(normalized)) {
     return retry("database-pressure", 2, "本地数据库暂时繁忙，正在释放资源后重试");
@@ -90,6 +97,7 @@ export function classifyAutomationFailure(job: Job, failure: RecoveryFailure): R
       message: failure.message,
       delayMs: 0,
       maxAttempts: 0,
+      source: "rules",
     };
   }
   if (failure.reason === "page-changed" || /selector|找不到|页面|素材槽位|表单|按钮|detached|execution context/.test(normalized)) {
@@ -105,9 +113,9 @@ export function classifyAutomationFailure(job: Job, failure: RecoveryFailure): R
     return retry("connection", 4, "控制连接暂时中断，正在自动重连并继续");
   }
   if (failure.reason === "unknown") {
-    return { action: "manual", category: "unknown", code: failure.code, message: failure.message, delayMs: 0, maxAttempts: 0 };
+    return { action: "manual", category: "unknown", code: failure.code, message: failure.message, delayMs: 0, maxAttempts: 0, source: "rules" };
   }
-  return retry("unknown", 2, "发生未识别的临时错误，正在进行受限重试");
+  return { ...retry("unknown", 2, "发生未识别的临时错误，正在进行受限重试"), source: "fallback" };
 }
 
 export function classifyThrownAutomationError(job: Job, error: unknown): RecoveryDecision {

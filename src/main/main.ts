@@ -8,6 +8,7 @@ import { loadSelectorPack } from "./selector-pack";
 import { PlatformViewManager } from "./platform-view";
 import { PlaywrightXinyingAdapter } from "./playwright-adapter";
 import { JobWorker } from "./job-worker";
+import { createTypeSafeRecoveryAdvisor } from "./typesafe-recovery-advisor";
 import { registerIpcHandlers } from "./ipc-handlers";
 import { registerAppUpdater } from "./app-updater";
 import { IPC } from "../shared/ipc";
@@ -92,6 +93,7 @@ function createWindow(): void {
     adapter,
     (operation, label) => platformManager!.withAutomationViewport(operation, label),
     (operation) => platformManager!.withBackgroundAutomation(operation),
+    createTypeSafeRecoveryAdvisor(),
   );
   const bundledSkillPath = app.isPackaged
     ? path.join(process.resourcesPath, "codex-skills", "xinying-pro-generate")

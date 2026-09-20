@@ -2,7 +2,12 @@ import type { Job } from "../shared/contracts";
 import type { XinyingService } from "../core/service";
 import { asAppError } from "../core/errors";
 import type { PlaywrightXinyingAdapter, AdapterOutcome } from "./playwright-adapter";
-import { classifyAutomationFailure, classifyThrownAutomationError, type RecoveryDecision } from "./recovery-engine";
+import {
+  classifyAutomationFailure,
+  type RecoveryAdvisor,
+  type RecoveryDecision,
+  type RecoveryFailure,
+} from "./recovery-engine";
 
 type AutomationViewRunner = <T>(operation: () => Promise<T>, label?: string) => Promise<T>;
 type BackgroundAutomationRunner = <T>(operation: () => Promise<T>) => Promise<T | undefined>;
@@ -43,6 +48,7 @@ export class JobWorker {
     private readonly adapter: PlaywrightXinyingAdapter,
     private readonly runWithAutomationView: AutomationViewRunner = async (operation) => operation(),
     private readonly runWithBackgroundAutomation: BackgroundAutomationRunner = async (operation) => operation(),
+    private readonly recoveryAdvisor: RecoveryAdvisor | null = null,
   ) {}
 
   start(): void {
@@ -117,7 +123,7 @@ export class JobWorker {
         this.service.addJobEvent(job.id, "warning", "GENERATION_MONITOR_RETRY", appError.message);
         continue;
       }
-      this.applyOutcome(job, outcome, false);
+      await this.applyOutcome(job, outcome, false);
     }
   }
 
@@ -185,10 +191,10 @@ export class JobWorker {
         ? this.adapter.submitGeneration(job, reuseFromPlatformTaskId)
         : this.adapter.submitPortraitReview(job, this.service.getPortrait(job.portraitId!)),
       job.kind === "generation" ? "正在向心影提交视频生成" : "正在向心影提交虚拟人像审核");
-      this.applyOutcome(job, outcome);
+      await this.applyOutcome(job, outcome);
     } catch (error) {
       const current = this.service.getJob(job.id);
-      this.applyRecoveryDecision(current, classifyThrownAutomationError(current, error));
+      this.applyRecoveryDecision(current, await this.resolveThrownRecoveryDecision(current, error));
     } finally {
       this.processing = false;
     }
@@ -244,12 +250,12 @@ export class JobWorker {
       const missing = active.find((job) => !outcomes.has(job.id));
       if (missing) throw new Error(`心影批量提交未返回任务 ${missing.id} 的状态`);
       for (const job of active) {
-        this.applyOutcome(job, outcomes.get(job.id)!);
+        await this.applyOutcome(job, outcomes.get(job.id)!);
       }
     } catch (error) {
       for (const job of active) {
         const current = this.service.getJob(job.id);
-        this.applyRecoveryDecision(current, classifyThrownAutomationError(current, error));
+        this.applyRecoveryDecision(current, await this.resolveThrownRecoveryDecision(current, error));
       }
     }
   }
@@ -312,7 +318,7 @@ export class JobWorker {
           this.service.addJobEvent(job.id, "warning", "MONITOR_RETRY", appError.message);
           continue;
         }
-        this.applyOutcome(job, outcome, false);
+        await this.applyOutcome(job, outcome, false);
         if (outcome.status === "running") {
           const attempt = (this.portraitCheckAttempts.get(job.id) ?? 0) + 1;
           this.portraitCheckAttempts.set(job.id, attempt);
@@ -353,6 +359,8 @@ export class JobWorker {
         maxAttempts: decision.maxAttempts,
         nextRetryAt,
         verifiesPendingSubmission: job.platformTaskId?.startsWith("pending-chat:") || false,
+        classifierSource: decision.source ?? "rules",
+        classifierConfidence: decision.confidence ?? null,
       });
       return;
     }
@@ -375,6 +383,8 @@ export class JobWorker {
         category: decision.category,
         failureCode: decision.code,
         retryCount: job.retryCount,
+        classifierSource: decision.source ?? "rules",
+        classifierConfidence: decision.confidence ?? null,
       });
       return;
     }
@@ -394,12 +404,31 @@ export class JobWorker {
     if (job.kind === "portrait-review" && job.portraitId) {
       this.service.updatePortraitReviewState(job.portraitId, "rejected", decision.message);
     }
-    this.service.addJobEvent(job.id, "error", decision.code, decision.message, { category: decision.category });
+    this.service.addJobEvent(job.id, "error", decision.code, decision.message, {
+      category: decision.category,
+      classifierSource: decision.source ?? "rules",
+      classifierConfidence: decision.confidence ?? null,
+    });
   }
 
-  private applyOutcome(job: Job, outcome: AdapterOutcome, logRunning = true): void {
+  private async resolveRecoveryDecision(job: Job, failure: RecoveryFailure): Promise<RecoveryDecision> {
+    const fallback = classifyAutomationFailure(job, failure);
+    if (fallback.category !== "unknown" || !this.recoveryAdvisor) return fallback;
+    return this.recoveryAdvisor.advise(job, failure, fallback).catch(() => fallback);
+  }
+
+  private async resolveThrownRecoveryDecision(job: Job, error: unknown): Promise<RecoveryDecision> {
+    const appError = asAppError(error);
+    return this.resolveRecoveryDecision(job, {
+      code: appError.code,
+      message: appError.message,
+      pendingSubmission: job.platformTaskId?.startsWith("pending-chat:") || false,
+    });
+  }
+
+  private async applyOutcome(job: Job, outcome: AdapterOutcome, logRunning = true): Promise<void> {
     if (outcome.status === "needs-login") {
-      this.applyRecoveryDecision(job, classifyAutomationFailure(job, {
+      this.applyRecoveryDecision(job, await this.resolveRecoveryDecision(job, {
         code: "NEEDS_LOGIN",
         message: outcome.message,
         reason: "login",
@@ -410,7 +439,7 @@ export class JobWorker {
       const current = outcome.platformTaskId && outcome.platformTaskId !== job.platformTaskId
         ? this.service.updateJob(job.id, { platformTaskId: outcome.platformTaskId })
         : job;
-      this.applyRecoveryDecision(current, classifyAutomationFailure(current, {
+      this.applyRecoveryDecision(current, await this.resolveRecoveryDecision(current, {
         code: `NEEDS_${outcome.checkpoint.reason.toUpperCase()}`,
         message: outcome.checkpoint.message,
         reason: outcome.checkpoint.reason,
@@ -419,7 +448,7 @@ export class JobWorker {
       return;
     }
     if (outcome.status === "failed") {
-      const decision = classifyAutomationFailure(job, { code: outcome.code, message: outcome.message });
+      const decision = await this.resolveRecoveryDecision(job, { code: outcome.code, message: outcome.message });
       if (decision.action !== "fail") {
         this.applyRecoveryDecision(job, decision);
         return;
