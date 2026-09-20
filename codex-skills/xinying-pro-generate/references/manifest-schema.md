@@ -37,7 +37,13 @@
     {
       "kind": "file",
       "path": "C:\\shots\\07\\empty-room.mp4",
-      "containsPerson": false,
+      "personCheck": {
+        "verdict": "no-person",
+        "confidence": 0.9,
+        "summary": "覆盖全片的关键帧只包含空房间和家具",
+        "inspectedFrames": 18,
+        "inspectionComplete": true
+      },
       "role": "motion"
     },
     {
@@ -58,7 +64,8 @@
 - `settings`：可选。`mode` 为 `text-to-video`、`image-to-video`、`reference-to-video` 或 `first-last-frame`；其余值须符合当前心影模型能力。Seedance 2.5 支持 `videoFormat: "mp4" | "mov"` 和 `networkEnabled: boolean`；未填写时心影Pro默认使用 MP4 并开启联网搜索。
 - `materials`：数组顺序就是 APP 的最终创作顺序。Seedance 2.5 最多 30 图 / 10 视频 / 10 音频、合计 50 项；Seedance 2.0 最多 9 图 / 3 视频 / 3 音频、合计 15 项。虚拟人像计入对应的图片或视频数量。
 - `kind: file`：本地图片、视频或音频。`role` 可为 `first-frame`、`last-frame`、`character`、`scene`、`product`、`style`、`motion`、`other`。
-- `containsPerson`：每个图片和视频都必须显式填写。任意画面/帧出现真人、虚拟人物或人形角色时为 `true`；确认整项素材完全无人时为 `false`。视频必须检查覆盖全片的关键帧，不能只看封面。音频不填写该字段。
+- `containsPerson`：结论明确时，每个图片和视频都显式填写。任意画面/帧出现真人、虚拟人物或人形角色时为 `true`；确认整项素材完全无人时为 `false`。视频必须检查覆盖全片的关键帧，不能只看封面。音频不填写该字段。
+- `personCheck`：仅用于已经完成视觉检查但结论仍需置信度路由的图片/视频。`verdict` 为 `person`、`no-person` 或 `uncertain`，`confidence` 为 0-1，`summary` 写可见证据，视频可写 `inspectedFrames`，完整覆盖检查时写 `inspectionComplete: true`。使用该字段时可省略 `containsPerson`；APP 会先复用文件缓存，再将全部歧义项批量交给 TypeSafe JEV。JEV 不接收原图/视频，不能凭空完成视觉识别；证据不足时仍会停止。
 - `authorizeAsPortrait`：只用于图片或视频。`containsPerson: true`、`role: character` 或本字段为 `true`，任一条件都会被 APP 强制视为需要虚拟人像授权，不能按普通本地参考提交。
 - `kind: platform-portrait`：直接复用已同步到当前心影空间的虚拟人像。
 

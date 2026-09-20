@@ -2266,8 +2266,29 @@ export class PlaywrightXinyingAdapter {
   private async referenceUploadInput(page: Page, mimeType: string): Promise<Locator | null> {
     const kind = mediaKindFromMime(mimeType);
     const extension = kind === "audio" ? ".wav" : kind === "video" ? ".mp4" : ".png";
-    const inputs = page.locator(`input[type='file'][accept*='${extension}']`);
-    return (await inputs.count()) > 0 ? inputs.first() : null;
+    const locateInput = (): Locator => page.locator(`input[type='file'][accept*='${extension}']`).first();
+    let input = locateInput();
+    if ((await input.count()) > 0) return input;
+
+    // Heart now lazy-mounts its local file inputs after the matching 图片 / 视频 /
+    // 音频 tile is opened. Keep the old direct lookup as the fast path and only
+    // reveal the current media menu when the page has not mounted an input yet.
+    const triggerSelectors = kind === "audio"
+      ? this.selectors.generation.audioUploadTrigger
+      : kind === "video"
+        ? this.selectors.generation.videoUploadTrigger
+        : this.selectors.generation.imageUploadTrigger;
+    const trigger = await firstVisible(page, triggerSelectors);
+    if (!trigger) return null;
+    await clickDom(trigger);
+
+    const deadline = Date.now() + 5_000;
+    while (Date.now() < deadline) {
+      input = locateInput();
+      if ((await input.count()) > 0) return input;
+      await page.waitForTimeout(100);
+    }
+    return null;
   }
 
   private mediaKindFromPlatformLabel(label: string): PlatformPortrait["mediaKind"] | "audio" {
@@ -2573,7 +2594,11 @@ export class PlaywrightXinyingAdapter {
 
     if (!reusedDraft && firstLastMode) {
       for (let index = 0; index < orderedReferences.length; index += 1) {
-        const inputs = await firstCollection(page, this.selectors.generation.imageInput);
+        let inputs = await firstCollection(page, this.selectors.generation.imageInput);
+        if (!inputs || (await inputs.count()) <= index) {
+          await this.referenceUploadInput(page, "image/png");
+          inputs = await firstCollection(page, this.selectors.generation.imageInput);
+        }
         const input = inputs && (await inputs.count()) > index ? inputs.nth(index) : inputs?.first();
         if (!input || (await input.count()) === 0) {
           return { status: "needs-human", checkpoint: { reason: "page-changed", message: `找不到心影参考图上传入口；尚未上传 @图${index + 1}` } };

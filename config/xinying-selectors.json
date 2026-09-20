@@ -1,6 +1,6 @@
 {
-  "version": 5,
-  "updatedAt": "2026-09-03",
+  "version": 6,
+  "updatedAt": "2026-09-20",
   "baseUrl": "https://blueaivideo.com/",
   "loginUrl": "https://blueaivideo.com/login?from=%252Fhome",
   "authenticatedUrlPatterns": ["/home", "/avpAgent", "/aiCharacter"],
@@ -39,6 +39,18 @@
     "imageInput": [
       "input[type='file'][accept*='.jpeg'][accept*='.png']",
       "input[type='file'][accept*='image']"
+    ],
+    "imageUploadTrigger": [
+      ".ContentChatInput .material-list .ContentChatUploadItem:has(.btn-empty):has-text('图片') [aria-haspopup='menu']",
+      ".ContentChatInput .ContentChatUploadItem:has-text('图片') [aria-haspopup='menu']"
+    ],
+    "videoUploadTrigger": [
+      ".ContentChatInput .material-list .ContentChatUploadItem:has(.btn-empty):has-text('视频') [aria-haspopup='menu']",
+      ".ContentChatInput .ContentChatUploadItem:has-text('视频') [aria-haspopup='menu']"
+    ],
+    "audioUploadTrigger": [
+      ".ContentChatInput .material-list .ContentChatUploadItem:has(.btn-empty):has-text('音频') [aria-haspopup='menu']",
+      ".ContentChatInput .ContentChatUploadItem:has-text('音频') [aria-haspopup='menu']"
     ],
     "materialList": [
       ".ContentChatInput .material-list"
@@ -103,9 +115,9 @@
     "entryTexts": ["心影角色库", "虚拟人像"],
     "createTexts": ["新建虚拟形象"],
     "localUploadTexts": ["本地上传"],
-    "dialog": [".createCharacter", ".el-dialog:has-text('新建虚拟人像')"],
+    "dialog": [".createCharacter", ".PDialog.createCharacter", ".el-dialog:has-text('新建虚拟人像')"],
     "uploadInput": [
-      ".createCharacter input[type='file'][accept*='.mp4']",
+      ".createCharacter input[type='file'][accept*='.png'][accept*='.mp4']",
       ".createCharacter input[type='file']"
     ],
     "submitButtons": [".createCharacter button:has-text('确定')"]

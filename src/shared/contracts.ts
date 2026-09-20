@@ -150,6 +150,13 @@ export interface DirectorFileMaterialInput {
   role?: ReferenceRole;
   containsPerson?: boolean;
   authorizeAsPortrait?: boolean;
+  personCheck?: {
+    verdict: "person" | "no-person" | "uncertain";
+    confidence?: number;
+    summary: string;
+    inspectedFrames?: number;
+    inspectionComplete?: boolean;
+  };
 }
 
 export interface DirectorPlatformPortraitMaterialInput {
@@ -496,6 +503,21 @@ export interface CodexExtensionInstallResult extends CodexExtensionStatus {
   backupPath: string | null;
 }
 
+export interface TypeSafeSettingsStatus {
+  configured: boolean;
+  source: "app" | "environment" | "none";
+  maskedKey: string | null;
+  secureStorageAvailable: boolean;
+  model: "jev-latest";
+}
+
+export interface TypeSafeConnectionResult extends TypeSafeSettingsStatus {
+  connected: boolean;
+  latencyMs: number;
+  jevAvailable: boolean;
+  availableModelCount: number;
+}
+
 export interface XinyingApi {
   dashboard(options?: { includeLibraries?: boolean }): Promise<DashboardSnapshot>;
   projects: {
@@ -586,6 +608,12 @@ export interface XinyingApi {
     status(): Promise<CodexExtensionStatus>;
     install(replaceExisting?: boolean): Promise<CodexExtensionInstallResult>;
     openFolder(): Promise<string>;
+  };
+  typeSafe: {
+    status(): Promise<TypeSafeSettingsStatus>;
+    save(apiKey: string): Promise<TypeSafeConnectionResult>;
+    clear(): Promise<TypeSafeSettingsStatus>;
+    test(): Promise<TypeSafeConnectionResult>;
   };
   automation: {
     directorRun(input: DirectorRunRequest): Promise<unknown>;

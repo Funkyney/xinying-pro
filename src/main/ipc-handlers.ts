@@ -9,6 +9,7 @@ import type { PlatformViewManager } from "./platform-view";
 import type { PlaywrightXinyingAdapter } from "./playwright-adapter";
 import type { CodexExtensionManager } from "./codex-extension";
 import type { JobWorker } from "./job-worker";
+import type { TypeSafeService } from "./typesafe-service";
 import { loadDirectorManifest } from "../core/director-manifest";
 import { runDirectorManifest } from "../cli/director-run";
 
@@ -19,6 +20,7 @@ export function registerIpcHandlers(
   adapter: PlaywrightXinyingAdapter,
   codexExtension: CodexExtensionManager,
   worker: JobWorker,
+  typeSafe: TypeSafeService,
 ): void {
   const handle = (channel: string, listener: (...args: any[]) => unknown) => {
     ipcMain.removeHandler(channel);
@@ -389,6 +391,10 @@ export function registerIpcHandlers(
     if (error) throw new Error(error);
     return target;
   });
+  handle(IPC.typeSafeStatus, () => typeSafe.status());
+  handle(IPC.typeSafeSave, (_event, apiKey: string) => typeSafe.save(apiKey));
+  handle(IPC.typeSafeClear, () => typeSafe.clear());
+  handle(IPC.typeSafeTest, () => typeSafe.test());
   handle(IPC.automationDirectorRun, async (_event, input: DirectorRunRequest) => {
     if (!input?.confirm) throw new Error("自动授权与生成可能扣费，必须明确传入 confirm=true");
     const timeoutMs = input.timeoutMs ?? 45 * 60_000;
@@ -408,6 +414,7 @@ export function registerIpcHandlers(
       timeoutMs,
       ensureAppReady: async () => ({ ready: true }),
       syncPortraits: syncPlatformPortraitsForProject,
+      materialRoutingAdvisor: typeSafe.materialRoutingAdvisor(),
     });
   });
 }

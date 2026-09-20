@@ -8,7 +8,7 @@ import { loadSelectorPack } from "./selector-pack";
 import { PlatformViewManager } from "./platform-view";
 import { PlaywrightXinyingAdapter } from "./playwright-adapter";
 import { JobWorker } from "./job-worker";
-import { createTypeSafeRecoveryAdvisor } from "./typesafe-recovery-advisor";
+import { TypeSafeService } from "./typesafe-service";
 import { registerIpcHandlers } from "./ipc-handlers";
 import { registerAppUpdater } from "./app-updater";
 import { IPC } from "../shared/ipc";
@@ -45,6 +45,7 @@ function createWindow(): void {
   const paths = createAppPaths();
   database = new XinyingDatabase(paths.databasePath);
   const service = new XinyingService(database, paths);
+  const typeSafe = new TypeSafeService(database);
   service.recoverInterruptedJobs();
   const selectors = loadSelectorPack();
 
@@ -93,7 +94,7 @@ function createWindow(): void {
     adapter,
     (operation, label) => platformManager!.withAutomationViewport(operation, label),
     (operation) => platformManager!.withBackgroundAutomation(operation),
-    createTypeSafeRecoveryAdvisor(),
+    typeSafe.recoveryAdvisor(),
   );
   const bundledSkillPath = app.isPackaged
     ? path.join(process.resourcesPath, "codex-skills", "xinying-pro-generate")
@@ -112,7 +113,7 @@ function createWindow(): void {
     bundledSkillPath,
   });
   void codexExtension.updateManagedInstallation().catch(() => undefined);
-  registerIpcHandlers(mainWindow, service, platformManager, adapter, codexExtension, worker);
+  registerIpcHandlers(mainWindow, service, platformManager, adapter, codexExtension, worker, typeSafe);
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     try {

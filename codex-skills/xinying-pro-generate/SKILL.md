@@ -48,9 +48,11 @@ media cache --file "<path1>" "<path2>" ...
 
 - `hit: true`：这是同一文件 SHA-256 的已记录结果，直接复用 `containsPerson`，无需再次看图或视频。
 - `hit: false`：图片逐张检查；视频检查首帧、尾帧和覆盖全片的关键帧，不能只看封面。
-- 无法打开、无法抽帧或无法确认是否有人时暂停；绝不能默认写 `false`。
+- 无法打开或无法抽帧时暂停。已经完成检查、但画面证据仍存在歧义时，写入下面的 `personCheck` 证据交给 APP 的安全路由器；绝不能默认写 `false`。
 
-每个图片/视频必须在清单中显式填写 `containsPerson`。有人写 `true` 并写 `authorizeAsPortrait: true`；只有确认整项完全无人时才写 `false`。人物硬门禁会把已知含人的同一文件锁为人物素材，后续清单不能将其降级。
+结论明确时，每个图片/视频在清单中显式填写 `containsPerson`：有人写 `true` 并写 `authorizeAsPortrait: true`；只有确认整项完全无人时才写 `false`。人物硬门禁会把已知含人的同一文件锁为人物素材，后续清单不能将其降级。
+
+结论不稳时不要猜布尔值，省略 `containsPerson`，改写 `personCheck: { verdict, confidence, summary, inspectedFrames, inspectionComplete }`。`verdict` 为 `person`、`no-person` 或 `uncertain`；`confidence` 为 0-1；`summary` 只写实际可见证据。APP 会先走 SHA-256 缓存和确定性规则，再把所有歧义项一次性交给 TypeSafe JEV 做结构化路由。JEV 不读取媒体文件：它只能依据检查证据把素材升级为虚拟人像授权；只有“完整检查 + no-person + 双重高置信度”才允许普通上传，否则继续安全暂停。
 
 多人合照、背脸、脸部过小或人物不完整仍原样写 `true`。不要在 Codex 侧预判审核失败；内部会通过 `director authorize` 原样提交心影虚拟人像审核。只有心影实际返回失败后才报告原因，不能退回普通上传。
 

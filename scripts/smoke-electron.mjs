@@ -10,6 +10,7 @@ const appDir = path.resolve(scriptDir, "..");
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "xinying-electron-smoke-"));
 const screenshotDir = path.join(appDir, "test-results");
 const screenshotPath = path.join(screenshotDir, "desktop-smoke.png");
+const typeSafeScreenshotPath = path.join(screenshotDir, "typesafe-settings.png");
 fs.mkdirSync(screenshotDir, { recursive: true });
 
 const reserveFreePort = () => new Promise((resolve, reject) => {
@@ -55,6 +56,18 @@ try {
   await window.screenshot({ path: screenshotPath, fullPage: true });
   await window.getByRole("button", { name: "返回检查", exact: true }).click();
 
+  const typeSafeStatus = await window.evaluate(() => window.xinying.typeSafe.status());
+  if (Object.prototype.hasOwnProperty.call(typeSafeStatus, "apiKey")) throw new Error("TypeSafe status exposed the plaintext API key");
+  const rejectedInvalidTypeSafeKey = await window.evaluate(async () => {
+    try {
+      await window.xinying.typeSafe.save("short");
+      return false;
+    } catch {
+      return true;
+    }
+  });
+  if (!rejectedInvalidTypeSafeKey) throw new Error("TypeSafe settings accepted an invalid API key");
+
   const oneClickPages = [
     ["总览", "心影让你当指挥家，心影Pro让你直接把片交了。"],
     ["空间与项目", "空间、项目与对话"],
@@ -62,18 +75,28 @@ try {
     ["任务队列", "任务队列"],
     ["结果库", "结果库"],
     ["Codex扩展", "让 Codex 直接指挥心影Pro"],
+    ["设置", "TypeSafe Jev"],
     ["生成工作台", "Playwright 桌面验收"],
   ];
   const navigationLatencyMs = {};
   for (const [buttonName, headingName] of oneClickPages) {
     const startedAt = Date.now();
-    await window.getByRole("button", { name: buttonName, exact: true }).click();
+    const destination = window.getByRole("button", { name: buttonName, exact: true });
+    if (await destination.count() === 0) {
+      await window.getByRole("button", { name: "更多", exact: true }).click();
+      await destination.waitFor({ state: "visible", timeout: 3_000 });
+    }
+    await destination.click();
     await window.getByRole("heading", { name: headingName, exact: true }).waitFor({ state: "visible", timeout: 3_000 });
     navigationLatencyMs[buttonName] = Date.now() - startedAt;
+    if (buttonName === "设置") {
+      await window.waitForTimeout(500);
+      await window.screenshot({ path: typeSafeScreenshotPath, fullPage: true });
+    }
   }
   const title = await window.title();
   const visibleText = await window.locator("body").innerText();
-  process.stdout.write(`${JSON.stringify({ ok: true, title, projectId: created.id, screenshotPath, hasStudio: visibleText.includes("参考素材"), hasReuseBatch: true, navigationLatencyMs }, null, 2)}\n`);
+  process.stdout.write(`${JSON.stringify({ ok: true, title, projectId: created.id, screenshotPath, typeSafeScreenshotPath, hasStudio: visibleText.includes("参考素材"), hasReuseBatch: true, typeSafeConfigured: typeSafeStatus.configured, navigationLatencyMs }, null, 2)}\n`);
 } catch (error) {
   process.stderr.write(`${JSON.stringify({ ok: false, error: error instanceof Error ? error.message : String(error) }, null, 2)}\n`);
   process.exitCode = 1;

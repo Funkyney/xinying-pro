@@ -29,7 +29,9 @@ describe("xinying-pro-generate completion policy", () => {
 
   it("never submits a recognizable person as an ordinary local reference", () => {
     expect(source).toContain("人物硬门禁");
-    expect(source).toContain("每个图片/视频必须在清单中显式填写 `containsPerson`");
+    expect(source).toContain("结论明确时，每个图片/视频在清单中显式填写 `containsPerson`");
+    expect(source).toContain("结论不稳时不要猜布尔值");
+    expect(source).toContain("JEV 不读取媒体文件");
     expect(source).toContain("视频检查首帧、尾帧和覆盖全片的关键帧");
     expect(source).toContain("含人图片或视频仍出现在最终 `preview.references`：停止提交");
     expect(source).toContain("绝不按普通图片或普通视频兜底");

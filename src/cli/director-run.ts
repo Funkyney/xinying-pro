@@ -1,6 +1,10 @@
 import type { DirectorManifest, DirectorRunPreparation, Job, JobStatus } from "../shared/contracts";
 import type { XinyingService } from "../core/service";
 import { AppError } from "../core/errors";
+import {
+  resolveDirectorMaterialRouting,
+  type MaterialRoutingAdvisor,
+} from "../core/typesafe-material-router";
 import { compactJob } from "./compact";
 
 const BLOCKING_STATUSES = new Set<JobStatus>(["failed", "needs-login", "needs-human", "cancelled"]);
@@ -12,6 +16,7 @@ export interface DirectorRunOptions {
   ensureAppReady: () => Promise<unknown>;
   syncPortraits?: (projectId: string) => Promise<unknown>;
   sleep?: (milliseconds: number) => Promise<void>;
+  materialRoutingAdvisor?: MaterialRoutingAdvisor | null;
 }
 
 async function waitForJobs(
@@ -58,13 +63,17 @@ export async function runDirectorManifest(
   const deadline = startedAt + options.timeoutMs;
   const sleep = options.sleep ?? ((milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds)));
 
-  const readiness = await options.ensureAppReady();
+  const [readiness, routing] = await Promise.all([
+    options.ensureAppReady(),
+    resolveDirectorMaterialRouting(service, manifest, options.materialRoutingAdvisor),
+  ]);
   if (readiness && typeof readiness === "object" && "ready" in readiness && readiness.ready !== true) {
     throw new AppError("APP_NOT_READY", "心影Pro APP 已连接，但本地控制接口尚未就绪");
   }
-  let preparation = service.prepareDirectorRun(manifest);
+  const routedManifest = routing.manifest;
+  let preparation = service.prepareDirectorRun(routedManifest);
   let authorizationJobs = preparation.authorizationReferenceIds.map((referenceId) =>
-    service.authorizeReference(referenceId, manifest.projectId, true));
+    service.authorizeReference(referenceId, routedManifest.projectId, true));
   const reusedAuthorizationCount = authorizationJobs.filter((job) => job.status === "completed").length;
   authorizationJobs = authorizationJobs.map((job) => {
     if (job.status !== "needs-human") return job;
@@ -82,12 +91,12 @@ export async function runDirectorManifest(
       "authorization",
       sleep,
     );
-    preparation = service.prepareDirectorRun(manifest);
+    preparation = service.prepareDirectorRun(routedManifest);
   }
 
   if (unresolvedMaterials(preparation).length && options.syncPortraits) {
-    await options.syncPortraits(manifest.projectId);
-    preparation = service.prepareDirectorRun(manifest);
+    await options.syncPortraits(routedManifest.projectId);
+    preparation = service.prepareDirectorRun(routedManifest);
   }
 
   const unresolved = unresolvedMaterials(preparation);
@@ -107,8 +116,8 @@ export async function runDirectorManifest(
     );
   }
 
-  const count = options.count ?? manifest.count;
-  const batch = service.submitGenerationBatch(manifest.projectId, count, options.requestId);
+  const count = options.count ?? routedManifest.count;
+  const batch = service.submitGenerationBatch(routedManifest.projectId, count, options.requestId);
   const generationJobs = await waitForJobs(
     service,
     batch.jobs.map((job) => job.id),
@@ -124,6 +133,7 @@ export async function runDirectorManifest(
     requestId: options.requestId ?? null,
     deduplicated: batch.deduplicated,
     elapsedMs: Date.now() - startedAt,
+    materialRouting: routing.summary,
     authorization: {
       required: authorizationJobs.length,
       reused: reusedAuthorizationCount,

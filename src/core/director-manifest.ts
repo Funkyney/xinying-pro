@@ -28,6 +28,13 @@ const fileMaterialSchema = z.object({
   role: referenceRoleSchema.optional(),
   containsPerson: z.boolean().optional(),
   authorizeAsPortrait: z.boolean().optional().default(false),
+  personCheck: z.object({
+    verdict: z.enum(["person", "no-person", "uncertain"]),
+    confidence: z.number().min(0).max(1).optional(),
+    summary: z.string().trim().min(1).max(2_000),
+    inspectedFrames: z.number().int().min(0).max(100_000).optional(),
+    inspectionComplete: z.boolean().optional(),
+  }).strict().optional(),
 }).strict();
 
 const platformPortraitMaterialSchema = z.object({

@@ -72,6 +72,10 @@ const IPC = {
   codexExtensionStatus: "codex-extension:status",
   codexExtensionInstall: "codex-extension:install",
   codexExtensionOpenFolder: "codex-extension:open-folder",
+  typeSafeStatus: "typesafe:status",
+  typeSafeSave: "typesafe:save",
+  typeSafeClear: "typesafe:clear",
+  typeSafeTest: "typesafe:test",
   automationDirectorRun: "automation:director-run",
 } as const;
 
@@ -181,6 +185,12 @@ const api: XinyingApi = {
     status: () => ipcRenderer.invoke(IPC.codexExtensionStatus),
     install: (replaceExisting = false) => ipcRenderer.invoke(IPC.codexExtensionInstall, replaceExisting),
     openFolder: () => ipcRenderer.invoke(IPC.codexExtensionOpenFolder),
+  },
+  typeSafe: {
+    status: () => ipcRenderer.invoke(IPC.typeSafeStatus),
+    save: (apiKey: string) => ipcRenderer.invoke(IPC.typeSafeSave, apiKey),
+    clear: () => ipcRenderer.invoke(IPC.typeSafeClear),
+    test: () => ipcRenderer.invoke(IPC.typeSafeTest),
   },
   automation: {
     directorRun: (input: DirectorRunRequest) => ipcRenderer.invoke(IPC.automationDirectorRun, input),

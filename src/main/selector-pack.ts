@@ -24,6 +24,9 @@ export interface SelectorPack {
   generation: {
     prompt: string[];
     imageInput: string[];
+    imageUploadTrigger: string[];
+    videoUploadTrigger: string[];
+    audioUploadTrigger: string[];
     composer: string[];
     materialList: string[];
     modelToggle: string[];

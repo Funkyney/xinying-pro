@@ -18,6 +18,7 @@ import {
   FolderKanban,
   FolderPlus,
   Image as ImageIcon,
+  KeyRound,
   LayoutDashboard,
   ListTree,
   LogIn,
@@ -34,6 +35,7 @@ import {
   Send,
   Settings2,
   ShieldAlert,
+  ShieldCheck,
   Sparkles,
   Trash2,
   UserRoundCheck,
@@ -64,6 +66,7 @@ import type {
   ReferenceRole,
   SharedMediaAsset,
   SubmissionPreview,
+  TypeSafeSettingsStatus,
 } from "../shared/contracts";
 import { modelProfile, resolutionLabel, XINYING_MODEL_PROFILES } from "../shared/model-profiles";
 import {
@@ -83,7 +86,7 @@ import dashboardDirector from "./assets/dashboard-director.webp";
 import dashboardDirectorDark from "./assets/dashboard-director-dark.jpg";
 import xinyingLogo from "./assets/xinying-logo.svg";
 
-type PageKey = "dashboard" | "projects" | "studio" | "portraits" | "jobs" | "results" | "codex" | "platform";
+type PageKey = "dashboard" | "projects" | "studio" | "portraits" | "jobs" | "results" | "codex" | "settings" | "platform";
 
 const navigation: Array<{ key: PageKey; label: string; icon: typeof LayoutDashboard }> = [
   { key: "dashboard", label: "总览", icon: LayoutDashboard },
@@ -93,6 +96,7 @@ const navigation: Array<{ key: PageKey; label: string; icon: typeof LayoutDashbo
   { key: "jobs", label: "任务队列", icon: Activity },
   { key: "results", label: "结果库", icon: Film },
   { key: "codex", label: "Codex扩展", icon: Bot },
+  { key: "settings", label: "设置", icon: Settings2 },
   { key: "platform", label: "原网页模式", icon: ExternalLink },
 ];
 
@@ -133,7 +137,7 @@ function AppLogo() {
 }
 
 const primaryNavigation = navigation.filter((item) => ["dashboard", "studio", "portraits", "results"].includes(item.key));
-const secondaryNavigation = navigation.filter((item) => ["projects", "jobs", "codex", "platform"].includes(item.key));
+const secondaryNavigation = navigation.filter((item) => ["projects", "jobs", "codex", "settings", "platform"].includes(item.key));
 
 function GlobalTabBar({ page, compact, moreOpen, theme, updateState, busy, onNavigate, onExpand, onToggleMore, onToggleTheme, onUpdate, onRefresh }: {
   page: PageKey;
@@ -444,6 +448,7 @@ export function App() {
               {page === "jobs" && <JobsPage jobs={snapshot.jobs} projects={snapshot.projects} portraits={snapshot.portraits} run={run} />}
               {page === "results" && <ResultsPage results={results} projects={snapshot.projects} selectedProject={selectedProject} onSelectProject={setSelectedProjectId} run={run} />}
               {page === "codex" && <CodexExtensionPage />}
+              {page === "settings" && <TypeSafeSettingsPage />}
               {page === "platform" && <PlatformPanel />}
             </div>
           )}
@@ -453,6 +458,119 @@ export function App() {
       {(busy || platformAutomation.phase !== "idle") && <div className="busy-overlay" role="status" aria-live="polite"><div className="loader" /><span><strong>{platformAutomation.phase === "queued" ? `排队等待：${platformAutomation.label}` : platformAutomation.label || "正在处理…"}</strong><small>{platformAutomation.detail || (busy ? "正在更新本地工作台" : "")}{platformAutomation.pendingCount > 0 ? ` · 后面还有 ${platformAutomation.pendingCount} 项` : ""}</small>{platformAutomation.total && platformAutomation.current !== null ? <em>{platformAutomation.current} / {platformAutomation.total}</em> : null}</span></div>}
     </div>
   );
+}
+
+function TypeSafeSettingsPage() {
+  const [status, setStatus] = useState<TypeSafeSettingsStatus | null>(null);
+  const [apiKey, setApiKey] = useState("");
+  const [working, setWorking] = useState<"" | "save" | "test" | "clear">("");
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+
+  const refreshStatus = useCallback(async () => {
+    try {
+      setStatus(await window.xinying.typeSafe.status());
+      setError("");
+    } catch (cause) {
+      setError(userFacingError(cause));
+    }
+  }, []);
+
+  useEffect(() => { void refreshStatus(); }, [refreshStatus]);
+
+  const connectionMessage = (jevAvailable: boolean, latencyMs: number) => jevAvailable
+    ? `连接成功 · Jev 可用 · ${latencyMs}ms`
+    : `连接成功，但账号暂未返回 Jev 模型 · ${latencyMs}ms`;
+
+  const saveAndTest = async () => {
+    if (!apiKey.trim() || working) return;
+    setWorking("save");
+    setError("");
+    setMessage("");
+    try {
+      const result = await window.xinying.typeSafe.save(apiKey);
+      setStatus(result);
+      setApiKey("");
+      setMessage(connectionMessage(result.jevAvailable, result.latencyMs));
+    } catch (cause) {
+      setError(userFacingError(cause));
+      await refreshStatus();
+    } finally {
+      setWorking("");
+    }
+  };
+
+  const testConnection = async () => {
+    if (working) return;
+    setWorking("test");
+    setError("");
+    setMessage("");
+    try {
+      const result = await window.xinying.typeSafe.test();
+      setStatus(result);
+      setMessage(connectionMessage(result.jevAvailable, result.latencyMs));
+    } catch (cause) {
+      setError(userFacingError(cause));
+    } finally {
+      setWorking("");
+    }
+  };
+
+  const clearKey = async () => {
+    if (working || !confirm("删除这台电脑上保存的 TypeSafe API Key？")) return;
+    setWorking("clear");
+    setError("");
+    setMessage("");
+    try {
+      const next = await window.xinying.typeSafe.clear();
+      setStatus(next);
+      setMessage(next.source === "environment" ? "已删除 APP 密钥，当前仍在使用系统环境变量" : "本机 TypeSafe API Key 已删除");
+    } catch (cause) {
+      setError(userFacingError(cause));
+    } finally {
+      setWorking("");
+    }
+  };
+
+  const sourceLabel = status?.source === "app" ? "APP 本机安全存储"
+    : status?.source === "environment" ? "系统环境变量"
+      : "未配置";
+
+  return <div className="typesafe-settings-page">
+    <div className="page-heading">
+      <div><span className="eyebrow">INTELLIGENCE</span><h1>TypeSafe Jev</h1><p>为素材人物路由和自动报错恢复提供快速、结构化的判断。每台电脑单独配置，不随项目或 GitHub 同步。</p></div>
+      <span className={`typesafe-state ${status?.configured ? "configured" : "unconfigured"}`}><span />{status?.configured ? "已激活" : "未激活"}</span>
+    </div>
+
+    <section className="typesafe-key-panel panel">
+      <div className="typesafe-key-icon"><KeyRound size={30} /></div>
+      <div className="typesafe-key-copy">
+        <span className="eyebrow">API CREDENTIAL</span>
+        <h2>连接 TypeSafe</h2>
+        <p>密钥使用系统安全存储加密，仅在 Electron 主进程调用 TypeSafe；页面、Codex、日志和生成清单都拿不到明文。</p>
+        <div className="typesafe-current-key"><ShieldCheck size={16} /><span><small>当前来源</small><strong>{sourceLabel}{status?.maskedKey ? ` · ${status.maskedKey}` : ""}</strong></span></div>
+      </div>
+      <div className="typesafe-key-form">
+        <label htmlFor="typesafe-api-key">TypeSafe API Key</label>
+        <input id="typesafe-api-key" type="password" autoComplete="new-password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder={status?.configured ? "输入新 Key 可替换当前配置" : "粘贴 apikey_…"} />
+        <div>
+          <button className="button primary" disabled={!apiKey.trim() || Boolean(working) || status?.secureStorageAvailable === false} onClick={() => void saveAndTest()}>{working === "save" || working === "test" && Boolean(apiKey) ? <RefreshCw size={15} className="spinning" /> : <KeyRound size={15} />}保存并测试</button>
+          <button className="button secondary" disabled={!status?.configured || Boolean(working)} onClick={() => void testConnection()}>{working === "test" ? <RefreshCw size={15} className="spinning" /> : <Activity size={15} />}测试连接</button>
+          <button className="button ghost" disabled={status?.source !== "app" || Boolean(working)} onClick={() => void clearKey()}><Trash2 size={15} />删除本机 Key</button>
+        </div>
+      </div>
+    </section>
+
+    {status?.secureStorageAvailable === false && <div className="extension-notice error"><ShieldAlert size={17} /><span>当前系统安全存储不可用。为避免明文落盘，APP 不会保存 API Key；可暂时使用系统环境变量 TYPESAFE_API_KEY。</span></div>}
+    {message && <div className="extension-notice success"><CheckCircle2 size={17} /><span>{message}</span></div>}
+    {error && <div className="extension-notice error"><ShieldAlert size={17} /><span>{error}</span></div>}
+
+    <div className="typesafe-feature-grid">
+      <section><span className="eyebrow">MEDIA ROUTING</span><h3>素材上传路由</h3><p>先复用 SHA-256 检查缓存；明确含人直接进入虚拟人像授权。只有本地视觉证据不稳时，才把文字化证据批量交给 Jev。</p></section>
+      <section><span className="eyebrow">RECOVERY</span><h3>自动报错恢复</h3><p>把连接中断、页面变化、平台繁忙和需要人工处理区分开，决定有限重试或安全暂停，避免盲目重复提交。</p></section>
+      <section><span className="eyebrow">PRIVACY</span><h3>不上传图片给 Jev</h3><p>Jev 只接收结构化状态与检查摘要，不读取图片、视频、心影 Cookie 或飞书登录信息。</p></section>
+    </div>
+  </div>;
 }
 
 function CodexExtensionPage() {
