@@ -34,6 +34,12 @@ import {
   promptMaterialLabels,
 } from "../shared/media";
 import { canonicalPlatformOutputUrl, originalPlatformVideoUrlFromPoster } from "../shared/platform-results";
+import {
+  AutomationFastPathCache,
+  pageShellFingerprint,
+  type FastPathLookupMode,
+  type PageShellSnapshot,
+} from "./automation-fast-path";
 
 export type AdapterOutcome =
   | { status: "running"; platformTaskId?: string; platformExecutionId?: string; generationUrl?: string; progress?: number; progressLabel?: string; message: string }
@@ -110,26 +116,111 @@ interface PlatformCatalogApiData {
   creationTypeOptions: string[];
 }
 
+const pageFastPathCaches = new WeakMap<Page, AutomationFastPathCache>();
+const pageShellFingerprints = new WeakMap<Page, { route: string; value: Promise<string> }>();
+const pageFastPathListeners = new WeakSet<Page>();
+
+function bindFastPathCache(page: Page, cache: AutomationFastPathCache): void {
+  pageFastPathCaches.set(page, cache);
+  if (pageFastPathListeners.has(page)) return;
+  pageFastPathListeners.add(page);
+  page.on("framenavigated", (frame) => {
+    if (frame === page.mainFrame()) pageShellFingerprints.delete(page);
+  });
+}
+
+function pageRoute(page: Page): string {
+  try {
+    const url = new URL(page.url());
+    return `${url.origin}${url.pathname}`;
+  } catch {
+    return page.url().split(/[?#]/, 1)[0] ?? page.url();
+  }
+}
+
+async function pageShellFingerprintFor(page: Page): Promise<string> {
+  const route = pageRoute(page);
+  const cached = pageShellFingerprints.get(page);
+  if (cached?.route === route) return cached.value;
+  const value = page.evaluate((): Omit<PageShellSnapshot, "url"> => {
+    const assetPath = (value: string): string => {
+      if (!value) return "";
+      try {
+        return new URL(value, window.location.href).pathname;
+      } catch {
+        return value.split(/[?#]/, 1)[0] ?? value;
+      }
+    };
+    const roots = Array.from(document.body?.children ?? []).slice(0, 16).map((element) => {
+      const id = element.id ? `#${element.id}` : "";
+      const classes = Array.from(element.classList).slice(0, 8).sort().join(".");
+      return `${element.tagName.toLowerCase()}${id}${classes ? `.${classes}` : ""}`;
+    });
+    return {
+      bodyClass: document.body?.className ?? "",
+      assets: [
+        ...Array.from(document.scripts).map((script) => assetPath(script.src)),
+        ...Array.from(document.querySelectorAll<HTMLLinkElement>("link[rel='stylesheet']")).map((link) => assetPath(link.href)),
+      ].filter(Boolean),
+      roots,
+    };
+  }).then((snapshot) => pageShellFingerprint({ url: page.url(), ...snapshot })).catch(() => pageShellFingerprint({
+    url: page.url(),
+    bodyClass: "",
+    assets: [],
+    roots: [],
+  }));
+  pageShellFingerprints.set(page, { route, value });
+  return value;
+}
+
+async function selectorLookup(
+  page: Page,
+  selectors: string[],
+  mode: FastPathLookupMode,
+): Promise<{ ordered: string[]; remember: (selector: string) => void }> {
+  const cache = pageFastPathCaches.get(page);
+  if (!cache || selectors.length < 2) return { ordered: selectors, remember: () => undefined };
+  const shell = await pageShellFingerprintFor(page);
+  const preferred = cache.preferred(shell, mode, selectors);
+  return {
+    ordered: preferred ? [preferred, ...selectors.filter((selector) => selector !== preferred)] : selectors,
+    remember: (selector) => cache.remember(shell, mode, selectors, selector),
+  };
+}
+
 async function firstVisible(page: Page, selectors: string[]): Promise<Locator | null> {
-  for (const selector of selectors) {
+  const lookup = await selectorLookup(page, selectors, "visible");
+  for (const selector of lookup.ordered) {
     const locator = page.locator(selector).filter({ visible: true }).first();
-    if ((await locator.count()) > 0) return locator;
+    if ((await locator.count()) > 0) {
+      lookup.remember(selector);
+      return locator;
+    }
   }
   return null;
 }
 
 async function firstExisting(page: Page, selectors: string[]): Promise<Locator | null> {
-  for (const selector of selectors) {
+  const lookup = await selectorLookup(page, selectors, "existing");
+  for (const selector of lookup.ordered) {
     const locator = page.locator(selector).first();
-    if ((await locator.count()) > 0) return locator;
+    if ((await locator.count()) > 0) {
+      lookup.remember(selector);
+      return locator;
+    }
   }
   return null;
 }
 
 async function firstCollection(page: Page, selectors: string[]): Promise<Locator | null> {
-  for (const selector of selectors) {
+  const lookup = await selectorLookup(page, selectors, "collection");
+  for (const selector of lookup.ordered) {
     const locator = page.locator(selector).filter({ visible: true });
-    if ((await locator.count()) > 0) return locator;
+    if ((await locator.count()) > 0) {
+      lookup.remember(selector);
+      return locator;
+    }
   }
   return null;
 }
@@ -159,13 +250,72 @@ async function firstCollectionWithin(scope: Locator, selectors: string[]): Promi
 }
 
 async function waitForCollectionWithin(scope: Locator, selectors: string[], timeoutMs: number): Promise<Locator | null> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const collection = await firstCollectionWithin(scope, selectors);
-    if (collection) return collection;
-    await new Promise((resolve) => setTimeout(resolve, 200));
+  const immediate = await firstCollectionWithin(scope, selectors);
+  if (immediate) return immediate;
+  return Promise.any(selectors.map(async (selector) => {
+    const collection = scope.locator(selector).filter({ visible: true });
+    await collection.first().waitFor({ state: "visible", timeout: timeoutMs });
+    return collection;
+  })).catch(() => null);
+}
+
+async function waitForFirstVisible(page: Page, selectors: string[], timeoutMs: number): Promise<Locator | null> {
+  const immediate = await firstVisible(page, selectors);
+  if (immediate) return immediate;
+  const lookup = await selectorLookup(page, selectors, "visible");
+  return Promise.any(lookup.ordered.map(async (selector) => {
+    const locator = page.locator(selector).filter({ visible: true }).first();
+    await locator.waitFor({ state: "visible", timeout: timeoutMs });
+    lookup.remember(selector);
+    return locator;
+  })).catch(() => null);
+}
+
+async function waitForExactText(page: Page, texts: string[], timeoutMs: number): Promise<Locator | null> {
+  for (const text of texts) {
+    const immediate = page.getByText(text, { exact: true }).filter({ visible: true }).last();
+    if ((await immediate.count()) > 0) return immediate;
   }
-  return null;
+  return Promise.any(texts.map(async (text) => {
+    const locator = page.getByText(text, { exact: true }).filter({ visible: true }).last();
+    await locator.waitFor({ state: "visible", timeout: timeoutMs });
+    return locator;
+  })).catch(() => null);
+}
+
+async function waitForCollectionGrowth(
+  page: Page,
+  selectors: string[],
+  previousCount: number,
+  timeoutMs: number,
+): Promise<boolean> {
+  const collection = await firstCollection(page, selectors);
+  if (collection && (await collection.count()) > previousCount) return true;
+  const lookup = await selectorLookup(page, selectors, "collection");
+  return Promise.any(lookup.ordered.map(async (selector) => {
+    const next = page.locator(selector).filter({ visible: true }).nth(previousCount);
+    await next.waitFor({ state: "visible", timeout: timeoutMs });
+    lookup.remember(selector);
+    return true;
+  })).catch(() => false);
+}
+
+async function waitForReadyOrFailure(
+  ready: Locator,
+  failure: Locator,
+  timeoutMs: number,
+): Promise<"ready" | "failure" | "timeout"> {
+  if ((await failure.count()) > 0) return "failure";
+  if ((await ready.count()) > 0) return "ready";
+  const never = new Promise<never>(() => undefined);
+  return Promise.race([
+    ready.waitFor({ state: "visible", timeout: timeoutMs })
+      .then(() => "ready" as const)
+      .catch(() => "timeout" as const),
+    failure.waitFor({ state: "visible", timeout: timeoutMs })
+      .then(() => "failure" as const)
+      .catch(() => never),
+  ]);
 }
 
 async function clickDom(locator: Locator): Promise<void> {
@@ -685,6 +835,7 @@ function hostMatches(hostname: string, expected: string): boolean {
 export class PlaywrightXinyingAdapter {
   private browser: Browser | null = null;
   private portraitApiSnapshot: PlatformPortraitApiSnapshot | null = null;
+  private readonly fastPaths: AutomationFastPathCache;
 
   constructor(
     private readonly cdpPort: number,
@@ -694,7 +845,9 @@ export class PlaywrightXinyingAdapter {
     private readonly cancelDownloadCapture?: (prefix: string, reason?: string) => boolean,
     private readonly persistPendingTaskRef?: (jobId: string, platformTaskId: string) => void,
     private readonly persistPlatformPortraitMediaKind?: (portraitId: string, mediaKind: PlatformPortrait["mediaKind"]) => void,
-  ) {}
+  ) {
+    this.fastPaths = new AutomationFastPathCache(path.join(paths.dataDir, "automation-fast-paths.json"));
+  }
 
   async close(): Promise<void> {
     await this.browser?.close().catch(() => undefined);
@@ -721,6 +874,7 @@ export class PlaywrightXinyingAdapter {
     const preferred = [...pages].reverse().find((candidate) => /\/(avpAgent|aiCharacter)/.test(new URL(candidate.url()).pathname));
     const page = preferred ?? pages.at(-1);
     if (!page) throw new AppError("PLATFORM_PAGE_NOT_FOUND", "尚未打开心影官方页面");
+    bindFastPathCache(page, this.fastPaths);
     return page;
   }
 
@@ -1104,23 +1258,17 @@ export class PlaywrightXinyingAdapter {
     if (conversationId?.trim()) targetUrl.searchParams.set("sessionId", conversationId.trim());
     const target = targetUrl.toString();
     await page.goto(target, { waitUntil: "domcontentloaded", timeout: 30_000 });
-    let deadline = Date.now() + 20_000;
-    while (Date.now() < deadline) {
-      const current = safeGenerationUrl(page.url());
-      const expectedSession = conversationId?.trim() ?? "";
-      const sessionMatches = !expectedSession || current?.searchParams.get("sessionId") === expectedSession;
-      if (current?.searchParams.get("projectId") === remoteProjectId && sessionMatches && await firstVisible(page, this.selectors.generation.composer)) return current.toString();
-      await page.waitForTimeout(250);
-    }
+    const composer = await this.waitForVisible(page, this.selectors.generation.composer, 20_000);
+    const current = safeGenerationUrl(page.url());
+    const expectedSession = conversationId?.trim() ?? "";
+    const sessionMatches = !expectedSession || current?.searchParams.get("sessionId") === expectedSession;
+    if (composer && current?.searchParams.get("projectId") === remoteProjectId && sessionMatches) return current.toString();
     if (conversationId?.trim()) throw new AppError("GENERATION_SESSION_NOT_FOUND", "已进入心影项目，但所选历史对话未能加载");
     const createSession = page.getByText("新建会话", { exact: true }).filter({ visible: true }).first();
     if ((await createSession.count()) > 0) await clickDom(createSession);
-    deadline = Date.now() + 20_000;
-    while (Date.now() < deadline) {
-      const current = safeGenerationUrl(page.url());
-      if (current?.searchParams.get("projectId") === remoteProjectId && await firstVisible(page, this.selectors.generation.composer)) return current.toString();
-      await page.waitForTimeout(250);
-    }
+    const createdComposer = await this.waitForVisible(page, this.selectors.generation.composer, 20_000);
+    const created = safeGenerationUrl(page.url());
+    if (createdComposer && created?.searchParams.get("projectId") === remoteProjectId) return created.toString();
     throw new AppError("GENERATION_SESSION_CREATE_FAILED", "已选择心影项目，但未能建立内容生成会话");
   }
 
@@ -2103,7 +2251,6 @@ export class PlaywrightXinyingAdapter {
       const sameSession = !target.searchParams.get("sessionId") || current?.searchParams.get("sessionId") === target.searchParams.get("sessionId");
       if (!sameProject || !sameSession) {
         await page.goto(target.toString(), { waitUntil: "domcontentloaded", timeout: 30_000 });
-        await page.waitForTimeout(600);
       }
     }
     const checkpoint = await this.checkpoint(page);
@@ -2191,7 +2338,6 @@ export class PlaywrightXinyingAdapter {
     if (sourceRef.sessionId !== "uninitialized" && current?.searchParams.get("sessionId") !== sourceRef.sessionId) {
       target.searchParams.set("sessionId", sourceRef.sessionId);
       await page.goto(target.toString(), { waitUntil: "domcontentloaded", timeout: 30_000 });
-      await page.waitForTimeout(600);
       const composer = await this.waitForVisible(page, this.selectors.generation.composer, 20_000);
       if (!composer) return { reason: "page-changed", message: "上一条心影会话未能加载，无法使用“重新编辑”复用提交" };
     }
@@ -2281,14 +2427,9 @@ export class PlaywrightXinyingAdapter {
     const trigger = await firstVisible(page, triggerSelectors);
     if (!trigger) return null;
     await clickDom(trigger);
-
-    const deadline = Date.now() + 5_000;
-    while (Date.now() < deadline) {
-      input = locateInput();
-      if ((await input.count()) > 0) return input;
-      await page.waitForTimeout(100);
-    }
-    return null;
+    input = locateInput();
+    await input.waitFor({ state: "attached", timeout: 5_000 }).catch(() => undefined);
+    return (await input.count()) > 0 ? input : null;
   }
 
   private mediaKindFromPlatformLabel(label: string): PlatformPortrait["mediaKind"] | "audio" {
@@ -2298,27 +2439,22 @@ export class PlaywrightXinyingAdapter {
   }
 
   private async waitForMaterialCount(page: Page, expected: number): Promise<boolean> {
-    const deadline = Date.now() + 90_000;
-    while (Date.now() < deadline) {
-      if ((await this.uploadedMaterialCount(page)) >= expected) return true;
-      const failure = page.getByText(/上传失败|素材解析失败|文件不支持/).filter({ visible: true }).first();
-      if ((await failure.count()) > 0) return false;
-      await page.waitForTimeout(500);
-    }
-    return false;
+    if ((await this.uploadedMaterialCount(page)) >= expected) return true;
+    const list = await this.waitForVisible(page, this.selectors.generation.materialList, 5_000);
+    if (!list) return false;
+    const materials = list.locator(":scope > .ContentChatUploadItem").filter({ has: page.locator(".content-delete") });
+    const failure = page.getByText(/上传失败|素材解析失败|文件不支持/).filter({ visible: true }).first();
+    const state = await waitForReadyOrFailure(materials.nth(Math.max(0, expected - 1)), failure, 90_000);
+    return state === "ready" && (await this.uploadedMaterialCount(page)) >= expected;
   }
 
   private async configureModel(page: Page, modelName: string): Promise<HumanCheckpoint | null> {
     if (!modelName) return null;
     const toggle = await firstVisible(page, this.selectors.generation.modelToggle);
     if (!toggle) return { reason: "page-changed", message: "找不到心影模型选择入口" };
-    const settleDeadline = Date.now() + 5_000;
-    while (Date.now() < settleDeadline) {
-      if ((await toggle.innerText().catch(() => "")).trim().includes(modelName)) return null;
-      await page.waitForTimeout(200);
-    }
+    if ((await toggle.innerText().catch(() => "")).trim().includes(modelName)) return null;
     await clickDom(toggle);
-    const dialog = await firstVisible(page, this.selectors.generation.modelDialog);
+    const dialog = await this.waitForVisible(page, this.selectors.generation.modelDialog, 5_000);
     if (!dialog) return { reason: "page-changed", message: "心影模型选择面板未打开" };
     const option = dialog.getByText(modelName, { exact: true }).filter({ visible: true }).first();
     if ((await option.count()) === 0) {
@@ -2326,7 +2462,7 @@ export class PlaywrightXinyingAdapter {
     }
     await clickDom(option);
     await dialog.waitFor({ state: "hidden", timeout: 10_000 }).catch(() => undefined);
-    await page.waitForTimeout(350);
+    await toggle.filter({ hasText: modelName }).waitFor({ state: "visible", timeout: 3_000 }).catch(() => undefined);
     if (!(await toggle.innerText()).trim().includes(modelName)) {
       return { reason: "page-changed", message: `心影未确认切换到模型：${modelName}` };
     }
@@ -2748,47 +2884,67 @@ export class PlaywrightXinyingAdapter {
       (response) => response.url().includes("contentChat/createGenerationTask") && response.request().method() === "POST",
       { timeout: 5_000 },
     ).catch(() => null);
+    const nextUserMessagePromise = waitForCollectionGrowth(
+      page,
+      this.selectors.generation.userMessages,
+      beforeUserCount,
+      15_000,
+    );
     await clickDom(submit);
-    let submitted = false;
-    const deadline = Date.now() + 15_000;
-    while (Date.now() < deadline) {
-      const currentMessages = await firstCollection(page, this.selectors.generation.userMessages);
-      if (currentMessages && (await currentMessages.count()) > beforeUserCount) {
-        submitted = true;
-        break;
+    const firstSignal = await Promise.race([
+      creationResponsePromise.then((response) => ({ kind: "response" as const, response })),
+      nextUserMessagePromise.then((found) => ({ kind: "message" as const, found })),
+    ]);
+    let creationResponse = firstSignal.kind === "response" ? firstSignal.response : null;
+    let creationPayload: unknown = null;
+    let submitted = firstSignal.kind === "message" && firstSignal.found;
+    if (creationResponse) {
+      creationPayload = await creationResponse.json().catch(() => null) as unknown;
+      const mutation = platformMutationResult(creationPayload, creationResponse.ok());
+      if (!mutation.ok) {
+        return {
+          status: "needs-human",
+          platformTaskId: pendingTaskId,
+          checkpoint: { reason: "approval", message: mutation.message || "心影拒绝了本次生成提交" },
+        };
       }
-      const checkpoint = await this.checkpoint(page);
-      if (checkpoint) return { status: "needs-human", platformTaskId: pendingTaskId, checkpoint };
-      await page.waitForTimeout(350);
+      submitted = true;
+    } else if (!submitted) {
+      submitted = await nextUserMessagePromise;
     }
     if (!submitted) {
+      const checkpoint = await this.checkpoint(page);
+      if (checkpoint) return { status: "needs-human", platformTaskId: pendingTaskId, checkpoint };
       return {
         status: "needs-human",
         platformTaskId: pendingTaskId,
         checkpoint: { reason: "unknown", message: "发送后未检测到新的心影对话记录。请在原网页模式确认是否已提交，再恢复任务" },
       };
     }
+    if (!creationResponse) {
+      creationResponse = await Promise.race([
+        creationResponsePromise,
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 300)),
+      ]);
+      if (creationResponse) creationPayload = await creationResponse.json().catch(() => null) as unknown;
+    }
+    await page.waitForURL((url) => Boolean(url.searchParams.get("sessionId")), { timeout: 1_200 }).catch(() => undefined);
     let submittedUrl = safeGenerationUrl(page.url());
     if (!submittedUrl?.searchParams.get("sessionId")) {
       const activeConversation = page.locator(".session-panel .session.active").filter({ visible: true }).first();
-      await activeConversation.waitFor({ state: "visible", timeout: 5_000 }).catch(() => undefined);
+      await activeConversation.waitFor({ state: "visible", timeout: 2_500 }).catch(() => undefined);
       if ((await activeConversation.count()) > 0) {
         await clickDom(activeConversation).catch(() => undefined);
-        const sessionDeadline = Date.now() + 5_000;
-        while (Date.now() < sessionDeadline) {
-          submittedUrl = safeGenerationUrl(page.url());
-          if (submittedUrl?.searchParams.get("sessionId")) break;
-          await page.waitForTimeout(100);
-        }
+        await page.waitForURL((url) => Boolean(url.searchParams.get("sessionId")), { timeout: 2_500 }).catch(() => undefined);
+        submittedUrl = safeGenerationUrl(page.url());
       }
     }
     const platformTaskId = encodeChatTaskRef({
       ...taskRef,
       sessionId: submittedUrl?.searchParams.get("sessionId") ?? taskRef.sessionId,
     });
-    const creationResponse = await creationResponsePromise;
     const platformExecutionId = creationResponse
-      ? extractBaseTaskId(await creationResponse.json().catch(() => null)) ?? undefined
+      ? extractBaseTaskId(creationPayload) ?? undefined
       : undefined;
     return {
       status: "running",
@@ -2870,30 +3026,16 @@ export class PlaywrightXinyingAdapter {
       ?? await firstExisting(page, this.selectors.portrait.uploadInput);
     if (!input) return { status: "needs-human", checkpoint: { reason: "page-changed", message: "找不到虚拟人像图片/视频上传控件" } };
     await input.setInputFiles(portrait.filePath);
-    const uploadDeadline = Date.now() + (portrait.mimeType.startsWith("video/") ? 180_000 : 90_000);
+    const uploadTimeoutMs = portrait.mimeType.startsWith("video/") ? 180_000 : 90_000;
     const failure = dialog.getByText(/上传失败|文件不支持|素材解析失败|图片校验失败|视频校验失败/).filter({ visible: true }).first();
-    let targetRow: Locator | null = null;
-    while (Date.now() < uploadDeadline) {
-      if ((await failure.count()) > 0) {
-        return { status: "failed", code: "PORTRAIT_UPLOAD_REJECTED", message: (await failure.innerText()).trim() };
-      }
-      const rowCount = await formRows.count();
-      if (rowCount > beforeRowCount) {
-        targetRow = formRows.nth(rowCount - 1);
-        break;
-      }
-      await page.waitForTimeout(250);
+    const targetRow = formRows.nth(beforeRowCount);
+    const nameInput = targetRow.locator("input[placeholder*='人像名称'], input[type='text']:not([role='combobox'])").filter({ visible: true }).first();
+    const uploadState = await waitForReadyOrFailure(nameInput, failure, uploadTimeoutMs);
+    if (uploadState === "failure") {
+      return { status: "failed", code: "PORTRAIT_UPLOAD_REJECTED", message: (await failure.innerText()).trim() };
     }
-    if (!targetRow) {
+    if (uploadState !== "ready") {
       return { status: "failed", code: "PORTRAIT_UPLOAD_TIMEOUT", message: `心影未在规定时间内完成“${portrait.displayName}”的素材上传或解析` };
-    }
-    let nameInput = targetRow.locator("input[placeholder*='人像名称'], input[type='text']:not([role='combobox'])").filter({ visible: true }).first();
-    while (Date.now() < uploadDeadline && (await nameInput.count()) === 0) {
-      if ((await failure.count()) > 0) {
-        return { status: "failed", code: "PORTRAIT_UPLOAD_REJECTED", message: (await failure.innerText()).trim() };
-      }
-      await page.waitForTimeout(250);
-      nameInput = targetRow.locator("input[placeholder*='人像名称'], input[type='text']:not([role='combobox'])").filter({ visible: true }).first();
     }
     if ((await nameInput.count()) === 0) {
       return { status: "needs-human", checkpoint: { reason: "page-changed", message: "心影已接收人像素材，但新素材行缺少名称输入框" } };
@@ -3009,28 +3151,21 @@ export class PlaywrightXinyingAdapter {
 
     await input.setInputFiles(entries.map(({ portrait }) => portrait.filePath));
     const hasVideo = entries.some(({ portrait }) => portrait.mimeType.startsWith("video/"));
-    const uploadDeadline = Date.now() + (hasVideo ? 240_000 : 120_000);
+    const uploadTimeoutMs = hasVideo ? 240_000 : 120_000;
     const failure = dialog.getByText(/上传失败|文件不支持|素材解析失败|图片校验失败|视频校验失败/).filter({ visible: true }).first();
-    let addedRows: Locator[] = [];
-    let rowsReady = false;
-    while (Date.now() < uploadDeadline) {
-      if ((await failure.count()) > 0) {
-        return finishAll({ status: "failed", code: "PORTRAIT_UPLOAD_REJECTED", message: (await failure.innerText()).trim() });
-      }
-      const rowCount = await formRows.count();
-      if (rowCount >= beforeRowCount + entries.length) {
-        addedRows = entries.map((_, index) => formRows.nth(beforeRowCount + index));
-        const ready = await Promise.all(addedRows.map(async (row) => (
-          await row.locator("input[placeholder*='人像名称'], input[type='text']:not([role='combobox'])").filter({ visible: true }).first().count()
-        ) > 0));
-        if (ready.every(Boolean)) {
-          rowsReady = true;
-          break;
-        }
-      }
-      await page.waitForTimeout(150);
+    const addedRows = entries.map((_, index) => formRows.nth(beforeRowCount + index));
+    const finalNameInput = addedRows.at(-1)!
+      .locator("input[placeholder*='人像名称'], input[type='text']:not([role='combobox'])")
+      .filter({ visible: true })
+      .first();
+    const uploadState = await waitForReadyOrFailure(finalNameInput, failure, uploadTimeoutMs);
+    if (uploadState === "failure") {
+      return finishAll({ status: "failed", code: "PORTRAIT_UPLOAD_REJECTED", message: (await failure.innerText()).trim() });
     }
-    if (!rowsReady || addedRows.length !== entries.length) {
+    const ready = uploadState === "ready" && (await Promise.all(addedRows.map(async (row) => (
+      await row.locator("input[placeholder*='人像名称'], input[type='text']:not([role='combobox'])").filter({ visible: true }).first().count()
+    ) > 0))).every(Boolean);
+    if (!ready) {
       return finishAll({ status: "failed", code: "PORTRAIT_UPLOAD_TIMEOUT", message: `心影未在规定时间内完成 ${entries.length} 项虚拟人像素材的上传或解析` });
     }
 
@@ -3686,23 +3821,11 @@ export class PlaywrightXinyingAdapter {
   }
 
   private async waitForTextEntry(page: Page, texts: string[], timeout: number): Promise<Locator | null> {
-    const deadline = Date.now() + timeout;
-    while (Date.now() < deadline) {
-      const entry = await this.firstTextEntry(page, texts);
-      if (entry) return entry;
-      await page.waitForTimeout(200);
-    }
-    return null;
+    return waitForExactText(page, texts, timeout);
   }
 
   private async waitForVisible(page: Page, selectors: string[], timeout: number): Promise<Locator | null> {
-    const deadline = Date.now() + timeout;
-    while (Date.now() < deadline) {
-      const locator = await firstVisible(page, selectors);
-      if (locator) return locator;
-      await page.waitForTimeout(200);
-    }
-    return null;
+    return waitForFirstVisible(page, selectors, timeout);
   }
 
   private async choosePortraitOption(page: Page, row: Locator, index: number, value: string): Promise<boolean> {
