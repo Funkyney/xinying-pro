@@ -191,7 +191,8 @@ function UpdateControl({ state, onClick }: { state: AppUpdateState; onClick: () 
   const downloading = state.status === "downloading";
   const downloaded = state.status === "downloaded";
   const installing = state.status === "installing";
-  const label = state.status === "available" ? `更新至 ${state.availableVersion}`
+  const manualInstall = state.installMode === "manual";
+  const label = state.status === "available" ? manualInstall ? "打开下载页" : `更新至 ${state.availableVersion}`
     : downloading ? `下载 ${Math.round(state.progress ?? 0)}%`
       : downloaded ? "重启安装"
         : installing ? "正在重启安装…"
@@ -199,7 +200,7 @@ function UpdateControl({ state, onClick }: { state: AppUpdateState; onClick: () 
             : state.status === "error" ? "重试更新"
               : state.status === "unsupported" ? "开发版本"
                 : checking ? "检查中…" : "检查更新";
-  const Icon = downloaded ? CheckCircle2 : state.status === "available" || downloading ? Download : RefreshCw;
+  const Icon = downloaded ? CheckCircle2 : manualInstall && state.status === "available" ? ExternalLink : state.status === "available" || downloading ? Download : RefreshCw;
   return <button className={`update-button update-${state.status}`} disabled={checking || downloading || installing || state.status === "unsupported"} onClick={onClick} title={state.message ?? label}><Icon size={15} className={checking || installing ? "spinning" : ""} /><span><strong>{label}</strong><small>v{state.currentVersion}</small></span></button>;
 }
 
@@ -538,7 +539,7 @@ function TypeSafeSettingsPage() {
 
   return <div className="typesafe-settings-page">
     <div className="page-heading">
-      <div><span className="eyebrow">INTELLIGENCE</span><h1>TypeSafe Jev</h1><p>为素材人物路由和自动报错恢复提供快速、结构化的判断。每台电脑单独配置，不随项目或 GitHub 同步。</p></div>
+      <div><span className="eyebrow">INTELLIGENCE</span><h1>TypeSafe Jev</h1><p>为素材人物路由、自动报错恢复和心影网页控件自愈提供快速、结构化的判断。每台电脑单独配置，不随项目或 GitHub 同步。</p></div>
       <span className={`typesafe-state ${status?.configured ? "configured" : "unconfigured"}`}><span />{status?.configured ? "已激活" : "未激活"}</span>
     </div>
 

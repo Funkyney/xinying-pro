@@ -40,6 +40,18 @@ import {
   type FastPathLookupMode,
   type PageShellSnapshot,
 } from "./automation-fast-path";
+import {
+  capturePageControlSnapshot,
+  locatorFromDescriptor,
+  locatorFromSnapshot,
+  PageControlRecoveryCache,
+  validateRecoveredControl,
+} from "./page-control-recovery";
+import {
+  acceptedPageRecoveryCandidate,
+  type PageRecoveryAction,
+  type PageRecoveryAdvisor,
+} from "./typesafe-page-recovery";
 
 export type AdapterOutcome =
   | { status: "running"; platformTaskId?: string; platformExecutionId?: string; generationUrl?: string; progress?: number; progressLabel?: string; message: string }
@@ -836,6 +848,8 @@ export class PlaywrightXinyingAdapter {
   private browser: Browser | null = null;
   private portraitApiSnapshot: PlatformPortraitApiSnapshot | null = null;
   private readonly fastPaths: AutomationFastPathCache;
+  private readonly recoveryPaths: PageControlRecoveryCache;
+  private readonly pageRecoveryBudgets = new WeakMap<Page, { shell: string; calls: number }>();
 
   constructor(
     private readonly cdpPort: number,
@@ -845,8 +859,10 @@ export class PlaywrightXinyingAdapter {
     private readonly cancelDownloadCapture?: (prefix: string, reason?: string) => boolean,
     private readonly persistPendingTaskRef?: (jobId: string, platformTaskId: string) => void,
     private readonly persistPlatformPortraitMediaKind?: (portraitId: string, mediaKind: PlatformPortrait["mediaKind"]) => void,
+    private readonly pageRecoveryAdvisor?: () => PageRecoveryAdvisor | null,
   ) {
     this.fastPaths = new AutomationFastPathCache(path.join(paths.dataDir, "automation-fast-paths.json"));
+    this.recoveryPaths = new PageControlRecoveryCache(path.join(paths.dataDir, "automation-control-recovery.json"));
   }
 
   async close(): Promise<void> {
@@ -1815,7 +1831,7 @@ export class PlaywrightXinyingAdapter {
     const originalModel = (await modelToggle?.innerText().catch(() => ""))?.trim() ?? "";
     const modelCheckpoint = await this.configureModel(page, modelName);
     if (modelCheckpoint) throw new AppError("PORTRAIT_MODEL_UNAVAILABLE", modelCheckpoint.message);
-    const entry = await firstVisible(page, this.selectors.generation.portraitEntry);
+    const entry = await this.findVisibleWithRecovery(page, this.selectors.generation.portraitEntry, "打开心影认证虚拟人像选择器", "click", ["button", "link"]);
     if (!entry) throw new AppError("PORTRAIT_PICKER_NOT_FOUND", "当前心影模型未显示“+V角色”入口");
 
     let dialog: Locator | null = null;
@@ -1981,7 +1997,7 @@ export class PlaywrightXinyingAdapter {
         if ((await cancel.count()) > 0) await clickDom(cancel).catch(() => undefined);
         await existingDialog.waitFor({ state: "hidden", timeout: 5_000 }).catch(() => undefined);
       }
-      const entry = await firstVisible(page, this.selectors.generation.portraitEntry);
+      const entry = await this.findVisibleWithRecovery(page, this.selectors.generation.portraitEntry, "打开心影认证虚拟人像选择器", "click", ["button", "link"]);
       if (!entry) throw new AppError("PORTRAIT_PICKER_NOT_FOUND", "当前心影模型未显示“+V角色”入口");
       const listResponsePromise = page.waitForResponse((response) => {
         try {
@@ -2343,7 +2359,7 @@ export class PlaywrightXinyingAdapter {
     }
 
     await this.clearUploadedMaterials(page).catch(() => undefined);
-    const prompt = await firstVisible(page, this.selectors.generation.prompt);
+    const prompt = await this.findVisibleWithRecovery(page, this.selectors.generation.prompt, "定位用于填写视频生成提示词的编辑框", "observe", ["textbox"]);
     if (!prompt) return { reason: "page-changed", message: "找不到心影提示词输入框，无法复用上一条生成" };
     await prompt.fill("");
 
@@ -2450,7 +2466,7 @@ export class PlaywrightXinyingAdapter {
 
   private async configureModel(page: Page, modelName: string): Promise<HumanCheckpoint | null> {
     if (!modelName) return null;
-    const toggle = await firstVisible(page, this.selectors.generation.modelToggle);
+    const toggle = await this.findVisibleWithRecovery(page, this.selectors.generation.modelToggle, "打开视频生成模型选择器", "click", ["button", "combobox"]);
     if (!toggle) return { reason: "page-changed", message: "找不到心影模型选择入口" };
     if ((await toggle.innerText().catch(() => "")).trim().includes(modelName)) return null;
     await clickDom(toggle);
@@ -2470,7 +2486,7 @@ export class PlaywrightXinyingAdapter {
   }
 
   private async configureParameters(page: Page, job: Job): Promise<HumanCheckpoint | null> {
-    const toggle = await firstVisible(page, this.selectors.generation.parameterToggle);
+    const toggle = await this.findVisibleWithRecovery(page, this.selectors.generation.parameterToggle, "打开视频比例、分辨率和时长参数设置", "click", ["button", "combobox"]);
     if (!toggle) return { reason: "page-changed", message: "找不到心影比例、分辨率和时长设置入口" };
     const openPopover = async (): Promise<Locator | null> => {
       const alreadyOpen = await firstVisible(page, this.selectors.generation.parameterPopover);
@@ -2586,7 +2602,7 @@ export class PlaywrightXinyingAdapter {
 
   private async selectPlatformPortraits(page: Page, portraits: PlatformPortrait[], expectedMaterialCount = portraits.length): Promise<HumanCheckpoint | null> {
     if (!portraits.length) return null;
-    const entry = await firstVisible(page, this.selectors.generation.portraitEntry);
+    const entry = await this.findVisibleWithRecovery(page, this.selectors.generation.portraitEntry, "打开心影认证虚拟人像选择器", "click", ["button", "link"]);
     if (!entry) return { reason: "page-changed", message: "当前心影模型未显示“+V角色”入口" };
     await clickDom(entry);
     const dialog = await this.waitForVisible(page, this.selectors.generation.portraitDialog, 8_000);
@@ -2687,7 +2703,7 @@ export class PlaywrightXinyingAdapter {
       }
     }
 
-    const prompt = await firstVisible(page, this.selectors.generation.prompt);
+    const prompt = await this.findVisibleWithRecovery(page, this.selectors.generation.prompt, "定位用于填写视频生成提示词的编辑框", "observe", ["textbox"]);
     if (!prompt) {
       return { status: "needs-human", checkpoint: { reason: "page-changed", message: "找不到心影提示词输入框，请在兼容模式中确认页面" } };
     }
@@ -2871,7 +2887,7 @@ export class PlaywrightXinyingAdapter {
       sessionId: currentUrl?.searchParams.get("sessionId") ?? "uninitialized",
       userIndex: beforeUserCount,
     };
-    const submit = await firstVisible(page, this.selectors.generation.submitButtons);
+    const submit = await this.findVisibleWithRecovery(page, this.selectors.generation.submitButtons, "提交当前提示词、素材和参数并开始本次心影生成", "click", ["button"]);
     if (!submit) {
       return { status: "needs-human", checkpoint: { reason: "page-changed", message: "心影发送按钮不可用，请检查提示词、素材或当前额度" } };
     }
@@ -3055,7 +3071,7 @@ export class PlaywrightXinyingAdapter {
     if (!(await this.setPortraitScope(dialog, "我已阅读并同意", true))) {
       return { status: "needs-human", checkpoint: { reason: "page-changed", message: "无法确认心影虚拟人像合规承诺复选框" } };
     }
-    const submit = await firstVisible(page, this.selectors.portrait.submitButtons);
+    const submit = await this.findVisibleWithRecovery(page, this.selectors.portrait.submitButtons, "提交当前虚拟人像授权表单", "click", ["button"]);
     if (!submit || !(await submit.isEnabled())) {
       return { status: "needs-human", checkpoint: { reason: "approval", message: "心影虚拟人像表单尚未满足提交条件，请在原网页模式检查素材与合规承诺" } };
     }
@@ -3194,7 +3210,7 @@ export class PlaywrightXinyingAdapter {
     if (!(await this.setPortraitScope(dialog, "我已阅读并同意", true))) {
       return finishAll({ status: "needs-human", checkpoint: { reason: "page-changed", message: "无法确认心影虚拟人像合规承诺复选框" } });
     }
-    const submit = await firstVisible(page, this.selectors.portrait.submitButtons);
+    const submit = await this.findVisibleWithRecovery(page, this.selectors.portrait.submitButtons, "提交当前虚拟人像授权表单", "click", ["button"]);
     if (!submit || !(await submit.isEnabled())) {
       return finishAll({ status: "needs-human", checkpoint: { reason: "approval", message: "心影虚拟人像批量表单尚未满足提交条件，请检查素材与合规承诺" } });
     }
@@ -3820,12 +3836,111 @@ export class PlaywrightXinyingAdapter {
     return null;
   }
 
+  private selectorRecoveryIntent(selectors: string[]): { intent: string; action: PageRecoveryAction; roles?: string[] } | null {
+    const same = (candidate: string[]): boolean => selectors === candidate
+      || (selectors.length === candidate.length && selectors.every((selector, index) => selector === candidate[index]));
+    if (same(this.selectors.projects.selectorTrigger)) return { intent: "打开当前空间与项目选择器", action: "click", roles: ["button", "combobox"] };
+    if (same(this.selectors.projects.selectorPanel)) return { intent: "定位已经打开的空间与项目选择面板", action: "observe", roles: ["dialog", "menu", "listbox"] };
+    if (same(this.selectors.projects.newProjectDialog)) return { intent: "定位新建项目表单弹层", action: "observe", roles: ["dialog"] };
+    if (same(this.selectors.generation.composer)) return { intent: "定位心影内容生成工作台的提示词与素材编辑区域", action: "observe", roles: ["textbox"] };
+    if (same(this.selectors.generation.prompt)) return { intent: "定位用于填写视频生成提示词的编辑框", action: "observe", roles: ["textbox"] };
+    if (same(this.selectors.generation.modelToggle)) return { intent: "打开视频生成模型选择器", action: "click", roles: ["button", "combobox"] };
+    if (same(this.selectors.generation.modelDialog)) return { intent: "定位已经打开的视频生成模型选择面板", action: "observe", roles: ["dialog", "listbox"] };
+    if (same(this.selectors.generation.parameterToggle)) return { intent: "打开视频比例、分辨率和时长参数设置", action: "click", roles: ["button", "combobox"] };
+    if (same(this.selectors.generation.parameterPopover)) return { intent: "定位已经打开的视频生成参数面板", action: "observe", roles: ["dialog", "menu", "listbox"] };
+    if (same(this.selectors.generation.advancedToggle)) return { intent: "打开 Seedance 高级配置", action: "click", roles: ["button"] };
+    if (same(this.selectors.generation.advancedPopover)) return { intent: "定位已经打开的 Seedance 高级配置面板", action: "observe", roles: ["dialog", "menu"] };
+    if (same(this.selectors.generation.portraitEntry)) return { intent: "打开心影认证虚拟人像选择器", action: "click", roles: ["button", "link"] };
+    if (same(this.selectors.generation.portraitDialog)) return { intent: "定位已经打开的心影认证虚拟人像选择器", action: "observe", roles: ["dialog"] };
+    if (same(this.selectors.generation.submitButtons)) return { intent: "提交当前提示词、素材和参数并开始本次心影生成", action: "click", roles: ["button"] };
+    if (same(this.selectors.portrait.dialog)) return { intent: "定位已经打开的新建虚拟人像表单", action: "observe", roles: ["dialog"] };
+    if (same(this.selectors.portrait.submitButtons)) return { intent: "提交当前虚拟人像授权表单", action: "click", roles: ["button"] };
+    return null;
+  }
+
+  private async recoverPageControl(
+    page: Page,
+    intent: string,
+    action: PageRecoveryAction,
+    allowedRoles?: readonly string[],
+  ): Promise<Locator | null> {
+    const shell = await pageShellFingerprintFor(page);
+    const cached = this.recoveryPaths.preferred(shell, intent, action);
+    if (cached) {
+      const locator = locatorFromDescriptor(page, cached);
+      if (await validateRecoveredControl(locator, action)) return locator;
+      this.recoveryPaths.forget(shell, intent, action);
+    }
+
+    const advisor = this.pageRecoveryAdvisor?.();
+    if (!advisor) return null;
+    const budget = this.pageRecoveryBudgets.get(page);
+    const current = budget?.shell === shell ? budget : { shell, calls: 0 };
+    if (current.calls >= 3) return null;
+    current.calls += 1;
+    this.pageRecoveryBudgets.set(page, current);
+
+    const snapshot = await capturePageControlSnapshot(page).catch(() => null);
+    if (!snapshot?.candidates.length) return null;
+    const candidates = allowedRoles?.length
+      ? snapshot.candidates.filter((candidate) => allowedRoles.includes(candidate.role))
+      : snapshot.candidates;
+    if (!candidates.length) return null;
+    const request = {
+      route: snapshot.route,
+      title: snapshot.title,
+      intent,
+      action,
+      candidates,
+    } as const;
+    const decision = await advisor.choose(request).catch(() => null);
+    if (!decision) return null;
+    const candidate = acceptedPageRecoveryCandidate(request, decision);
+    if (!candidate) return null;
+    const locator = locatorFromSnapshot(page, snapshot, candidate.id);
+    if (!(await validateRecoveredControl(locator, action))) return null;
+    const descriptor = snapshot.candidates.find((item) => item.id === candidate.id)?.locator;
+    if (descriptor && decision.confidence >= 0.92) this.recoveryPaths.remember(shell, intent, action, descriptor);
+    return locator;
+  }
+
+  private async findVisibleWithRecovery(
+    page: Page,
+    selectors: string[],
+    intent: string,
+    action: PageRecoveryAction,
+    allowedRoles?: readonly string[],
+  ): Promise<Locator | null> {
+    return await firstVisible(page, selectors) ?? this.recoverPageControl(page, intent, action, allowedRoles);
+  }
+
   private async waitForTextEntry(page: Page, texts: string[], timeout: number): Promise<Locator | null> {
-    return waitForExactText(page, texts, timeout);
+    const startedAt = Date.now();
+    const firstWait = Math.min(timeout, 1_200);
+    const deterministic = await waitForExactText(page, texts, firstWait);
+    if (deterministic) return deterministic;
+    const recovered = await this.recoverPageControl(
+      page,
+      `点击与以下入口含义相同的控件：${texts.join(" / ")}`,
+      "click",
+      ["button", "link", "menuitem", "tab"],
+    );
+    if (recovered) return recovered;
+    const remaining = timeout - (Date.now() - startedAt);
+    return remaining > 0 ? waitForExactText(page, texts, remaining) : null;
   }
 
   private async waitForVisible(page: Page, selectors: string[], timeout: number): Promise<Locator | null> {
-    return waitForFirstVisible(page, selectors, timeout);
+    const recovery = this.selectorRecoveryIntent(selectors);
+    if (!recovery) return waitForFirstVisible(page, selectors, timeout);
+    const startedAt = Date.now();
+    const firstWait = Math.min(timeout, 1_200);
+    const deterministic = await waitForFirstVisible(page, selectors, firstWait);
+    if (deterministic) return deterministic;
+    const recovered = await this.recoverPageControl(page, recovery.intent, recovery.action, recovery.roles);
+    if (recovered) return recovered;
+    const remaining = timeout - (Date.now() - startedAt);
+    return remaining > 0 ? waitForFirstVisible(page, selectors, remaining) : null;
   }
 
   private async choosePortraitOption(page: Page, row: Locator, index: number, value: string): Promise<boolean> {

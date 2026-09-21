@@ -476,6 +476,8 @@ export type AppUpdateStatus = "idle" | "checking" | "available" | "not-available
 export interface AppUpdateState {
   status: AppUpdateStatus;
   currentVersion: string;
+  installMode?: "automatic" | "manual";
+  releaseUrl?: string;
   availableVersion?: string;
   progress?: number;
   message?: string;

@@ -8,6 +8,10 @@ import {
 import type { TypeSafeConnectionResult, TypeSafeSettingsStatus } from "../shared/contracts";
 import type { RecoveryAdvisor, RecoveryDecision, RecoveryFailure } from "./recovery-engine";
 import { TypeSafeRecoveryAdvisor } from "./typesafe-recovery-advisor";
+import {
+  TypeSafePageRecoveryAdvisor,
+  type PageRecoveryAdvisor,
+} from "./typesafe-page-recovery";
 import type { Job } from "../shared/contracts";
 
 const SETTING_KEY = "typesafe_api_key_v1";
@@ -30,6 +34,7 @@ function maskKey(apiKey: string): string {
 export class TypeSafeService {
   private materialCache: CachedAdvisor<MaterialRoutingAdvisor> | null = null;
   private recoveryCache: CachedAdvisor<RecoveryAdvisor> | null = null;
+  private pageRecoveryCache: CachedAdvisor<PageRecoveryAdvisor> | null = null;
 
   constructor(private readonly database: XinyingDatabase) {}
 
@@ -64,6 +69,7 @@ export class TypeSafeService {
       .run(SETTING_KEY, JSON.stringify(payload), new Date().toISOString());
     this.materialCache = null;
     this.recoveryCache = null;
+    this.pageRecoveryCache = null;
     return { ...this.status(), ...connection };
   }
 
@@ -71,6 +77,7 @@ export class TypeSafeService {
     this.database.db.prepare("DELETE FROM settings WHERE key = ?").run(SETTING_KEY);
     this.materialCache = null;
     this.recoveryCache = null;
+    this.pageRecoveryCache = null;
     return this.status();
   }
 
@@ -116,6 +123,15 @@ export class TypeSafeService {
         return this.recoveryCache.advisor.advise(job, failure, fallback);
       },
     };
+  }
+
+  pageRecoveryAdvisor(): PageRecoveryAdvisor | null {
+    const apiKey = this.effectiveKey();
+    if (!apiKey) return null;
+    if (this.pageRecoveryCache?.apiKey !== apiKey) {
+      this.pageRecoveryCache = { apiKey, advisor: new TypeSafePageRecoveryAdvisor(apiKey) };
+    }
+    return this.pageRecoveryCache.advisor;
   }
 
   private effectiveKey(): string {

@@ -88,6 +88,7 @@ function createWindow(): void {
     (portraitId, mediaKind) => {
       service.updatePlatformPortraitMediaKind(portraitId, mediaKind);
     },
+    () => typeSafe.pageRecoveryAdvisor(),
   );
   worker = new JobWorker(
     service,
