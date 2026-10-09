@@ -348,7 +348,7 @@ function explicitParameterValue(job: Job, key: string): string | null {
 }
 
 function parseSelectedPortraitCount(text: string): number | null {
-  const match = text.match(/已选\s*(\d+)\s*项/);
+  const match = text.match(/已选\s*(\d+)\s*(?:项|个)/);
   if (!match) return null;
   const count = Number(match[1]);
   return Number.isInteger(count) ? count : null;
@@ -761,8 +761,8 @@ function platformCatalogFromApi(
 }
 
 function classifyPortraitCardText(text: string): "failed" | "running" | "completed" {
-  if (/审核不通过|审核失败|已拒绝|上传失败/.test(text)) return "failed";
-  if (/正在审核|审核中|待审核/.test(text)) return "running";
+  if (/审核不通过|审核失败|已拒绝|上传失败|(?:国内|海外)✗/.test(text)) return "failed";
+  if (/正在审核|审核中|待审核|(?:国内|海外)⏳/.test(text)) return "running";
   return "completed";
 }
 
@@ -2572,7 +2572,16 @@ export class PlaywrightXinyingAdapter {
       const requestedNetwork = typeof job.parameters.networkEnabled === "boolean"
         ? job.parameters.networkEnabled
         : true;
-      const networkRow = advanced.locator(".adv-row").filter({ hasText: "联网搜索" }).first();
+      const advancedRows = this.selectors.generation.advancedRows ?? [".config-row", ".adv-row"];
+      let networkRow: Locator | null = null;
+      for (const selector of advancedRows) {
+        const candidate = advanced.locator(selector).filter({ hasText: "联网搜索", visible: true }).first();
+        if ((await candidate.count()) > 0) {
+          networkRow = candidate;
+          break;
+        }
+      }
+      if (!networkRow) return { reason: "page-changed", message: "找不到 Seedance 2.5 联网搜索配置行" };
       const networkInput = networkRow.locator("input[role='switch']").first();
       if ((await networkInput.count()) === 0) return { reason: "page-changed", message: "找不到 Seedance 2.5 联网搜索开关" };
       const networkEnabled = (await networkInput.getAttribute("aria-checked")) === "true";
@@ -2649,14 +2658,16 @@ export class PlaywrightXinyingAdapter {
       await matched.scrollIntoViewIfNeeded().catch(() => undefined);
       const checkbox = await firstVisibleWithin(matched, this.selectors.generation.portraitCheckbox);
       if (!checkbox) return { reason: "page-changed", message: `虚拟人像不可选择：${portrait.displayName}` };
-      const alreadySelected = (await checkbox.locator(".check-inner, .check-icon").count()) > 0;
+      const selectionMarker = checkbox.locator(".check-inner, .checkbox-input.is-checked, .check-icon").filter({ visible: true });
+      const alreadySelected = (await selectionMarker.count()) > 0;
       if (!alreadySelected) {
-        await checkbox.click({ force: true });
+        const modernIndicator = checkbox.locator(".checkbox-input").filter({ visible: true }).first();
+        await ((await modernIndicator.count()) > 0 ? modernIndicator : checkbox).click({ force: true });
         const selectionDeadline = Date.now() + 3_000;
-        while (Date.now() < selectionDeadline && (await checkbox.locator(".check-inner, .check-icon").count()) === 0) {
+        while (Date.now() < selectionDeadline && (await selectionMarker.count()) === 0) {
           await page.waitForTimeout(100);
         }
-        if ((await checkbox.locator(".check-inner, .check-icon").count()) === 0) {
+        if ((await selectionMarker.count()) === 0) {
           return { reason: "page-changed", message: `心影没有勾选虚拟人像：${portrait.displayName}` };
         }
       }
@@ -2665,7 +2676,7 @@ export class PlaywrightXinyingAdapter {
     let selectedCount: number | null = null;
     const selectedCountDeadline = Date.now() + 5_000;
     while (Date.now() < selectedCountDeadline) {
-      const selectedText = dialog.getByText(/已选\s*\d+\s*项/).filter({ visible: true }).first();
+      const selectedText = dialog.getByText(/已选\s*\d+\s*(?:项|个)/).filter({ visible: true }).first();
       selectedCount = (await selectedText.count()) > 0
         ? parseSelectedPortraitCount(await selectedText.innerText().catch(() => ""))
         : null;

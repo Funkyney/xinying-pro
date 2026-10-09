@@ -1,6 +1,6 @@
 {
-  "version": 6,
-  "updatedAt": "2026-09-20",
+  "version": 7,
+  "updatedAt": "2026-10-09",
   "baseUrl": "https://blueaivideo.com/",
   "loginUrl": "https://blueaivideo.com/login?from=%252Fhome",
   "authenticatedUrlPatterns": ["/home", "/avpAgent", "/aiCharacter"],
@@ -76,19 +76,28 @@
       ".ContentChatInput .ContentChatOptionItem._toggle:has-text('高级配置')"
     ],
     "advancedPopover": [
+      ".ContentConfigPopover",
       ".AdvancedSettingPopover"
+    ],
+    "advancedRows": [
+      ".config-row",
+      ".adv-row"
     ],
     "portraitEntry": [
       ".ContentChatInput .material-list .ContentChatUploadItem:has-text('+V角色') .characterWrapper"
     ],
     "portraitDialog": [
-      ".Dialog4StudioSetting:has-text('心影认证角色库')"
+      ".Dialog4StudioSetting:has-text('心影认证角色库')",
+      ".Dialog4StudioSetting:has(.facesList)",
+      ".Dialog4StudioSetting"
     ],
     "portraitCards": [
       ".faceCard"
     ],
     "portraitCheckbox": [
-      ".p-checkbox-black"
+      ".p-checkbox-black",
+      ".selection-checkbox .p-checkbox",
+      ".selection-checkbox"
     ],
     "submitButtons": [
       ".ContentChatInput .btn-send:not(.disabled)",
