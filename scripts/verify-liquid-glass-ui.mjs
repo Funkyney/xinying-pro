@@ -9,6 +9,7 @@ const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const appDir = path.resolve(scriptDir, "..");
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "xinying-ios27-ui-"));
 const screenshot = path.join(appDir, "test-results", "ios27-dashboard.png");
+const ceoScreenshot = path.join(appDir, "test-results", "ios27-dashboard-ceo.png");
 const darkScreenshot = path.join(appDir, "test-results", "ios27-dashboard-dark.png");
 fs.mkdirSync(path.dirname(screenshot), { recursive: true });
 
@@ -87,6 +88,7 @@ try {
       heroImageFit: getComputedStyle(hero.querySelector("img")).objectFit,
       heroImageCount: hero.querySelectorAll(".hero-visual > img").length,
       lightHeroOpacity: getComputedStyle(hero.querySelector(".hero-image-light")).opacity,
+      ceoHeroOpacity: getComputedStyle(hero.querySelector(".hero-image-ceo")).opacity,
       darkHeroOpacity: getComputedStyle(hero.querySelector(".hero-image-dark")).opacity,
       heroImageTransition: getComputedStyle(hero.querySelector(".hero-image-dark")).transition,
     };
@@ -100,15 +102,29 @@ try {
   if (!surface.featureGlass.blur.includes("blur(6px)") || surface.featureGlass.radius !== "34px") throw new Error(`英雄下沿玻璃条异常：${JSON.stringify(surface.featureGlass)}`);
   if (surface.hero.blur !== "none" || surface.hasMetrics || surface.hasRecentTasks || surface.coverCount < 1) throw new Error(`总览仍像后台卡片布局：${JSON.stringify(surface)}`);
   if (surface.heroImageFit !== "contain") throw new Error(`英雄人物可能被裁切：${surface.heroImageFit}`);
-  if (surface.heroImageCount !== 2 || surface.lightHeroOpacity !== "1" || surface.darkHeroOpacity !== "0" || !surface.heroImageTransition.includes("opacity 0.24s")) throw new Error(`昼夜英雄图初始状态或交叉淡化异常：${JSON.stringify(surface)}`);
+  if (surface.heroImageCount !== 3 || surface.lightHeroOpacity !== "1" || surface.ceoHeroOpacity !== "0" || surface.darkHeroOpacity !== "0" || !surface.heroImageTransition.includes("opacity 0.28s")) throw new Error(`英雄图初始状态或交叉淡化异常：${JSON.stringify(surface)}`);
 
   await page.screenshot({ path: screenshot, fullPage: true });
+
+  await page.getByRole("button", { name: "CEO", exact: true }).click();
+  await page.waitForTimeout(420);
+  const ceoHero = await page.evaluate(() => ({
+    active: document.querySelector(".dashboard-feature")?.classList.contains("is-ceo"),
+    pressed: document.querySelector(".hero-ceo-toggle")?.getAttribute("aria-pressed"),
+    headline: document.querySelector(".dashboard-feature h1")?.textContent,
+    lightOpacity: getComputedStyle(document.querySelector(".hero-image-light")).opacity,
+    ceoOpacity: getComputedStyle(document.querySelector(".hero-image-ceo")).opacity,
+  }));
+  if (!ceoHero.active || ceoHero.pressed !== "true" || ceoHero.headline !== "深入贯彻潘总的All in AI伟大思想，让心影发挥极致产能。" || ceoHero.lightOpacity !== "0" || ceoHero.ceoOpacity !== "1") throw new Error(`CEO 首页切换失败：${JSON.stringify(ceoHero)}`);
+  await page.screenshot({ path: ceoScreenshot, fullPage: true });
+  await page.getByRole("button", { name: "CEO", exact: true }).click();
+  await page.waitForTimeout(320);
 
   await page.getByRole("button", { name: "更多", exact: true }).click();
   const popover = page.locator(".global-nav-popover");
   await popover.waitFor({ state: "visible" });
   await popover.getByRole("button", { name: "夜间模式", exact: true }).click();
-  await page.waitForTimeout(280);
+  await page.waitForTimeout(420);
   const darkHero = await page.evaluate(() => ({
     theme: document.documentElement.dataset.theme,
     lightOpacity: getComputedStyle(document.querySelector(".hero-image-light")).opacity,
@@ -119,7 +135,7 @@ try {
   await popover.getByRole("button", { name: "日间模式", exact: true }).click();
   await page.waitForTimeout(280);
   const secondaryRoutes = await popover.locator(".global-nav-popover-links > button").count();
-  if (secondaryRoutes !== 4) throw new Error(`二级路由未完整保留：${secondaryRoutes}`);
+  if (secondaryRoutes !== 5) throw new Error(`二级路由未完整保留：${secondaryRoutes}`);
 
   await popover.getByRole("button", { name: "原网页模式", exact: true }).click();
   const platformContainer = page.locator(".platform-container");
@@ -145,7 +161,7 @@ try {
   const reducedAnimation = await page.locator(".page-stage").evaluate((element) => getComputedStyle(element).animationName);
   if (!reducedAnimation.includes("ios27-reduced-fade")) throw new Error(`减少动态效果未生效：${reducedAnimation}`);
 
-  process.stdout.write(`${JSON.stringify({ ok: true, surface, darkHero, secondaryRoutes, platformLayout, reducedAnimation, screenshot, darkScreenshot }, null, 2)}\n`);
+  process.stdout.write(`${JSON.stringify({ ok: true, surface, ceoHero, darkHero, secondaryRoutes, platformLayout, reducedAnimation, screenshot, ceoScreenshot, darkScreenshot }, null, 2)}\n`);
 } catch (error) {
   process.stderr.write(`${JSON.stringify({ ok: false, error: error instanceof Error ? error.message : String(error) }, null, 2)}\n`);
   process.exitCode = 1;

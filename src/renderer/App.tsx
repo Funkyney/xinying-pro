@@ -82,6 +82,7 @@ import { SharedMaterialLibrary } from "./components/SharedMaterialLibrary";
 import { PlatformPanel } from "./components/PlatformPanel";
 import { InteractionGate, userFacingError } from "./interaction";
 import { useDragMultiSelect, withSelectionState } from "./use-drag-multi-select";
+import dashboardCeo from "./assets/dashboard-ceo.webp";
 import dashboardDirector from "./assets/dashboard-director.webp";
 import dashboardDirectorDark from "./assets/dashboard-director-dark.jpg";
 import xinyingLogo from "./assets/xinying-logo.svg";
@@ -442,7 +443,7 @@ export function App() {
         <div className={`page-content ${page === "platform" ? "page-content-platform" : ""}`} ref={pageContentRef}>
           {!snapshot ? <div className="loading-screen"><div className="loader" /><span>正在载入本地工作台…</span></div> : (
             <div key={page} className={`page-stage page-stage-${page}`}>
-              {page === "dashboard" && <DashboardPage snapshot={snapshot} results={results} activeProject={selectedProject} onNavigate={navigate} onOpenProject={(projectId) => { setSelectedProjectId(projectId); navigate("studio"); }} />}
+              {page === "dashboard" && <DashboardPage snapshot={snapshot} results={results} activeProject={selectedProject} theme={theme} onNavigate={navigate} onOpenProject={(projectId) => { setSelectedProjectId(projectId); navigate("studio"); }} />}
               {page === "projects" && <PlatformProjectsPage snapshot={snapshot} run={run} onOpened={(project) => { setSelectedProjectId(project.id); navigate("studio"); }} />}
               {page === "studio" && <StudioPage project={selectedProject} projects={snapshot.projects} portraits={snapshot.portraits} platformPortraits={platformPortraits} jobs={snapshot.jobs} onSelect={setSelectedProjectId} onNavigate={navigate} run={run} onOpenPlatform={(url) => run(async () => { await window.xinying.session.openUrl(url); navigate("platform"); })} onDelete={(id) => run(async () => { await window.xinying.projects.remove(id); setSelectedProjectId(""); navigate("dashboard"); }, "项目及其本地素材已删除")} />}
               {page === "portraits" && <PortraitsPage portraits={snapshot.portraits} platformPortraits={platformPortraits} projects={snapshot.projects} selectedProject={selectedProject} workspaceName={selectedPlatformWorkspace?.name ?? "当前心影空间"} onSelectProject={setSelectedProjectId} run={run} onNavigate={navigate} />}
@@ -708,7 +709,8 @@ function DashboardCoverMedia({ result, fallbackPosition }: { result?: PlatformRe
   return <img src={dashboardDirector} alt="" style={{ objectPosition: fallbackPosition }} />;
 }
 
-function DashboardPage({ snapshot, results, activeProject, onNavigate, onOpenProject }: { snapshot: DashboardSnapshot; results: PlatformResult[]; activeProject: Project | null | undefined; onNavigate: (page: PageKey) => void; onOpenProject: (projectId: string) => void }) {
+function DashboardPage({ snapshot, results, activeProject, theme, onNavigate, onOpenProject }: { snapshot: DashboardSnapshot; results: PlatformResult[]; activeProject: Project | null | undefined; theme: "light" | "dark"; onNavigate: (page: PageKey) => void; onOpenProject: (projectId: string) => void }) {
+  const [ceoMode, setCeoMode] = useState(false);
   const featuredProject = activeProject ?? snapshot.projects[0];
   const featuredJob = featuredProject ? snapshot.jobs.find((job) => job.projectId === featuredProject.id) : undefined;
   const featuredProgress = featuredJob?.progress ?? (featuredJob?.status === "completed" ? 100 : null);
@@ -719,10 +721,15 @@ function DashboardPage({ snapshot, results, activeProject, onNavigate, onOpenPro
   for (const result of [...results].sort((left, right) => right.createdAt.localeCompare(left.createdAt))) {
     if (result.available && !latestResultByProject.has(result.projectId)) latestResultByProject.set(result.projectId, result);
   }
+  useEffect(() => {
+    if (theme === "dark") setCeoMode(false);
+  }, [theme]);
+  const ceoActive = theme === "light" && ceoMode;
   return <div className="dashboard-page">
-    <section className="hero-panel dashboard-feature">
-      <div className="hero-visual" aria-hidden="true"><img className="hero-image-light" src={dashboardDirector} alt="" /><img className="hero-image-dark" src={dashboardDirectorDark} alt="" /></div>
-      <div className="hero-copy"><span className="eyebrow">CREATIVE OPERATIONS</span><h1>心影让你当指挥家，心影Pro让你直接把片交了。</h1><p>整理参考图、锁定编号、管理虚拟人像与生成任务；需要时随时切回心影原网页。</p><div className="hero-actions"><button className="button primary" onClick={() => onNavigate("studio")}><Clapperboard size={17} />进入生成工作台</button><button className="button ghost" onClick={() => onNavigate("platform")}><ExternalLink size={17} />打开心影原网页</button></div></div>
+    <section className={`hero-panel dashboard-feature ${ceoActive ? "is-ceo" : ""}`}>
+      {theme === "light" && <button type="button" className={`hero-ceo-toggle ${ceoActive ? "is-active" : ""}`} aria-pressed={ceoActive} onClick={() => setCeoMode((current) => !current)}><span aria-hidden="true" />CEO</button>}
+      <div className="hero-visual" aria-hidden="true"><img className="hero-image-light" src={dashboardDirector} alt="" /><img className="hero-image-ceo" src={dashboardCeo} alt="" /><img className="hero-image-dark" src={dashboardDirectorDark} alt="" /></div>
+      <div className="hero-copy"><span className="eyebrow">CREATIVE OPERATIONS</span><h1 key={ceoActive ? "ceo" : "director"}>{ceoActive ? <>深入贯彻潘总的All in AI伟大思想，<br />让心影发挥极致产能。</> : "心影让你当指挥家，心影Pro让你直接把片交了。"}</h1><p>整理参考图、锁定编号、管理虚拟人像与生成任务；需要时随时切回心影原网页。</p><div className="hero-actions"><button className="button primary" onClick={() => onNavigate("studio")}><Clapperboard size={17} />进入生成工作台</button><button className="button ghost" onClick={() => onNavigate("platform")}><ExternalLink size={17} />打开心影原网页</button></div></div>
       <div className="featured-project-glass">
         <div className="featured-project-title"><span>{featuredProject ? "当前项目" : "创作空间"}</span><strong>{featuredProject?.name ?? "选择项目后开始生成"}</strong></div>
         <div className="featured-specs"><span>{featuredProject ? modeLabels[featuredProject.mode] : "Seedance"}</span>{featuredProject && <><i /><span>{featuredProject.aspectRatio}</span><i /><span>{featuredProject.duration}s</span><i /><span>{resolutionLabel(featuredProject.resolution)}</span></>}</div>
