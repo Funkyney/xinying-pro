@@ -354,6 +354,11 @@ function parseSelectedPortraitCount(text: string): number | null {
   return Number.isInteger(count) ? count : null;
 }
 
+function canonicalPlatformMaterialLabel(text: string): string | null {
+  const match = text.replace(/\s+/g, "").match(/^(图|视频|音频)(\d+)(?:\/\d+)?$/);
+  return match ? `${match[1]}${match[2]}` : null;
+}
+
 function remapPromptLabels(prompt: string, mapping: ReadonlyMap<string, string>): string {
   return canonicalizePromptMaterialReferences(prompt).replace(/@(图|视频|音频)\d+/g, (label) => mapping.get(label) ?? label);
 }
@@ -2313,15 +2318,18 @@ export class PlaywrightXinyingAdapter {
   private async uploadedMaterialSnapshots(page: Page): Promise<UploadedMaterialSnapshot[]> {
     const list = await firstVisible(page, this.selectors.generation.materialList);
     if (!list) return [];
-    return list.locator(":scope > *").evaluateAll((elements) => elements.flatMap((element) => {
-      const label = (element.textContent ?? "").trim();
-      if (!/^(?:图|视频|音频)\d+$/.test(label)) return [];
+    const materials = await list.locator(":scope > *").evaluateAll((elements) => elements.map((element) => {
+      const rawLabel = (element.textContent ?? "").trim();
       const previewParts = [element.getAttribute("style") ?? ""];
       for (const child of Array.from(element.querySelectorAll("[style], [src], [poster]"))) {
         previewParts.push(child.getAttribute("style") ?? "", child.getAttribute("src") ?? "", child.getAttribute("poster") ?? "");
       }
-      return [{ label, previewText: previewParts.filter(Boolean).join("\n") }];
+      return { rawLabel, previewText: previewParts.filter(Boolean).join("\n") };
     }));
+    return materials.flatMap((material) => {
+      const label = canonicalPlatformMaterialLabel(material.rawLabel);
+      return label ? [{ label, previewText: material.previewText }] : [];
+    });
   }
 
   private async clearUploadedMaterials(page: Page): Promise<void> {
@@ -4054,6 +4062,7 @@ export const adapterInternals = {
   matchesGenerationTarget,
   explicitParameterValue,
   parseSelectedPortraitCount,
+  canonicalPlatformMaterialLabel,
   remapPromptLabels,
   normalizePromptLabels,
   normalizeReusablePrompt,

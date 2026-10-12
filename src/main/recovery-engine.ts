@@ -89,7 +89,7 @@ export function classifyAutomationFailure(job: Job, failure: RecoveryFailure): R
   if (/task.*running|任务正在运行|操作正在进行|稍后再试|too many requests|429|限流|busy/.test(normalized)) {
     return retry("platform-busy", 5, "心影当前繁忙，已排队等待后自动继续");
   }
-  if (/选项不可用|无法唯一确认.*实际编号|无法唯一确认.*编号/.test(failure.message)) {
+  if (/选项不可用|无法唯一确认.*实际编号|无法唯一确认.*编号|批量接收了.*可识别编号|实际素材编号.*无法一一对应/.test(failure.message)) {
     return {
       action: "manual",
       category: "human-approval",

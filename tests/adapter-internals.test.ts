@@ -40,6 +40,10 @@ describe("Playwright adapter task references", () => {
     expect(adapterInternals.parseSelectedPortraitCount("已选 2 项")).toBe(2);
     expect(adapterInternals.parseSelectedPortraitCount("(已选3个)")).toBe(3);
     expect(adapterInternals.parseSelectedPortraitCount("尚未选择")).toBeNull();
+    expect(adapterInternals.canonicalPlatformMaterialLabel("图1/4")).toBe("图1");
+    expect(adapterInternals.canonicalPlatformMaterialLabel(" 视频 2 / 12 ")).toBe("视频2");
+    expect(adapterInternals.canonicalPlatformMaterialLabel("音频3")).toBe("音频3");
+    expect(adapterInternals.canonicalPlatformMaterialLabel("图片")).toBeNull();
     expect(adapterInternals.remapPromptLabels("@图1 先看 @图2，再回到 @图1", new Map([["@图1", "@图2"], ["@图2", "@图1"]])))
       .toBe("@图2 先看 @图1，再回到 @图2");
     expect(adapterInternals.normalizePromptLabels("@图2 先看 @视频3")).toBe("@图# 先看 @视频#");

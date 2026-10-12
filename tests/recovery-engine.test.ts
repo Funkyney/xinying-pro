@@ -94,4 +94,12 @@ describe("automation recovery classification", () => {
       reason: "approval",
     })).toMatchObject({ action: "manual", maxAttempts: 0 });
   });
+
+  it("does not repeatedly upload when Heart material numbering cannot be parsed", () => {
+    expect(classifyAutomationFailure(job(), {
+      code: "NEEDS_PAGE-CHANGED",
+      message: "心影批量接收了 4 项图片，但只返回 0 个可识别编号，已安全停止",
+      reason: "page-changed",
+    })).toMatchObject({ action: "manual", maxAttempts: 0 });
+  });
 });
