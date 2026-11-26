@@ -59,6 +59,11 @@ const manifestSchema = z.object({
     audioEnabled: z.boolean().optional(),
     videoFormat: z.enum(["mp4", "mov"]).optional(),
     networkEnabled: z.boolean().optional(),
+    autoPortraitAudit: z.boolean().optional(),
+    promptOptimizer: z.boolean().optional(),
+    draftMode: z.boolean().optional(),
+    smartBalance: z.boolean().optional(),
+    inspiration: z.record(z.string().trim().min(1).max(100), z.string().trim().min(1).max(200)).optional(),
   }).strict().optional(),
   materials: z.array(z.discriminatedUnion("kind", [fileMaterialSchema, platformPortraitMaterialSchema])).max(50),
 }).strict();

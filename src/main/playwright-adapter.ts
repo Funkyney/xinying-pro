@@ -5,6 +5,9 @@ import { chromium, type Browser, type Locator, type Page, type Response, type Ro
 import type {
   HumanCheckpoint,
   Job,
+  GenerationCapabilities,
+  ConversationHistoryPage,
+  ConversationHistorySource,
   PlatformCatalogSnapshot,
   PlatformConversation,
   PlatformProject,
@@ -22,6 +25,11 @@ import type {
 } from "../shared/contracts";
 import type { AppPaths } from "../core/paths";
 import { AppError } from "../core/errors";
+import { generationOptions } from "../shared/generation-options";
+import { parseGenerationCapabilities } from "../shared/generation-capabilities";
+import { historyMaterialsMatch, historySourceMatches, parseConversationHistory } from "../shared/conversation-history";
+import { historyMaterialOrder, resolveHistoryMaterials } from "../shared/history-material-order";
+import { emptyHistoryMaterials, historyCloudIdentity, historyComposerMaterials, historyMaterialSlots, type HistoryComposerMaterials, type HistoryMaterialSlot } from "./history-composer";
 import type { SelectorPack } from "./selector-pack";
 import { classifyPlatformNavigation, platformHomeUrl, sessionNavigationPriority } from "./platform-navigation";
 import { parseMaterialKey, portraitMaterialKey, referenceMaterialKey } from "../shared/material-order";
@@ -34,6 +42,8 @@ import {
   promptMaterialLabels,
 } from "../shared/media";
 import { canonicalPlatformOutputUrl, originalPlatformVideoUrlFromPoster } from "../shared/platform-results";
+import { attachPlatformFavorites, platformFavoriteFlag } from "../shared/platform-favorites";
+import { readPlatformFavoriteVideos } from "./platform-favorites";
 import {
   AutomationFastPathCache,
   pageShellFingerprint,
@@ -347,6 +357,11 @@ function explicitParameterValue(job: Job, key: string): string | null {
   return !value || value.toLowerCase() === "auto" ? null : value;
 }
 
+function durationMatchesSummary(text: string, duration: number): boolean {
+  const match = text.match(/(?:^|[^\d.])(\d+(?:\.\d+)?)\s*s\b/i);
+  return Boolean(match && Number(match[1]) === duration);
+}
+
 function parseSelectedPortraitCount(text: string): number | null {
   const match = text.match(/已选\s*(\d+)\s*(?:项|个)/);
   if (!match) return null;
@@ -637,10 +652,15 @@ function platformConversationsFromApi(
       title: nonEmptyString(row.session_title, row.title, row.name) || "未命名对话",
       updatedAt: normalizedConversationTimestamp(row.updated_at, row.update_time, row.updatedAt, row.created_at, row.create_time),
       isCurrent: id === currentSessionId,
+      isPinned: row.is_pinned === true || row.is_pinned === 1,
+      pinnedAt: normalizedConversationTimestamp(row.pinned_at),
     });
   }
   return [...conversations.values()].sort((left, right) => {
-    if (left.isCurrent !== right.isCurrent) return left.isCurrent ? -1 : 1;
+    // Match Heart's sidebar: pinned conversations first, then recent activity.
+    // Selection is a highlight, not a reason to move an old row to the top.
+    if (left.isPinned !== right.isPinned) return left.isPinned ? -1 : 1;
+    if (left.isPinned && left.pinnedAt !== right.pinnedAt) return (right.pinnedAt ?? "").localeCompare(left.pinnedAt ?? "");
     return right.updatedAt.localeCompare(left.updatedAt);
   });
 }
@@ -695,6 +715,7 @@ function platformMaterialResult(
     previewUrl,
     outputPath: null,
     marked: false,
+    platformMarked: platformFavoriteFlag(raw),
     available: true,
     createdAt,
     lastSeenAt: syncedAt,
@@ -830,7 +851,7 @@ function decodePendingTaskRef(value: string | null): ChatTaskRef | null {
 function safeGenerationUrl(rawUrl: string): URL | null {
   try {
     const url = new URL(rawUrl);
-    return url.protocol === "https:" && url.hostname === "blueaivideo.com" && url.pathname === "/avpAgent"
+    return url.protocol === "https:" && url.hostname === "blueaivideo.com" && ["/avpAgent", "/agentlab"].includes(url.pathname)
       ? url
       : null;
   } catch {
@@ -892,7 +913,7 @@ export class PlaywrightXinyingAdapter {
         return false;
       }
     });
-    const preferred = [...pages].reverse().find((candidate) => /\/(avpAgent|aiCharacter)/.test(new URL(candidate.url()).pathname));
+    const preferred = [...pages].reverse().find((candidate) => /\/(agentlab|avpAgent|aiCharacter)/.test(new URL(candidate.url()).pathname));
     const page = preferred ?? pages.at(-1);
     if (!page) throw new AppError("PLATFORM_PAGE_NOT_FOUND", "尚未打开心影官方页面");
     bindFastPathCache(page, this.fastPaths);
@@ -956,8 +977,12 @@ export class PlaywrightXinyingAdapter {
    * there; only the requested JSON response crosses back to the app process.
    */
   private async authenticatedGet(page: Page, pathAndQuery: string): Promise<unknown> {
+    return this.authenticatedRequest(page, pathAndQuery);
+  }
+
+  private async authenticatedRequest(page: Page, pathAndQuery: string, payload?: Record<string, unknown>): Promise<unknown> {
     this.requireAuthenticatedPage(page);
-    return page.evaluate(async ({ requestedUrl }) => {
+    return page.evaluate(async ({ requestedUrl, payload }) => {
       const stored = window.localStorage.getItem("token");
       if (!stored) throw new Error("心影登录凭据不存在");
       let token = stored;
@@ -968,13 +993,148 @@ export class PlaywrightXinyingAdapter {
         // Older Heart builds stored the raw token instead of a JSON string.
       }
       const response = await fetch(new URL(requestedUrl, window.location.origin).toString(), {
-        method: "GET",
+        method: payload ? "POST" : "GET",
         credentials: "include",
-        headers: { authorization: `Bearer ${token}`, "mb-token": `Bearer ${token}` },
+        headers: { authorization: `Bearer ${token}`, "mb-token": `Bearer ${token}`, ...(payload ? { "content-type": "application/json" } : {}) },
+        ...(payload ? { body: JSON.stringify(payload) } : {}),
+        signal: AbortSignal.timeout(15_000),
       });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       return response.json();
-    }, { requestedUrl: pathAndQuery });
+    }, { requestedUrl: pathAndQuery, payload });
+  }
+
+  async generationCapabilities(): Promise<GenerationCapabilities> {
+    const page = await this.page();
+    const response = await this.authenticatedGet(page, `/api/generation_model_config_list?select_tag_list=${encodeURIComponent("全部")}`);
+    return parseGenerationCapabilities(response);
+  }
+
+  async conversationHistory(project: Project, sessionId: string, beforeEventId?: string): Promise<ConversationHistoryPage> {
+    const target = safeGenerationUrl(project.platformUrl);
+    const remoteId = target?.searchParams.get("projectId");
+    if (!remoteId || !sessionId || target?.searchParams.get("sessionId") !== sessionId) {
+      throw new AppError("HISTORY_SCOPE_MISMATCH", "请先选择项目对话，再查看该对话的生成记录");
+    }
+    if (beforeEventId !== undefined && !/^\d+$/.test(beforeEventId)) throw new AppError("INVALID_HISTORY_CURSOR", "生成记录分页标识无效，请刷新");
+    const query = new URLSearchParams({ project_id: remoteId, avp_session_id: sessionId });
+    if (beforeEventId) query.set("event_id", beforeEventId);
+    const page = await this.page();
+    const result = parseConversationHistory(await this.authenticatedGet(page, `/api/generation_history?${query}`), remoteId, sessionId);
+    if (beforeEventId && result.entries.some((entry) => Number(entry.eventId) >= Number(beforeEventId))) {
+      throw new AppError("HISTORY_PAGE_STALLED", "心影未返回更早的生成记录，请刷新重试");
+    }
+    return result;
+  }
+
+  /** Prepare only: reuse original cloud records and upload only explicit replacements. */
+  private async restoreConversationHistory(page: Page, job: Job, source: ConversationHistorySource): Promise<HumanCheckpoint | { promptForPlatform: string; materials: HistoryComposerMaterials }> {
+    const targetUrl = stringParameter(job, "platformUrl");
+    if (!historySourceMatches(source, targetUrl)) return { reason: "page-changed", message: "历史生成记录不属于本次提交的项目对话，已停止" };
+    const query = new URLSearchParams({ project_id: source.remoteProjectId, avp_session_id: source.sessionId, check_event_ids: source.eventId });
+    const payload = await this.authenticatedGet(page, `/api/generation_history?${query}`);
+    const history = parseConversationHistory(payload, source.remoteProjectId, source.sessionId);
+    const entry = history.entries.find((item) => item.eventId === source.eventId);
+    if (!entry || entry.editUnavailableReason) return { reason: "page-changed", message: entry?.editUnavailableReason || "原生成记录已删除或不可访问，请重新选择记录" };
+    if (entry.prompt !== source.prompt || !historyMaterialsMatch(entry.source.materials, source.materials)) {
+      return { reason: "page-changed", message: "原记录的提示词或素材已变化，请刷新历史记录后重新编辑" };
+    }
+    if (!historySourceMatches(source, page.url())) return { reason: "page-changed", message: "原记录的对话未正确加载，已停止" };
+    const records = recordValue(recordValue(payload).data).grouped_records;
+    const raw = recordValue((Array.isArray(records) ? records : []).find((record: any) => String(record.event_id) === source.eventId));
+    const params = recordValue(raw.task_create_params ?? raw.task_create_parmas);
+    const selectedPortraits = platformPortraitsParameter(job);
+    const planned = resolveHistoryMaterials(source, job.references, selectedPortraits);
+    if (planned.some((item) => item.unavailable || item.kind === "unknown") || new Set(planned.map((item) => item.key)).size !== planned.length) {
+      return { reason: "page-changed", message: "历史编辑素材清单不完整或重复，已停止提交" };
+    }
+    const firstLast = stringParameter(job, "mode") === "first-last-frame";
+    if (firstLast && (planned.length !== 2 || planned.some((item) => item.kind !== "image" || item.portrait))) return { reason: "approval", message: "首尾帧历史编辑需要正好两张图片" };
+    const prepared = new Map<string, { slot: HistoryMaterialSlot; material: Record<string, any> }>();
+    const initial = emptyHistoryMaterials();
+    for (const [index, item] of planned.entries()) {
+      if (!item.cloud) continue;
+      const [originalSlot, originalIndex] = item.cloud.key.split(":");
+      const originals = params[originalSlot];
+      const material = Array.isArray(originals) ? originals[Number(originalIndex)] : undefined;
+      if (!material || typeof material !== "object") return { reason: "page-changed", message: `原记录缺少 ${item.label} 的云端素材，已停止` };
+      const slot: HistoryMaterialSlot = firstLast ? index === 0 ? "firstFrame" : "tailFrame" : item.kind as "image" | "video" | "audio";
+      // Saved UI keys can collide with fresh uploads. Let the official composer
+      // allocate its normal keys; cloud/approval metadata stays unchanged.
+      const retained = { ...material };
+      delete retained._uid;
+      initial[slot].push(retained); prepared.set(item.key, { slot, material: retained });
+    }
+    try {
+      await historyComposerMaterials(page, initial);
+      if (selectedPortraits.length) {
+        const checkpoint = await this.selectPlatformPortraits(page, selectedPortraits, prepared.size + selectedPortraits.length);
+        if (checkpoint) return checkpoint;
+        const snapshots = await this.uploadedMaterialSnapshots(page), current = await historyComposerMaterials(page);
+        for (const item of planned.filter((item) => item.portrait)) {
+          const matches = snapshots.filter((snapshot) => snapshot.previewText.includes(item.portrait!.platformAssetId));
+          if (matches.length !== 1) return { reason: "page-changed", message: `无法唯一确认虚拟人像“${item.name}”的素材编号` };
+          const slot = this.mediaKindFromPlatformLabel(matches[0].label) as "image" | "video" | "audio";
+          const material = current[slot][Number(matches[0].label.match(/\d+$/)?.[0]) - 1];
+          if (!material) return { reason: "page-changed", message: "官网未返回已选虚拟人像的有效数据" };
+          prepared.set(item.key, { slot, material });
+        }
+      }
+      const local = planned.filter((item) => item.reference);
+      for (let cursor = 0; cursor < local.length;) {
+        const item = local[cursor], before = await historyComposerMaterials(page);
+        let input: Locator | null;
+        const slot: HistoryMaterialSlot = firstLast ? planned.indexOf(item) === 0 ? "firstFrame" : "tailFrame" : item.kind as "image" | "video" | "audio";
+        if (firstLast) {
+          const label = slot === "firstFrame" ? "首帧" : "尾帧";
+          const tile = page.locator(".ContentChatInput .material-list .ContentChatUploadItem").filter({ hasText: label }).first();
+          const trigger = tile.locator("[aria-haspopup='menu']").first();
+          if (await trigger.count()) await clickDom(trigger);
+          input = page.locator("input[type='file'][accept*='.png']").last();
+        } else input = await this.referenceUploadInput(page, item.reference!.mimeType);
+        if (!input || !(await input.count())) return { reason: "page-changed", message: `找不到 ${item.label} 的本地上传入口` };
+        const run = [item];
+        if (!firstLast && await input.getAttribute("multiple") !== null) {
+          while (cursor + run.length < local.length && local[cursor + run.length].kind === item.kind) run.push(local[cursor + run.length]);
+        }
+        await input.setInputFiles(run.map((selection) => selection.reference!.filePath));
+        const expected = historyMaterialSlots.reduce((sum, key) => sum + before[key].length, 0) + run.length;
+        if (!await this.waitForMaterialCount(page, expected)) return { reason: "approval", message: `新素材上传未完成或被心影拒绝：${run.map((selection) => selection.name).join("、")}` };
+        // The website renders a deletable upload placeholder before it commits
+        // the parsed cloud record to its controlled config. DOM count alone is
+        // not proof that a new material is ready to reuse/reorder.
+        const deadline = Date.now() + 90_000;
+        let after = await historyComposerMaterials(page);
+        while (after[slot].length < before[slot].length + run.length && Date.now() < deadline) {
+          await page.waitForTimeout(200);
+          after = await historyComposerMaterials(page);
+        }
+        if (after[slot].length !== before[slot].length + run.length || before[slot].some((material, index) => historyCloudIdentity(material) !== historyCloudIdentity(after[slot][index]))) {
+          return { reason: "page-changed", message: "官网上传后的素材顺序无法核验，已停止提交" };
+        }
+        run.forEach((selection, index) => prepared.set(selection.key, { slot, material: after[slot][before[slot].length + index] }));
+        cursor += run.length;
+      }
+      const final = emptyHistoryMaterials();
+      for (const item of planned) {
+        const selection = prepared.get(item.key);
+        if (!selection) return { reason: "page-changed", message: "缺少编辑后的素材，已停止提交" };
+        final[selection.slot].push(selection.material);
+      }
+      const accepted = await historyComposerMaterials(page, final);
+      if (historyMaterialSlots.some((slot) => accepted[slot].length !== final[slot].length || final[slot].some((material, index) => historyCloudIdentity(material) !== historyCloudIdentity(accepted[slot][index])))) {
+        return { reason: "page-changed", message: "官网未完整接受编辑后的素材与顺序，已停止提交" };
+      }
+      const counts = { image: 0, video: 0, audio: 0 };
+      const actualLabels = planned.map((item) => {
+        const slot = prepared.get(item.key)!.slot;
+        const kind = slot === "firstFrame" || slot === "tailFrame" ? "image" : slot;
+        return `@${kind === "image" ? "图" : kind === "video" ? "视频" : "音频"}${++counts[kind]}`;
+      });
+      return { materials: accepted, promptForPlatform: remapPromptLabels(job.promptSnapshot, new Map(planned.map((item, index) => [item.label, actualLabels[index]]))) };
+    } catch (error) {
+      return { reason: "page-changed", message: error instanceof Error ? error.message : "官网素材编辑失败，已停止提交" };
+    }
   }
 
   private async readPlatformCatalogDirect(
@@ -1274,23 +1434,25 @@ export class PlaywrightXinyingAdapter {
   }
 
   private async openGenerationSession(page: Page, remoteProjectId: string, conversationId?: string): Promise<string> {
-    const targetUrl = new URL(`${this.selectors.baseUrl.replace(/\/$/, "")}/avpAgent`);
+    this.requireAuthenticatedPage(page);
+    const targetUrl = new URL(`${this.selectors.baseUrl.replace(/\/$/, "")}/agentlab?tab=generation`);
     targetUrl.searchParams.set("projectId", remoteProjectId);
-    if (conversationId?.trim()) targetUrl.searchParams.set("sessionId", conversationId.trim());
-    const target = targetUrl.toString();
-    await page.goto(target, { waitUntil: "domcontentloaded", timeout: 30_000 });
-    const composer = await this.waitForVisible(page, this.selectors.generation.composer, 20_000);
-    const current = safeGenerationUrl(page.url());
-    const expectedSession = conversationId?.trim() ?? "";
-    const sessionMatches = !expectedSession || current?.searchParams.get("sessionId") === expectedSession;
-    if (composer && current?.searchParams.get("projectId") === remoteProjectId && sessionMatches) return current.toString();
-    if (conversationId?.trim()) throw new AppError("GENERATION_SESSION_NOT_FOUND", "已进入心影项目，但所选历史对话未能加载");
-    const createSession = page.getByText("新建会话", { exact: true }).filter({ visible: true }).first();
-    if ((await createSession.count()) > 0) await clickDom(createSession);
-    const createdComposer = await this.waitForVisible(page, this.selectors.generation.composer, 20_000);
-    const created = safeGenerationUrl(page.url());
-    if (createdComposer && created?.searchParams.get("projectId") === remoteProjectId) return created.toString();
-    throw new AppError("GENERATION_SESSION_CREATE_FAILED", "已选择心影项目，但未能建立内容生成会话");
+    let sessionId = conversationId?.trim() ?? "";
+    if (!sessionId) {
+      // Verified against Heart's content-generation frontend. Do not click the
+      // new Agent sidebar's “新建会话”: that starts a designer/chat session.
+      // Create exactly once; a timeout is ambiguous and must not be retried.
+      const envelope = recordValue(await this.authenticatedRequest(page, "/api/avp_agent/session/create", {
+        session_type: "creation", project_id: remoteProjectId,
+      }));
+      sessionId = nonEmptyString(recordValue(envelope.data).avp_session_id);
+      if (Number(envelope.code) !== 0 || !sessionId || sessionId === safeGenerationUrl(page.url())?.searchParams.get("sessionId")) {
+        throw new AppError("GENERATION_SESSION_CREATE_FAILED", nonEmptyString(envelope.message) || "心影未确认新建会话，请刷新对话列表确认；不会自动重复创建");
+      }
+    }
+    targetUrl.searchParams.set("sessionId", sessionId);
+    // Binding need not navigate the embedded page or clear its staged draft.
+    return targetUrl.toString();
   }
 
   private async readPlatformCatalogApi(
@@ -1637,71 +1799,39 @@ export class PlaywrightXinyingAdapter {
     const currentSessionId = current?.searchParams.get("projectId") === remoteId
       ? current.searchParams.get("sessionId") ?? ""
       : "";
-    let body: unknown = null;
-    try {
-      const sessions: unknown[] = [];
-      let pageNumber = 1;
-      let total = Number.POSITIVE_INFINITY;
-      while (sessions.length < total && pageNumber <= 100) {
-        const query = new URLSearchParams({
-          page: String(pageNumber),
-          page_size: "40",
-          project_id: remoteId,
-          session_biz_type: "stooory",
-        });
-        const envelope = recordValue(await this.authenticatedGet(page, `/api/avp_agent/session/list?${query.toString()}`));
-        if (Number(envelope.code) !== 0) throw new Error(nonEmptyString(envelope.message) || "心影返回了错误状态");
-        const data = recordValue(envelope.data);
-        const rows = Array.isArray(data.sessions) ? data.sessions : [];
-        sessions.push(...rows);
-        const parsedTotal = Number(data.total);
-        total = Number.isFinite(parsedTotal) ? parsedTotal : sessions.length;
-        if (!rows.length || rows.length < 40) break;
-        pageNumber += 1;
+    let lastError: unknown;
+    for (const endpoint of ["/api/agentproxy/api/avp_agent/skill/session_list", "/api/avp_agent/session/list"]) {
+      try {
+        const sessions = new Map<string, unknown>();
+        let offset = 0;
+        for (let pageNumber = 1; pageNumber <= 100; pageNumber += 1) {
+          const query = new URLSearchParams({ project_id: remoteId, page_size: "40", page: String(pageNumber), offset: String(offset), keyword: "" });
+          if (endpoint === "/api/avp_agent/session/list") query.set("session_biz_type", "stooory");
+          const envelope = recordValue(await this.authenticatedGet(page, `${endpoint}?${query}`));
+          if (Number(envelope.code) !== 0) throw new Error(nonEmptyString(envelope.message) || "心影返回了错误状态");
+          const data = recordValue(envelope.data);
+          if (!Array.isArray(data.sessions)) throw new Error("心影对话列表结构已变化");
+          const before = sessions.size;
+          for (const value of data.sessions) {
+            const row = recordValue(value);
+            const id = nonEmptyString(row.avp_session_id, row.session_id, row.id);
+            if (id) sessions.set(id, value);
+          }
+          offset += data.sessions.length;
+          const total = Number(data.total);
+          if ((Number.isFinite(total) && offset >= total) || (!Number.isFinite(total) && data.sessions.length < 40)) {
+            return platformConversationsFromApi({ code: 0, data: { sessions: [...sessions.values()] } }, project.id, currentSessionId);
+          }
+          if (!data.sessions.length || before === sessions.size) throw new Error("心影对话分页未返回完整记录");
+        }
+        throw new Error("心影对话记录超过单次读取上限");
+      } catch (cause) {
+        lastError = cause;
       }
-      body = { code: 0, data: { sessions, total: Number.isFinite(total) ? total : sessions.length } };
-      const apiConversations = platformConversationsFromApi(body, project.id, currentSessionId);
-      return apiConversations;
-    } catch {
-      // Fall back to the visible sidebar when Heart changes or disables the
-      // authenticated conversation endpoint for this account.
     }
-    if (current?.searchParams.get("projectId") !== remoteId) {
-      const target = `${this.selectors.baseUrl.replace(/\/$/, "")}/avpAgent?projectId=${encodeURIComponent(remoteId)}`;
-      await page.goto(target, { waitUntil: "domcontentloaded", timeout: 30_000 });
-    }
-    this.requireAuthenticatedPage(page);
-    const composer = await this.waitForVisible(page, this.selectors.generation.composer, 20_000);
-    if (!composer) throw new AppError("GENERATION_PAGE_NOT_READY", "心影内容生成页未完成加载，暂时无法读取对话记录");
-    const originalUrl = safeGenerationUrl(page.url());
-    const rows = page.locator(".session-panel .session");
-    const rowCount = Math.min(await rows.count(), 80);
-    const conversations: PlatformConversation[] = [];
-    const seen = new Set<string>();
-    for (let index = 0; index < rowCount; index += 1) {
-      const row = page.locator(".session-panel .session").nth(index);
-      const title = ((await row.locator(".session-title-text").innerText().catch(() => "")) || "未命名对话").trim();
-      await clickDom(row).catch(() => undefined);
-      const deadline = Date.now() + 4_000;
-      let sessionId = "";
-      while (Date.now() < deadline) {
-        const selected = safeGenerationUrl(page.url());
-        sessionId = selected?.searchParams.get("projectId") === remoteId
-          ? selected.searchParams.get("sessionId") ?? ""
-          : "";
-        if (sessionId) break;
-        await page.waitForTimeout(100);
-      }
-      if (!sessionId || seen.has(sessionId)) continue;
-      seen.add(sessionId);
-      conversations.push({ id: sessionId, projectId: project.id, title, updatedAt: "", isCurrent: sessionId === currentSessionId });
-    }
-    if (originalUrl && page.url() !== originalUrl.toString()) {
-      await page.goto(originalUrl.toString(), { waitUntil: "domcontentloaded", timeout: 30_000 });
-      await this.waitForVisible(page, this.selectors.generation.composer, 20_000);
-    }
-    if (!conversations.length && body) return platformConversationsFromApi(body, project.id, currentSessionId);
-    return conversations.sort((left, right) => Number(right.isCurrent) - Number(left.isCurrent));
+    // Never click through the sidebar to enumerate sessions: it destroys the
+    // current draft, is slow, and can return the previous URL for a new row.
+    throw new AppError("PLATFORM_CONVERSATIONS_UNAVAILABLE", `暂时无法读取心影对话，请重试；不会切换或新建对话。${lastError instanceof Error ? lastError.message : ""}`);
   }
 
   async openPlatformProject(catalog: PlatformCatalogSnapshot, projectId: string, conversationId?: string): Promise<PlatformProjectBinding> {
@@ -1711,26 +1841,19 @@ export class PlaywrightXinyingAdapter {
     if (!workspace) throw new AppError("WORKSPACE_NOT_FOUND", "所选项目的心影空间当前不可用");
     const page = await this.page();
     const open = async () => {
-      if (project.remoteId && conversationId?.trim()) {
-        const direct = new URL(`${this.selectors.baseUrl.replace(/\/$/, "")}/avpAgent`);
-        direct.searchParams.set("projectId", project.remoteId);
-        direct.searchParams.set("sessionId", conversationId.trim());
-        return { remoteId: project.remoteId, generationUrl: direct.toString() };
-      }
       // Once a project has been opened, its full remoteId is persisted. Going
       // straight to avpAgent avoids the slow and occasionally stale selector.
       if (project.remoteId) {
-        const generationUrl = await this.openGenerationSession(page, project.remoteId, conversationId);
-        return { remoteId: project.remoteId, generationUrl };
+        return project.remoteId;
       }
       await this.ensureHomePage(page);
       const panel = await this.openProjectSelector(page);
       await this.chooseWorkspace(page, panel, workspace);
       const remoteId = await this.chooseProject(page, panel, project);
-      const generationUrl = await this.openGenerationSession(page, remoteId, conversationId);
-      return { remoteId, generationUrl };
+      return remoteId;
     };
-    const { remoteId, generationUrl } = await this.retryProjectNavigation(page, open);
+    const remoteId = await this.retryProjectNavigation(page, open);
+    const generationUrl = await this.openGenerationSession(page, remoteId, conversationId);
     return {
       workspace: { ...workspace, isCurrent: true, lastSeenAt: new Date().toISOString() },
       project: {
@@ -2264,13 +2387,18 @@ export class PlaywrightXinyingAdapter {
           checkpoint: { reason: "page-changed", message: "项目绑定的心影生成链接无效，请重新选择该项目" },
         };
       }
+      target.pathname = "/agentlab";
+      target.searchParams.delete("view");
+      target.searchParams.delete("homeView");
+      target.searchParams.set("tab", "generation");
       const recordedRef = decodeChatTaskRef(job.platformTaskId) ?? decodePendingTaskRef(job.platformTaskId);
       const recordedSessionId = recordedRef?.sessionId && recordedRef.sessionId !== "uninitialized" ? recordedRef.sessionId : "";
       if (!target.searchParams.get("sessionId") && recordedSessionId) target.searchParams.set("sessionId", recordedSessionId);
       const current = safeGenerationUrl(page.url());
       const sameProject = current?.searchParams.get("projectId") === target.searchParams.get("projectId");
       const sameSession = !target.searchParams.get("sessionId") || current?.searchParams.get("sessionId") === target.searchParams.get("sessionId");
-      if (!sameProject || !sameSession) {
+      const generationTab = current?.pathname === "/agentlab" && current.searchParams.get("tab") === "generation" && !current.searchParams.get("view") && !current.searchParams.get("homeView");
+      if (!sameProject || !sameSession || !generationTab) {
         await page.goto(target.toString(), { waitUntil: "domcontentloaded", timeout: 30_000 });
       }
     }
@@ -2494,6 +2622,14 @@ export class PlaywrightXinyingAdapter {
   }
 
   private async configureParameters(page: Page, job: Job): Promise<HumanCheckpoint | null> {
+    const options = generationOptions({ ...job.parameters, modelName: stringParameter(job, "modelName") });
+    const draftToggle = page.locator(".ContentChatOptionItem._toggle").filter({ hasText: "样片模式", visible: true }).first();
+    if ((await draftToggle.count()) > 0) {
+      if (((await draftToggle.getAttribute("class")) ?? "").includes("isActive") !== options.draftMode) await clickDom(draftToggle);
+      if (((await draftToggle.getAttribute("class")) ?? "").includes("isActive") !== options.draftMode) {
+        return { reason: "page-changed", message: "心影未确认样片模式设置" };
+      }
+    } else if (options.draftMode) return { reason: "page-changed", message: "当前模型未提供样片模式，已停止提交" };
     const toggle = await this.findVisibleWithRecovery(page, this.selectors.generation.parameterToggle, "打开视频比例、分辨率和时长参数设置", "click", ["button", "combobox"]);
     if (!toggle) return { reason: "page-changed", message: "找不到心影比例、分辨率和时长设置入口" };
     const openPopover = async (): Promise<Locator | null> => {
@@ -2507,7 +2643,7 @@ export class PlaywrightXinyingAdapter {
     };
 
     const aspectRatio = explicitParameterValue(job, "aspectRatio");
-    const resolution = explicitParameterValue(job, "resolution");
+    const resolution = options.draftMode ? "480p" : explicitParameterValue(job, "resolution");
     for (const value of [aspectRatio, resolution].filter((item): item is string => Boolean(item))) {
       if ((await toggle.innerText().catch(() => "")).includes(value)) continue;
       const popover = await openPopover();
@@ -2522,16 +2658,21 @@ export class PlaywrightXinyingAdapter {
     }
 
     const duration = Number(job.parameters.duration);
-    if (Number.isInteger(duration) && !(await toggle.innerText().catch(() => "")).includes(`${duration}s`)) {
+    if (Number.isInteger(duration) && !durationMatchesSummary(await toggle.innerText().catch(() => ""), duration)) {
       const popover = await openPopover();
       if (!popover) return { reason: "page-changed", message: "心影参数面板未打开" };
-      const adaptive = popover.locator("input[role='switch']").first();
+      // The parameter popover now also contains smart balance. Only the
+      // duration header's adaptive switch may be changed when setting seconds.
+      const adaptive = popover.locator("div").filter({ hasText: /^自适应$/ }).locator("input[role='switch']").first();
       if ((await adaptive.count()) > 0 && (await adaptive.getAttribute("aria-checked")) === "true") {
         await clickDom(adaptive.locator("xpath=.."));
         await page.waitForTimeout(150);
       }
-      const durationInput = popover.locator("input[role='spinbutton']").first();
+      const durationInput = popover.locator("input[role='spinbutton'], .duration-input input").first();
       if ((await durationInput.count()) === 0) return { reason: "page-changed", message: "找不到心影时长输入框" };
+      if ((await durationInput.getAttribute("aria-disabled")) === "true" || await durationInput.isDisabled()) {
+        return { reason: "page-changed", message: "心影时长仍处于自适应或不可编辑状态，已停止提交" };
+      }
       await durationInput.evaluate((input, nextDuration) => {
         const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
         setter?.call(input, String(nextDuration));
@@ -2540,11 +2681,16 @@ export class PlaywrightXinyingAdapter {
         input.dispatchEvent(new FocusEvent("blur", { bubbles: true }));
       }, duration);
       await page.waitForTimeout(300);
-      if (Number(await durationInput.inputValue()) !== duration) {
+      if (Number(await durationInput.inputValue()) !== duration || !durationMatchesSummary(await toggle.innerText(), duration)) {
         return { reason: "page-changed", message: `心影未接受时长参数：${duration} 秒` };
       }
     }
 
+    const balancePopover = await openPopover();
+    if (balancePopover) {
+      const balanceCheckpoint = await this.configureSwitch(balancePopover, "智能均衡模式", options.smartBalance);
+      if (balanceCheckpoint) return balanceCheckpoint;
+    } else if (options.smartBalance) return { reason: "page-changed", message: "无法打开智能均衡模式设置" };
     const openAfterConfiguration = await firstVisible(page, this.selectors.generation.parameterPopover);
     if (openAfterConfiguration) await clickDom(toggle).catch(() => undefined);
     const audioToggle = await firstVisible(page, this.selectors.generation.audioToggle);
@@ -2565,9 +2711,11 @@ export class PlaywrightXinyingAdapter {
     }
 
     const modelName = stringParameter(job, "modelName");
-    if (modelName.includes("Seedance 2.5")) {
+    const isSeedance2 = /^Seedance 2\.(?:0|5)\s/.test(modelName);
+    const needsImageAudit = options.autoPortraitAudit && (job.references.some((item) => mediaKindFromMime(item.mimeType) === "image") || job.parameters.reuseUnknownMaterials === true);
+    if (isSeedance2 || needsImageAudit || options.promptOptimizer || Object.keys(options.inspiration).length) {
       const advancedToggle = await firstVisible(page, this.selectors.generation.advancedToggle);
-      if (!advancedToggle) return { reason: "page-changed", message: "Seedance 2.5 未显示“高级配置”入口" };
+      if (!advancedToggle) return { reason: "page-changed", message: "当前心影模型未显示“高级配置”入口" };
       const openAdvanced = async (): Promise<Locator | null> => {
         const existing = await firstVisible(page, this.selectors.generation.advancedPopover);
         if (existing) return existing;
@@ -2575,45 +2723,73 @@ export class PlaywrightXinyingAdapter {
         return this.waitForVisible(page, this.selectors.generation.advancedPopover, 5_000);
       };
       const advanced = await openAdvanced();
-      if (!advanced) return { reason: "page-changed", message: "Seedance 2.5 高级配置面板未打开" };
+      if (!advanced) return { reason: "page-changed", message: "心影高级配置面板未打开" };
 
-      const requestedNetwork = typeof job.parameters.networkEnabled === "boolean"
-        ? job.parameters.networkEnabled
-        : true;
-      const advancedRows = this.selectors.generation.advancedRows ?? [".config-row", ".adv-row"];
-      let networkRow: Locator | null = null;
-      for (const selector of advancedRows) {
-        const candidate = advanced.locator(selector).filter({ hasText: "联网搜索", visible: true }).first();
-        if ((await candidate.count()) > 0) {
-          networkRow = candidate;
-          break;
-        }
+      for (const [label, enabled, required] of [
+        ["自动图片人像审核", options.autoPortraitAudit, needsImageAudit],
+        ["提示词优化", options.promptOptimizer, options.promptOptimizer],
+      ] as const) {
+        const switchCheckpoint = await this.configureSwitch(advanced, label, enabled, required);
+        if (switchCheckpoint) return switchCheckpoint;
       }
-      if (!networkRow) return { reason: "page-changed", message: "找不到 Seedance 2.5 联网搜索配置行" };
-      const networkInput = networkRow.locator("input[role='switch']").first();
-      if ((await networkInput.count()) === 0) return { reason: "page-changed", message: "找不到 Seedance 2.5 联网搜索开关" };
-      const networkEnabled = (await networkInput.getAttribute("aria-checked")) === "true";
-      if (networkEnabled !== requestedNetwork) {
-        const switchControl = networkRow.locator(".el-switch").first();
-        await clickDom((await switchControl.count()) > 0 ? switchControl : networkInput);
-        await page.waitForTimeout(150);
-      }
-      if (((await networkInput.getAttribute("aria-checked")) === "true") !== requestedNetwork) {
-        return { reason: "page-changed", message: `心影未确认联网搜索：${requestedNetwork ? "开启" : "关闭"}` };
-      }
+      const inspirationCheckpoint = await this.configureInspiration(advanced, options.inspiration);
+      if (inspirationCheckpoint) return inspirationCheckpoint;
 
-      const requestedFormat = stringParameter(job, "videoFormat").toLowerCase() || "mp4";
+      const isSeedance25 = modelName.includes("Seedance 2.5");
+      const requestedNetwork = isSeedance2 && job.parameters.networkEnabled !== false;
+      const networkCheckpoint = await this.configureSwitch(advanced, "联网搜索", requestedNetwork, isSeedance2);
+      if (networkCheckpoint) return networkCheckpoint;
+
+      const requestedFormat = options.draftMode ? "mp4" : stringParameter(job, "videoFormat").toLowerCase() || "mp4";
       const formatChip = advanced.locator(".format-chip").filter({ hasText: new RegExp(`^${requestedFormat}$`, "i") }).first();
-      if ((await formatChip.count()) === 0) return { reason: "page-changed", message: `心影未提供视频格式：${requestedFormat.toUpperCase()}` };
-      if (!((await formatChip.getAttribute("class")) ?? "").includes("isActive")) {
-        await clickDom(formatChip);
-        await page.waitForTimeout(150);
-      }
-      if (!((await formatChip.getAttribute("class")) ?? "").includes("isActive")) {
-        return { reason: "page-changed", message: `心影未确认视频格式：${requestedFormat.toUpperCase()}` };
+      if ((await formatChip.count()) === 0) {
+        if (isSeedance25 || requestedFormat !== "mp4") return { reason: "page-changed", message: `心影未提供视频格式：${requestedFormat.toUpperCase()}` };
+      } else {
+        if (!((await formatChip.getAttribute("class")) ?? "").includes("isActive")) {
+          await clickDom(formatChip);
+          await page.waitForTimeout(150);
+        }
+        if (!((await formatChip.getAttribute("class")) ?? "").includes("isActive")) {
+          return { reason: "page-changed", message: `心影未确认视频格式：${requestedFormat.toUpperCase()}` };
+        }
       }
       if (await advanced.isVisible().catch(() => false)) await clickDom(advancedToggle).catch(() => undefined);
     }
+    return null;
+  }
+
+  private async configureSwitch(root: Locator, label: string, requested: boolean, required = requested): Promise<HumanCheckpoint | null> {
+    const row = root.locator(".config-row, .adv-row, .inline-toggle-control").filter({ hasText: label, visible: true }).first();
+    const control = row.locator("input[role='switch'], [role='switch']").first();
+    if ((await control.count()) === 0) return required ? { reason: "page-changed", message: `当前心影模型未提供“${label}”，已停止提交` } : null;
+    const checked = async () => (await control.getAttribute("aria-checked")) === "true";
+    if ((await checked()) !== requested) {
+      const clickable = row.locator(".el-switch").first();
+      await clickDom((await clickable.count()) ? clickable : control);
+    }
+    if ((await checked()) !== requested) return { reason: "page-changed", message: `心影未确认${label}：${requested ? "开启" : "关闭"}` };
+    return null;
+  }
+
+  private async configureInspiration(advanced: Locator, requested: Record<string, string>): Promise<HumanCheckpoint | null> {
+    const row = advanced.locator(".config-row").filter({ hasText: "灵感镜头", visible: true }).first();
+    if (!(await row.count())) return Object.keys(requested).length ? { reason: "page-changed", message: "当前模型不支持灵感镜头" } : null;
+    await clickDom(row);
+    const panel = advanced.locator(".InspirationPanel").first();
+    await panel.waitFor({ state: "visible", timeout: 5_000 }).catch(() => undefined);
+    if (!(await panel.isVisible())) return { reason: "page-changed", message: "灵感镜头选项未打开" };
+    const clear = panel.locator(".clear-btn");
+    if (await clear.count()) await clickDom(clear);
+    for (const [category, name] of Object.entries(requested)) {
+      const tab = panel.getByText(category, { exact: true }).first();
+      if (!(await tab.count())) return { reason: "page-changed", message: `官网灵感镜头分类已变化：${category}` };
+      await clickDom(tab);
+      const option = panel.locator(".option-item").filter({ has: advanced.page().getByText(name, { exact: true }) }).first();
+      if (!(await option.count())) return { reason: "page-changed", message: `官网没有灵感镜头选项：${category} / ${name}` };
+      await clickDom(option);
+      if (!((await option.getAttribute("class")) ?? "").includes("isActive")) return { reason: "page-changed", message: `官网未确认灵感镜头：${name}` };
+    }
+    await clickDom(row);
     return null;
   }
 
@@ -2716,6 +2892,21 @@ export class PlaywrightXinyingAdapter {
 
     const pendingRef = decodePendingTaskRef(job.platformTaskId);
     if (pendingRef) {
+      const nativeReview = generationOptions({ ...job.parameters, modelName: stringParameter(job, "modelName") }).autoPortraitAudit
+        && (job.references.some((item) => mediaKindFromMime(item.mimeType) === "image") || job.parameters.reuseUnknownMaterials === true);
+      if (nativeReview) {
+        // Discard transient optimistic chat bubbles before recovering an
+        // unacknowledged submission. Only persisted conversation history counts.
+        await page.reload({ waitUntil: "domcontentloaded", timeout: 30_000 });
+        const resumed = await this.ensureGenerationPage(job);
+        if (!(resumed instanceof Object) || !("locator" in resumed)) return resumed as AdapterOutcome;
+        const persisted = await this.responseForTask(page, pendingRef, job.promptSnapshot);
+        if (!persisted) return {
+          status: "needs-human", platformTaskId: job.platformTaskId ?? undefined,
+          checkpoint: { reason: "unknown", message: "本次自动图片审核提交尚无可核验的正式记录；已保留原检查点，不会再次点击生成。请确认原网页任务状态后处理" },
+        };
+        return this.inspectRunningJob({ ...job, platformTaskId: encodeChatTaskRef({ ...pendingRef, userIndex: persisted.userIndex }) });
+      }
       const submittedUser = await this.userForTask(page, pendingRef, job.promptSnapshot);
       if (submittedUser) {
         return this.inspectRunningJob({ ...job, platformTaskId: encodeChatTaskRef(pendingRef) });
@@ -2746,10 +2937,14 @@ export class PlaywrightXinyingAdapter {
       throw new AppError("REFERENCE_FILE_MISSING", "至少一项参考素材文件已丢失");
     }
     const firstLastMode = stringParameter(job, "mode") === "first-last-frame";
+    const historySource = job.parameters.conversationHistorySource as ConversationHistorySource | undefined;
+    let expectedHistoryMaterials: HistoryComposerMaterials | undefined;
     let promptForPlatform = job.promptSnapshot;
     let reusedDraft = false;
-    if (reuseFromPlatformTaskId) {
-      const reused = await this.reuseGenerationDraft(page, job, reuseFromPlatformTaskId, materialOrder.length, firstLastMode);
+    if (historySource && !reuseFromPlatformTaskId) {
+      reusedDraft = true;
+    } else if (reuseFromPlatformTaskId) {
+      const reused = await this.reuseGenerationDraft(page, job, reuseFromPlatformTaskId, historySource ? historyMaterialOrder(historySource).length : materialOrder.length, firstLastMode);
       if ("reason" in reused) return { status: "needs-human", checkpoint: reused };
       promptForPlatform = reused.promptForPlatform;
       reusedDraft = true;
@@ -2762,6 +2957,19 @@ export class PlaywrightXinyingAdapter {
     if (modelCheckpoint) return { status: "needs-human", checkpoint: modelCheckpoint };
     const parameterCheckpoint = await this.configureParameters(page, job);
     if (parameterCheckpoint) return { status: "needs-human", checkpoint: parameterCheckpoint };
+    if (historySource) {
+      if (!reuseFromPlatformTaskId) {
+        const restored = await this.restoreConversationHistory(page, job, historySource);
+        if ("reason" in restored) return { status: "needs-human", checkpoint: restored };
+        expectedHistoryMaterials = restored.materials;
+        promptForPlatform = restored.promptForPlatform;
+      } else {
+        expectedHistoryMaterials = await historyComposerMaterials(page);
+        if (historyMaterialSlots.reduce((sum, slot) => sum + expectedHistoryMaterials![slot].length, 0) !== historyMaterialOrder(historySource).length) {
+          return { status: "needs-human", checkpoint: { reason: "page-changed", message: "批次未完整还原编辑后的历史素材，已停止" } };
+        }
+      }
+    }
 
     if (!reusedDraft && firstLastMode) {
       for (let index = 0; index < orderedReferences.length; index += 1) {
@@ -2893,7 +3101,7 @@ export class PlaywrightXinyingAdapter {
       }
       promptForPlatform = remapPromptLabels(job.promptSnapshot, new Map(expectedLabels.map((label, index) => [label, actualLabels[index]])));
     }
-    if (!firstLastMode && !(reuseFromPlatformTaskId && job.parameters.reuseUnknownMaterials === true) && (await this.uploadedMaterialCount(page)) !== materialOrder.length) {
+    if (!firstLastMode && !historySource && !(reuseFromPlatformTaskId && job.parameters.reuseUnknownMaterials === true) && (await this.uploadedMaterialCount(page)) !== materialOrder.length) {
       return { status: "needs-human", checkpoint: { reason: "page-changed", message: "心影素材槽位数量与本地参考顺序不一致，已暂停提交" } };
     }
 
@@ -2912,12 +3120,20 @@ export class PlaywrightXinyingAdapter {
     }
     const afterFillCheckpoint = await this.checkpoint(page);
     if (afterFillCheckpoint) return { status: "needs-human", checkpoint: afterFillCheckpoint };
+    if (expectedHistoryMaterials) {
+      const current = await historyComposerMaterials(page);
+      if (historyMaterialSlots.some((slot) => current[slot].length !== expectedHistoryMaterials![slot].length || current[slot].some((material, index) => historyCloudIdentity(material) !== historyCloudIdentity(expectedHistoryMaterials![slot][index])))) {
+        return { status: "needs-human", checkpoint: { reason: "page-changed", message: "提交前官网素材或顺序发生变化，已停止本次生成" } };
+      }
+    }
 
     const pendingTaskId = encodePendingTaskRef(taskRef);
     this.persistPendingTaskRef?.(job.id, pendingTaskId);
+    const awaitOfficialImageReview = generationOptions({ ...job.parameters, modelName: stringParameter(job, "modelName") }).autoPortraitAudit
+      && (job.references.some((item) => mediaKindFromMime(item.mimeType) === "image") || job.parameters.reuseUnknownMaterials === true);
     const creationResponsePromise = page.waitForResponse(
-      (response) => response.url().includes("contentChat/createGenerationTask") && response.request().method() === "POST",
-      { timeout: 5_000 },
+      (response) => (new URL(response.url()).pathname === "/api/generation_invoke" || response.url().includes("contentChat/createGenerationTask")) && response.request().method() === "POST",
+      { timeout: awaitOfficialImageReview ? 90_000 : 5_000 },
     ).catch(() => null);
     const nextUserMessagePromise = waitForCollectionGrowth(
       page,
@@ -2933,6 +3149,15 @@ export class PlaywrightXinyingAdapter {
     let creationResponse = firstSignal.kind === "response" ? firstSignal.response : null;
     let creationPayload: unknown = null;
     let submitted = firstSignal.kind === "message" && firstSignal.found;
+    // The new UI may show a temporary user bubble before generation_invoke
+    // finishes automatic image review. That bubble is not acceptance.
+    if (awaitOfficialImageReview && !creationResponse) {
+      creationResponse = await creationResponsePromise;
+      if (!creationResponse) return {
+        status: "needs-human", platformTaskId: pendingTaskId,
+        checkpoint: { reason: "unknown", message: "心影自动图片审核/提交回执尚未确认，已保留本次提交检查点；请先确认原任务状态，不能重复提交" },
+      };
+    }
     if (creationResponse) {
       creationPayload = await creationResponse.json().catch(() => null) as unknown;
       const mutation = platformMutationResult(creationPayload, creationResponse.ok());
@@ -2947,6 +3172,10 @@ export class PlaywrightXinyingAdapter {
     } else if (!submitted) {
       submitted = await nextUserMessagePromise;
     }
+    if (awaitOfficialImageReview && !extractBaseTaskId(creationPayload)) return {
+      status: "needs-human", platformTaskId: pendingTaskId,
+      checkpoint: { reason: "unknown", message: "心影返回的提交回执缺少正式任务编号，尚不能确认生成成功；已保留原检查点，不能重复提交" },
+    };
     if (!submitted) {
       const checkpoint = await this.checkpoint(page);
       if (checkpoint) return { status: "needs-human", platformTaskId: pendingTaskId, checkpoint };
@@ -2961,7 +3190,12 @@ export class PlaywrightXinyingAdapter {
         creationResponsePromise,
         new Promise<null>((resolve) => setTimeout(() => resolve(null), 300)),
       ]);
-      if (creationResponse) creationPayload = await creationResponse.json().catch(() => null) as unknown;
+      if (creationResponse) {
+        creationPayload = await creationResponse.json().catch(() => null) as unknown;
+        const mutation = platformMutationResult(creationPayload, creationResponse.ok());
+        if (!mutation.ok) return { status: "needs-human", platformTaskId: pendingTaskId,
+          checkpoint: { reason: "approval", message: mutation.message || "心影拒绝了本次生成提交" } };
+      }
     }
     await page.waitForURL((url) => Boolean(url.searchParams.get("sessionId")), { timeout: 1_200 }).catch(() => undefined);
     let submittedUrl = safeGenerationUrl(page.url());
@@ -2990,7 +3224,8 @@ export class PlaywrightXinyingAdapter {
       generationUrl: submittedUrl?.toString(),
       message: reusedDraft
         ? "已通过心影“重新编辑”复用上一条的提示词、素材与参数并再次提交生成"
-        : "已核验虚拟人像并按 APP 顺序映射心影实际编号后提交生成",
+        : awaitOfficialImageReview ? "已确认官网自动图片审核开关和生成回执，并按 APP 顺序映射素材编号后提交生成"
+          : "已核验虚拟人像并按 APP 顺序映射心影实际编号后提交生成",
     };
   }
 
@@ -3750,7 +3985,8 @@ export class PlaywrightXinyingAdapter {
     }
     // A selected Heart conversation is an exact binding. Do not walk the
     // sidebar and mix older conversations back into the current result view.
-    if (targetSessionId) return [...results.values()];
+    const withFavorites = async () => attachPlatformFavorites([...results.values()], await readPlatformFavoriteVideos(page, targetProjectId));
+    if (targetSessionId) return withFavorites();
     const sessionRows = page.locator(".session-panel .session");
     const sessionScroller = page.locator(".session-panel .session-scrollbar .el-scrollbar__wrap").first();
     let stableRounds = 0;
@@ -3775,7 +4011,7 @@ export class PlaywrightXinyingAdapter {
       await this.collectCurrentConversationResults(page, target, project, sessionId, results);
       processed.add(sessionId);
     }
-    return [...results.values()];
+    return withFavorites();
   }
 
   async downloadVisibleResult(job: Job): Promise<string> {
@@ -4061,6 +4297,7 @@ export const adapterInternals = {
   safeGenerationUrl,
   matchesGenerationTarget,
   explicitParameterValue,
+  durationMatchesSummary,
   parseSelectedPortraitCount,
   canonicalPlatformMaterialLabel,
   remapPromptLabels,

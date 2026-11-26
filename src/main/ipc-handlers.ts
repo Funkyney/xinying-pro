@@ -13,6 +13,8 @@ import type { TypeSafeService } from "./typesafe-service";
 import { loadDirectorManifest } from "../core/director-manifest";
 import { runDirectorManifest } from "../cli/director-run";
 
+const videoShortcutBridges = new WeakSet<Electron.WebContents>();
+
 export function registerIpcHandlers(
   window: BrowserWindow,
   service: XinyingService,
@@ -22,6 +24,18 @@ export function registerIpcHandlers(
   worker: JobWorker,
   typeSafe: TypeSafeService,
 ): void {
+  // Native Chromium video controls swallow digit keydown events. Forward only
+  // candidates; the renderer owns focus/text-field checks and DOM deduplication.
+  if (!videoShortcutBridges.has(window.webContents)) {
+    videoShortcutBridges.add(window.webContents);
+    window.webContents.on("before-input-event", (_event, input) => {
+      if (input.type === "keyDown" && !input.isAutoRepeat && !input.isComposing
+        && !input.control && !input.alt && !input.meta && !input.shift
+        && (input.key === "1" || input.key === "2")) {
+        window.webContents.send(IPC.resultsVideoShortcut, input.key);
+      }
+    });
+  }
   const handle = (channel: string, listener: (...args: any[]) => unknown) => {
     ipcMain.removeHandler(channel);
     ipcMain.handle(channel, listener);
@@ -75,6 +89,9 @@ export function registerIpcHandlers(
     };
   });
   handle(IPC.projectsList, () => service.listProjects());
+  handle(IPC.generationCapabilities, () => platform.withAutomationViewport(
+    () => adapter.generationCapabilities(), "正在读取心影生成选项",
+  ));
   handle(IPC.projectsCreate, (_event, input: ProjectInput) => service.createProject(input));
   handle(IPC.projectsUpdate, (_event, id: string, input: Partial<ProjectInput>) => service.updateProject(id, input));
   handle(IPC.projectsRemove, (_event, id: string) => service.removeProject(id));
@@ -101,19 +118,33 @@ export function registerIpcHandlers(
     );
     return service.bindPlatformProject(binding);
   });
+  handle(IPC.platformProjectsHistory, async (_event, projectId: string, sessionId: string, beforeEventId?: string) => {
+    const project = service.getProject(projectId);
+    return platform.withAutomationViewport(
+      () => adapter.conversationHistory(project, sessionId, beforeEventId), "正在读取当前对话的生成记录",
+    );
+  });
   handle(IPC.platformProjectsCreate, async (_event, input: PlatformProjectCreateInput) => {
     const binding = await platform.withAutomationViewport(() => adapter.createPlatformProject(service.getPlatformCatalog(), input), `正在创建项目「${input.name.trim()}」`);
     return service.bindPlatformProject(binding);
   });
 
   handle(IPC.referencesList, (_event, projectId: string) => service.listReferences(projectId));
-  handle(IPC.referencesPickAdd, async (_event, projectId: string) => {
+  handle(IPC.referencesPickAdd, async (_event, projectId: string, single = false) => {
     const result = await dialog.showOpenDialog(window, {
       title: "选择参考图片、视频或音频",
-      properties: ["openFile", "multiSelections"],
+      properties: single ? ["openFile"] : ["openFile", "multiSelections"],
       filters: [{ name: "心影参考素材", extensions: ["png", "jpg", "jpeg", "mp4", "mov", "wav", "mp3"] }],
     });
     return result.canceled ? service.listReferences(projectId) : service.addReferences(projectId, result.filePaths);
+  });
+  handle(IPC.referencesPickHistory, async (_event, projectId: string, single = false) => {
+    const result = await dialog.showOpenDialog(window, {
+      title: single ? "替换历史参考素材" : "添加历史参考素材",
+      properties: single ? ["openFile"] : ["openFile", "multiSelections"],
+      filters: [{ name: "心影参考素材", extensions: ["png", "jpg", "jpeg", "mp4", "mov", "wav", "mp3"] }],
+    });
+    return result.canceled ? null : service.selectHistoryReferences(projectId, result.filePaths);
   });
   handle(IPC.referencesBatchReplace, async (_event, projectId: string) => {
     const current = service.listReferences(projectId);
@@ -304,6 +335,7 @@ export function registerIpcHandlers(
     return service.syncPlatformResults(projectId, remote, source);
   });
   handle(IPC.resultsMark, (_event, ids: string[], marked: boolean) => service.markResults(ids, marked));
+  handle(IPC.resultsSetClipMarker, (_event, id: string, timeMs: number, enabled: boolean) => service.setClipMarker(id, timeMs, enabled));
   handle(IPC.resultsReuse, (_event, id: string, input: ResultReuseInput) => service.submitResultReuse(id, input));
   const ensureResultDownloadable = async (id: string) => {
     const result = service.getResult(id);
@@ -315,7 +347,7 @@ export function registerIpcHandlers(
     return service.getResult(id);
   };
   const resultExtension = (result: PlatformResult): string => {
-    for (const candidate of [result.name, result.outputPath, result.outputUrl]) {
+    for (const candidate of [result.outputPath, result.outputUrl, result.name]) {
       if (!candidate) continue;
       try {
         const pathname = /^https?:\/\//i.test(candidate) ? new URL(candidate).pathname : candidate;

@@ -340,7 +340,7 @@ export class PlatformViewManager {
 
   async openUrl(rawUrl: string): Promise<void> {
     const url = new URL(rawUrl);
-    if (url.hostname !== "blueaivideo.com" || url.pathname !== "/avpAgent" || !isAllowedUrl(url.toString())) {
+    if (url.hostname !== "blueaivideo.com" || !["/avpAgent", "/agentlab"].includes(url.pathname) || !isAllowedUrl(url.toString())) {
       throw new Error("只能在兼容模式中打开心影 avpAgent 会话链接");
     }
     this.cancelLogin();

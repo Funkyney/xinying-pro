@@ -115,6 +115,7 @@ describe("director run", () => {
     fs.writeFileSync(personPath, "person");
     const project = service.createProject({
       name: "授权自动恢复",
+      autoPortraitAudit: false,
       prompt: "@图1 向镜头挥手",
       mode: "reference-to-video",
       platformWorkspaceId: "workspace-team",

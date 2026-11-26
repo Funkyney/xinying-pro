@@ -331,6 +331,12 @@ td:first-child { display: flex; flex-direction: column; gap: 3px; }td:first-chil
 .result-reuse-form select, .result-reuse-form input[type="number"] { width: 100%; min-height: 34px; padding: 0 8px; font-size: 9px; }
 .result-reuse-form .result-audio-toggle { grid-column: 1 / -1; flex-direction: row; align-items: center; }
 .result-reuse-form .result-audio-toggle input { accent-color: var(--purple); }
+.advanced-generation-controls { display: flex; flex-direction: column; gap: 12px; padding-block: 16px; border-bottom: 1px solid var(--border, rgba(128,128,128,.18)); margin-bottom: 16px; }
+.advanced-generation-controls h3 { margin: 0; font-size: 14px; }
+.advanced-generation-controls p, .advanced-generation-controls small { font-size: 12px; line-height: 1.6; }
+.advanced-generation-controls a { color: inherit; text-decoration: underline; text-underline-offset: 3px; }
+.result-reuse-form > .advanced-generation-controls { grid-column: 1 / -1; }
+.result-reuse-form .advanced-generation-controls .switch-row { flex-direction: row; font-size: 12px; }
 .result-reuse-actions { position: sticky; bottom: -17px; display: flex; margin: 0 -17px -17px; padding: 13px 17px; align-items: center; justify-content: flex-end; gap: 8px; border-top: 1px solid var(--line); background: rgba(16,20,29,.96); backdrop-filter: blur(10px); }
 .result-reuse-actions p { margin: 0; color: #7f8799; font-size: 9px; line-height: 1.5; }
 .reference-delete-media { width: 86px; height: 62px; overflow: hidden; border-radius: 8px; display: grid; place-items: center; background: #090c12; color: #a789ee; }
@@ -588,3 +594,8 @@ td:first-child { display: flex; flex-direction: column; gap: 3px; }td:first-chil
   .result-size-control { width: 100%; }
   .result-size-control input { flex: 1; }
 }
+.result-marker-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.result-marker-chips > span { display: inline-flex; align-items: center; border: 1px solid var(--line); border-radius: 12px; background: rgb(128 128 128 / .08); }
+.result-marker-chips .button { padding: 6px 8px; min-height: 32px; font-variant-numeric: tabular-nums; }
+.result-marker-chips .icon-button { width: 28px; height: 28px; margin-right: 3px; }
+.result-clip-markers kbd { font-size: 11px; opacity: .65; font-family: inherit; }

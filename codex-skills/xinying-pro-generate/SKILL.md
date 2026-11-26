@@ -1,18 +1,20 @@
 ---
 name: xinying-pro-generate
-description: Use 心影Pro to execute a finished Seedance 2.0/2.5 prompt with ordered image, video, and audio references; inspect every image and video for people, require every asset containing any visible real or virtual person to pass 心影 virtual-portrait authorization instead of ordinary reference upload, preserve the intended @图/@视频/@音频 mapping, submit an explicitly requested number of takes, and stop once every take is confirmed as generating. Trigger when the user says “用心影生成”, “用心影Pro生成”, “把这条提示词跑一下”, “生成 N 条”, or asks Codex to upload references and operate 心影Pro. Only monitor, retrieve, or download results when the user separately asks. Do not use for prompt writing alone or for non-心影 providers.
+description: Execute finished Seedance prompts through 心影Pro with ordered image, video, and audio references, official automatic image portrait review, separate authorization for person-containing videos, batch submission, and a stop-at-generating success boundary. Use when asked to generate with 心影Pro or upload references and submit takes; not for prompt writing alone. Monitor or download only when separately requested.
 ---
 
 # 心影Pro 极速生成
 
-把已定稿的 Seedance 提示词和本地素材写成导演清单，然后优先用心影Pro MCP 的一次 `generate` 调用完成准备、人物授权、原位替换、批量提交和“生成中”确认。MCP 不可用时才回退到一次 `director run`。不要把目录同步、授权轮询和生成轮询拆成多轮调用。
+把已定稿的 Seedance 提示词和本地素材写成导演清单，然后优先用心影Pro MCP 的一次 `generate` 调用完成准备、官方图片自动审核、必要的视频人物授权、编号映射、批量提交和“生成中”确认。MCP 不可用时才回退到一次 `director run`。不要把目录同步、授权轮询和生成轮询拆成多轮调用。
 
 ## 安全门禁
 
 - 只有用户明确说“用心影生成/提交/生成 N 条”等会创建任务时，才可运行带 `--confirm` 的提交命令。讨论、改提示词和预览不算授权。
 - 未指定数量时只生成 1 条；不得擅自增加，一次最多 20 条。
 - 将人物素材送审前，确认它是用户有权使用的原创、公司或已授权素材。第三方真人、名人、来源不明或授权不清时暂停询问。
-- 图片或视频的任意画面/帧只要出现真人、虚拟人物或人形角色，无论大小、清晰度、正背面或是否在背景，都必须走心影虚拟人像授权。绝不按普通图片或普通视频兜底，也不能改成 `scene/style/motion/other` 绕过。
+- 图片优先开启官网 `autoPortraitAudit: true`，作为参考图上传并由官网自动分析、审核、录入角色库；不要重复创建图片虚拟人像授权任务。APP 必须在上传/提交前确认官方开关实际生效，缺失或审核失败就停止，不能关闭审核兜底。
+- 官网自动审核仅覆盖图片。视频的任意帧包含人物时仍须虚拟人像授权；不支持图片自动审核的模型也保留独立授权。不能改角色字段绕过审核。
+- 官网说明自动图片审核为实验功能、可能失败；请勿传入真人形象 IP。角色库满 300 项时官网会自动删除最旧素材。开启视为同意官网《虚拟人像素材合规承诺与授权确认书》。
 - 不读取或导出 Cookie、Token、二维码或浏览器配置；不绕过登录、验证码、实名、审核、额度、付费确认或地域限制。
 
 ## 1. 取得提示词、素材和项目
@@ -38,23 +40,15 @@ XINYING_CLI="${CODEX_HOME:-$HOME/.codex}/skills/xinying-pro-generate/scripts/xin
 
 启动器缺失或 APP 路径失效时，让用户在心影Pro“Codex扩展”页点击安装/更新。已有有效 `projectId` 时不要例行运行 `platform sync/catalog/project list`。只有项目缺失、用户切换空间/项目或本地目录确实过期时才运行 `platform sync`；它默认复用十分钟缓存，需要强制刷新时加 `--force`。已绑定项目保留 `platformUrl` 的 `sessionId`，不要再次 `platform open` 误建新对话。
 
-## 2. 人物检查（先查缓存）
+## 2. 图片自动审核，视频保留人物检查
 
-在重新看图或抽帧前，对全部图片和视频一次运行：
+Seedance 2.0 / 2.5 默认在清单设置 `autoPortraitAudit: true`。图片可以省略 `containsPerson` 和 `personCheck`，无需为了路由而逐张看图、查询人物缓存或调用 JEV，也不要填写 `authorizeAsPortrait: true`。图片仍可标为 `role: character`，保持创作语义与素材顺序；出现在 `preview.references` 是此模式的正常状态，不表示绕过审核。
 
-```text
-media cache --file "<path1>" "<path2>" ...
-```
+仅对视频，或用户关闭/模型不支持自动图片审核时的图片，一次执行 `media cache --file` 查询 SHA-256 缓存。命中则复用；未命中时视频检查首帧、尾帧和覆盖全片的关键帧，图片逐张检查。无法检查时停止，不猜测无人。
 
-- `hit: true`：这是同一文件 SHA-256 的已记录结果，直接复用 `containsPerson`，无需再次看图或视频。
-- `hit: false`：图片逐张检查；视频检查首帧、尾帧和覆盖全片的关键帧，不能只看封面。
-- 无法打开或无法抽帧时暂停。已经完成检查、但画面证据仍存在歧义时，写入下面的 `personCheck` 证据交给 APP 的安全路由器；绝不能默认写 `false`。
+这些需独立路由的素材，结论明确时填写 `containsPerson`：有人为 `true` 并设 `authorizeAsPortrait: true`；确认整项无人为 `false`。结论不稳时不要猜布尔值，可填写实际视觉证据 `personCheck: { verdict, confidence, summary, inspectedFrames, inspectionComplete }`，由 APP 的缓存/规则/JEV 路由。JEV 不读取媒体文件，不能代替视觉检查。
 
-结论明确时，每个图片/视频在清单中显式填写 `containsPerson`：有人写 `true` 并写 `authorizeAsPortrait: true`；只有确认整项完全无人时才写 `false`。人物硬门禁会把已知含人的同一文件锁为人物素材，后续清单不能将其降级。
-
-结论不稳时不要猜布尔值，省略 `containsPerson`，改写 `personCheck: { verdict, confidence, summary, inspectedFrames, inspectionComplete }`。`verdict` 为 `person`、`no-person` 或 `uncertain`；`confidence` 为 0-1；`summary` 只写实际可见证据。APP 会先走 SHA-256 缓存和确定性规则，再把所有歧义项一次性交给 TypeSafe JEV 做结构化路由。JEV 不读取媒体文件：它只能依据检查证据把素材升级为虚拟人像授权；只有“完整检查 + no-person + 双重高置信度”才允许普通上传，否则继续安全暂停。
-
-多人合照、背脸、脸部过小或人物不完整仍原样写 `true`。不要在 Codex 侧预判审核失败；内部会通过 `director authorize` 原样提交心影虚拟人像审核。只有心影实际返回失败后才报告原因，不能退回普通上传。
+多人、背脸、远景或人物不完整时不要在 Codex 侧预判审核失败；仍交官网相应审核流程。只有官网实际拒绝才报告原因，不能把含人视频降级为普通视频上传。
 
 素材上限：Seedance 2.5 最多 30 图、10 视频、10 音频，合计最多 50 项，视频和音频总时长各不超过 30 秒；Seedance 2.0 最多 9 图、3 视频、3 音频，合计最多 15 项。
 
@@ -62,7 +56,9 @@ media cache --file "<path1>" "<path2>" ...
 
 在镜头文件夹写 `.xinying-run.json`，严格遵循 [manifest-schema.md](references/manifest-schema.md)。默认 `replaceMaterials: true`，确保清单顺序就是心影最终顺序。提示词原样写入 `prompt`；APP 会按心影实际素材编号自动重写 `@图/@视频/@音频`。
 
-Seedance 2.5 默认写 `videoFormat: "mp4"` 与 `networkEnabled: true`；用户明确要 MOV 时改为 `mov`，明确关闭联网时才写 `false`。APP 会在高级配置中确认。
+Seedance 2.0 / 2.5 默认写 `autoPortraitAudit: true`、`videoFormat: "mp4"` 与 `networkEnabled: true`；2.5 用户明确要 MOV 时改为 `mov`，明确关闭联网时才写 `false`。两者均支持 4K；APP 会在高级配置中确认，具体可用性以当前账号和模型为准。
+
+可选新增参数：`promptOptimizer`（默认 false，避免改动定稿提示词）、`draftMode`（480P MP4 样片）、`smartBalance`（官网智能均衡，可能更慢但省积分）、`inspiration`（官网分类到镜头名称的映射）。仅在用户要求且官网当前模型支持时启用；需要灵感镜头名称或确认能力时调用一次只读 `generation_options`，不要编造预设名称，也不要每次生成都查询。样片模式会关闭智能均衡并锁定 480P MP4；样片后续高清渲染在原网页操作。
 
 安全门禁满足后，首选只调用一次心影Pro MCP `generate`：
 
@@ -83,8 +79,8 @@ director run --manifest "<absolute-manifest-path>" --confirm
 这一次 MCP 调用或回退命令会：
 
 1. 校验清单并按顺序配置本地项目；
-2. 复用相同文件已通过的虚拟人像，其他含人图片/视频分别使用干净表单，自动填写名称、默认资料和合规承诺后排队审核；
-3. 在 APP 内部等待审核、持久化阶段检查点、自动恢复临时表单/连接错误、回绑新角色，并把人物素材在原位置替换为已授权虚拟人像；
+2. 图片在官方自动审核开启时按参考图直接上传；含人视频或未开启自动审核的图片才复用/创建独立虚拟人像授权；
+3. APP 确认官方参数生效；需要独立授权的素材等待审核后原位替换。图片自动审核由官网生成流程执行，失败不能伪报成功；
 4. 按 `count` 依次提交，后续条目复用上一条心影对话；
 5. 所有任务达到 `running` 或 `completed` 后返回一个精简 JSON。
 
@@ -96,7 +92,7 @@ director run --manifest "<absolute-manifest-path>" --confirm
 - 上传表单残留、资料下拉框暂时不可用、角色库刚审核完尚未重绘、角色卡编号或图片/视频类型变化：全部由 APP 内部自动清理、重试、回绑和重写编号；不要执行 `job resume`，不要让用户删除重传、改提示词或进入网页补操作。
 - MCP 连接中断、`write EOF`、页面上下文失效、SQLite 暂时繁忙或心影提示任务占用：APP 会按检查点有限重试；如果生成按钮附近已经记录 `pending-chat`，每次恢复都必须先查重，绝不能直接再次点击生成。
 - `DIRECTOR_AUTHORIZATION_BLOCKED/needs-human`：只报告命令最终返回的真实原因。只有登录失效、心影明确驳回、授权/权限不足、付费确认或平台持续故障才让用户进入“原网页模式”处理。
-- 多人、背脸、远景或人物不完整：仍按含人素材送审，不得自行拆图或降级。只有心影表单、接口或审核任务明确返回失败后才暂停。
+- 多人、背脸、远景或人物不完整：按当前官方审核路径提交，不得自行拆图或降级。
 - `DIRECTOR_NOT_READY/PROJECT_NOT_READY`：按返回的精简 `warnings` 修复引用、模型、参数或项目绑定。
-- 含人图片或视频仍出现在最终 `preview.references`：停止提交并纠正清单；绝不按普通图片或普通视频兜底。
+- 开启官方自动图片审核时，含人图片保留在 `preview.references` 是正确路径；含人视频或未启用该功能的含人图片仍须独立授权后替换。审核开关缺失、审核失败或权限不足时报告真实原因。
 - 心影编号变化以及视频人像被角色槽显示为 `@图N` 的情况由 APP 回读并自动改写提示词；不要手工猜编号或要求重新上传。

@@ -52,8 +52,72 @@ describe("XinyingService", () => {
     expect(updated.platformUrl).toContain("sessionId=test-session");
   });
 
+  it("saves a history draft without submitting, reuses only cloud materials on explicit submission, and clears it on session change", () => {
+    const project = service.createProject({ name: "历史编辑", prompt: "本地草稿" });
+    const [local] = service.addReferences(project.id, [fixture("old.png", "local")]);
+    const source = { remoteProjectId: "platform-project", sessionId: "test-session", eventId: "123", prompt: "原提示词",
+      materials: [{ key: "image:0", kind: "image" as const, name: "官网原图", previewUrl: "https://example.com/ref.png", label: "@图1" }] };
+    service.updateProject(project.id, { historySource: source, prompt: "@图1 新动作", resolution: "1080p" });
+    expect(service.listJobs()).toHaveLength(0);
+    expect(service.getProject(project.id).historySource).toEqual(source);
+    const preview = service.previewSubmission(project.id);
+    expect(preview.ready).toBe(true); expect(preview.references).toEqual([]);
+    expect(preview.orderedLabels).toEqual(["@图1 · 官网原素材 · 官网原图"]);
+    const batch = service.submitGenerationBatch(project.id, 2);
+    expect(batch.jobs).toHaveLength(2);
+    expect(batch.jobs[0].parameters).toMatchObject({ conversationHistorySource: source, reuseUnknownMaterials: true });
+    expect(batch.jobs[0].references).toEqual([]);
+    expect(service.listReferences(project.id)[0].id).toBe(local.id);
+    expect(fs.existsSync(local.filePath)).toBe(true);
+    service.prepareDirectorRun({ version: 1, projectId: project.id, prompt: "新任务的本地图片", replaceMaterials: true, count: 1,
+      materials: [{ kind: "file", path: fixture("fresh.png", "fresh"), containsPerson: false }] });
+    expect(service.getProject(project.id).historySource).toBeNull();
+    service.updateProject(project.id, { historySource: source });
+    service.updateProject(project.id, { platformUrl: "https://blueaivideo.com/agentlab?projectId=platform-project&sessionId=next-session" });
+    expect(service.getProject(project.id).historySource).toBeNull();
+    expect(() => service.updateProject(project.id, { historySource: source })).toThrow(/不属于当前/);
+  });
+
+  it("snapshots only explicitly edited history references, preserving hidden originals and cloud order", () => {
+    const project = service.createProject({ name: "可编辑历史", prompt: "原草稿" });
+    const [hidden, added] = service.addReferences(project.id, [fixture("hidden.png", "old"), fixture("new.png", "new")]);
+    const source = { remoteProjectId: "platform-project", sessionId: "test-session", eventId: "123", prompt: "原提示词",
+      materials: [0, 1].map((i) => ({ key: `image:${i}`, kind: "image" as const, name: `云端${i}`, previewUrl: `https://example.com/${i}.png`, label: `@图${i + 1}` })),
+      materialOrder: ["history:image:1", referenceMaterialKey(added.id), "history:image:0"] };
+    service.updateProject(project.id, { historySource: source, prompt: "@图1 @图2 @图3", resolution: "1080p" });
+    const preview = service.previewSubmission(project.id);
+    expect(preview.ready).toBe(true);
+    expect(preview.references.map((item) => item.id)).toEqual([added.id]);
+    expect(preview.orderedLabels.map((label) => label.split(" · ").at(-1))).toEqual(["云端1", "new.png", "云端0"]);
+    const generated = service.submitGenerationBatch(project.id, 2);
+    expect(generated.jobs[0].references.map((item) => item.id)).toEqual([added.id]);
+    expect(generated.jobs[0].parameters.materialOrder).toEqual(source.materialOrder);
+    expect(fs.existsSync(hidden.filePath)).toBe(true);
+    expect(service.getProject(project.id).historySource?.materials).toEqual(source.materials);
+  });
+
+  it("selects an already imported file again without duplicating or losing its history selection", () => {
+    const project = service.createProject({ name: "重新选择已上传素材" });
+    const first = fixture("first.png", "first"), second = fixture("second.png", "second");
+    const originals = service.addReferences(project.id, [first, second]);
+    expect(service.selectHistoryReferences(project.id, [second, first, second]).map((item) => item.id)).toEqual([originals[1].id, originals[0].id]);
+    expect(service.listReferences(project.id)).toHaveLength(2);
+    expect(fs.existsSync(first)).toBe(true);
+  });
+
+  it("blocks deleted, duplicate and missing history selections rather than reverting to old cloud references", () => {
+    const project = service.createProject({ name: "历史校验", prompt: "@图1", resolution: "1080p" });
+    const source = { remoteProjectId: "platform-project", sessionId: "test-session", eventId: "123", prompt: "原提示词", materials: [{ key: "image:0", kind: "image" as const, name: "云端", previewUrl: null, label: "@图1" }] };
+    for (const materialOrder of [[], ["reference:missing"], ["history:image:0", "history:image:0"]]) {
+      service.updateProject(project.id, { historySource: { ...source, materialOrder } });
+      expect(service.previewSubmission(project.id).ready).toBe(false);
+      expect(() => service.submitGeneration(project.id)).toThrow(/尚未达到/);
+    }
+    expect(service.listJobs()).toHaveLength(0);
+  });
+
   it("caches exact-file person inspection results and never downgrades a known person", () => {
-    const project = service.createProject({ name: "人物检查缓存" });
+    const project = service.createProject({ name: "人物检查缓存", autoPortraitAudit: false });
     const person = fixture("cached-person.png", "person-image-bytes");
     expect(service.mediaAnalysisCache([person])[0]).toMatchObject({
       hit: false,
@@ -306,6 +370,12 @@ describe("XinyingService", () => {
       "https://blueaivideo.com/avpAgent?projectId=another-project&sessionId=wrong-session",
     );
     expect(mismatched.platformUrl).toContain("sessionId=session-selected");
+    const delayedReceipt = service.rememberProjectConversation(
+      project.id,
+      "https://blueaivideo.com/agentlab?tab=generation&projectId=remote-project&sessionId=previously-queued-session",
+      "chat:remote-project:previously-queued-session:3",
+    );
+    expect(delayedReceipt.platformUrl).toContain("sessionId=session-selected");
   });
 
   it("matches the live Heart capabilities for Seedance 2.0 and 2.5", () => {
@@ -319,7 +389,7 @@ describe("XinyingService", () => {
     expect(fourK.resolution).toBe("4k");
     expect(() => service.createProject({ name: "2.0 超时", modelName: "Seedance 2.0 全能参考", duration: 16 })).toThrow(/4 到 15/);
     expect(() => service.createProject({ name: "2.0 文生", modelName: "Seedance 2.0 全能参考", mode: "text-to-video" })).toThrow(/不支持该生成模式/);
-    expect(() => service.createProject({ name: "2.5 伪4K", modelName: "Seedance 2.5 全能参考", resolution: "4k" })).toThrow(/不支持分辨率/);
+    expect(service.createProject({ name: "2.5 4K", modelName: "Seedance 2.5 全能参考", resolution: "4k" }).resolution).toBe("4k");
     expect(service.createProject({ name: "2.5 30秒", modelName: "Seedance 2.5 全能参考", duration: 30 }).duration).toBe(30);
   });
 
@@ -992,7 +1062,7 @@ describe("XinyingService", () => {
     const audio = fixture("director-voice.mp3", "director-audio");
     const scene = fixture("director-scene.png", "director-scene");
     const stale = fixture("stale.png", "stale");
-    const project = service.createProject({ name: "导演自动化" });
+    const project = service.createProject({ name: "导演自动化", autoPortraitAudit: false });
     service.addReferences(project.id, [stale]);
     const manifest: DirectorManifest = {
       version: 1,

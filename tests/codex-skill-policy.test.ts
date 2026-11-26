@@ -27,20 +27,21 @@ describe("xinying-pro-generate completion policy", () => {
     expect(source).toContain("另行明确要求“继续监控 / 查结果 / 下载”");
   });
 
-  it("never submits a recognizable person as an ordinary local reference", () => {
-    expect(source).toContain("人物硬门禁");
-    expect(source).toContain("结论明确时，每个图片/视频在清单中显式填写 `containsPerson`");
+  it("distinguishes official image review from independent video authorization", () => {
+    expect(source).toContain("官网 `autoPortraitAudit: true`");
+    expect(source).toContain("不要重复创建图片虚拟人像授权任务");
+    expect(source).toContain("视频的任意帧包含人物时仍须虚拟人像授权");
     expect(source).toContain("结论不稳时不要猜布尔值");
     expect(source).toContain("JEV 不读取媒体文件");
     expect(source).toContain("视频检查首帧、尾帧和覆盖全片的关键帧");
-    expect(source).toContain("含人图片或视频仍出现在最终 `preview.references`：停止提交");
-    expect(source).toContain("绝不按普通图片或普通视频兜底");
+    expect(source).toContain("含人图片保留在 `preview.references` 是正确路径");
+    expect(source).toContain("不能关闭审核兜底");
   });
 
   it("lets Heart review multi-person and imperfect portrait assets instead of pre-rejecting them", () => {
     expect(source).toContain("不要在 Codex 侧预判审核失败");
-    expect(source).toContain("通过 `director authorize` 原样提交心影虚拟人像审核");
-    expect(source).toContain("只有心影表单、接口或审核任务明确返回失败后才暂停");
+    expect(source).toContain("仍交官网相应审核流程");
+    expect(source).toContain("只有官网实际拒绝才报告原因");
     expect(source).not.toContain("暂停并请用户提供可审核的单人素材");
   });
 

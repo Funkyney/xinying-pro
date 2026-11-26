@@ -1,8 +1,29 @@
+import type { PlatformResult } from "./contracts";
+
+export function resultMediaExtension(result: Pick<PlatformResult, "mediaKind" | "name" | "outputUrl" | "previewUrl"> & Partial<Pick<PlatformResult, "outputPath">>): string {
+  for (const candidate of [result.outputPath, result.outputUrl, result.name, result.previewUrl]) {
+    if (!candidate) continue;
+    try {
+      const pathname = /^https?:\/\//i.test(candidate) ? new URL(candidate).pathname : candidate;
+      const extension = /\.(mp4|mov|webm|png|jpg|jpeg|webp)$/i.exec(pathname)?.[0].toLowerCase();
+      if (extension) return extension;
+    } catch { /* Try the next source. */ }
+  }
+  return result.mediaKind === "image" ? ".jpg" : ".mp4";
+}
+
 const HEART_CDN_HOST_SUFFIX = ".bluemediacdn.com";
 const GENERATED_VIDEO_PATH = /\/vlc-toc\/task\/img2video\/.*_(?:360|480|540|720|1080)p\.mp4$/i;
 const VIDEO_QUALITY_SUFFIX = /_(?:360|480|540|720|1080)p(?=\.mp4$)/i;
 const VIDEO_COVER_SUFFIX = /_cover\.(?:jpg|jpeg|png)$/i;
 const MOV_SUFFIX = /\.mov$/i;
+
+/** Identity only; never use this key as a playback or download URL. */
+export function platformVideoIdentity(value: string | null | undefined): string | null {
+  const url = parsedHeartCdnUrl(value);
+  if (!url || !url.pathname.includes("/task/img2video/")) return null;
+  return `${url.origin}${url.pathname.replace(/_cover\.(?:jpg|jpeg|png)$/i, "").replace(/_(?:360|480|540|720|1080)p\.mp4$/i, "").replace(/\.(?:mp4|mov|webm)$/i, "")}`;
+}
 
 function parsedHeartCdnUrl(value: string | null | undefined): URL | null {
   if (!value) return null;

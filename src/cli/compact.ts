@@ -1,4 +1,5 @@
 import path from "node:path";
+import { generationOptions } from "../shared/generation-options";
 import type {
   DirectorRunPreparation,
   DirectorRunValidation,
@@ -25,6 +26,7 @@ export function compactProject(project: Project) {
     audioEnabled: project.audioEnabled,
     videoFormat: project.videoFormat,
     networkEnabled: project.networkEnabled,
+    ...generationOptions(project),
     status: project.status,
     materialCount: project.materialOrder.length,
     updatedAt: project.updatedAt,

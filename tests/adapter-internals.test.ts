@@ -13,6 +13,7 @@ describe("Playwright adapter task references", () => {
 
   it("accepts only the visible heart-platform generation route", () => {
     expect(adapterInternals.safeGenerationUrl("https://blueaivideo.com/avpAgent?projectId=a&sessionId=b")?.pathname).toBe("/avpAgent");
+    expect(adapterInternals.safeGenerationUrl("https://blueaivideo.com/agentlab?tab=generation&projectId=a&sessionId=b")?.pathname).toBe("/agentlab");
     expect(adapterInternals.safeGenerationUrl("https://example.com/avpAgent?projectId=a&sessionId=b")).toBeNull();
     expect(adapterInternals.decodeChatTaskRef("task-from-private-api")).toBeNull();
   });
@@ -34,6 +35,23 @@ describe("Playwright adapter task references", () => {
     const explicit = { parameters: { resolution: "2K" } } as Job;
     expect(adapterInternals.explicitParameterValue(auto, "resolution")).toBeNull();
     expect(adapterInternals.explicitParameterValue(explicit, "resolution")).toBe("2K");
+  });
+
+  it("matches the complete duration rather than the suffix of a longer value", () => {
+    expect(adapterInternals.durationMatchesSummary("16:9 | 1080p | 15s", 5)).toBe(false);
+    expect(adapterInternals.durationMatchesSummary("16:9 | 1080p | 5s", 5)).toBe(true);
+    expect(adapterInternals.durationMatchesSummary("9:16 | 720p(智能均衡) | 15 s", 15)).toBe(true);
+    expect(adapterInternals.durationMatchesSummary("9:16 | 720p | 自适应", 5)).toBe(false);
+    expect(adapterInternals.durationMatchesSummary("16:9 | 1080p | 5.5s", 5)).toBe(false);
+  });
+
+  it("matches the complete duration instead of finding 5s inside 15s or 25s", () => {
+    expect(adapterInternals.durationMatchesSummary("16:9 | 1080p | 5s", 5)).toBe(true);
+    expect(adapterInternals.durationMatchesSummary("16:9 | 4k | 15s", 5)).toBe(false);
+    expect(adapterInternals.durationMatchesSummary("16:9 | 4k | 25s", 5)).toBe(false);
+    expect(adapterInternals.durationMatchesSummary("16:9 | 1080p | 5.5s", 5)).toBe(false);
+    expect(adapterInternals.durationMatchesSummary("16:9 | 1080p | 15 s", 15)).toBe(true);
+    expect(adapterInternals.durationMatchesSummary("9:16 | 720p(智能均衡) | 自适应", 5)).toBe(false);
   });
 
   it("parses Heart's retained portrait selection and remaps platform labels without swap collisions", () => {
@@ -187,6 +205,17 @@ describe("Playwright adapter task references", () => {
       isCurrent: true,
     });
     expect(conversations[1]).toMatchObject({ id: "session-old", title: "旧版分镜", isCurrent: false });
+  });
+
+  it("matches official pinned/recent ordering rather than promoting the current old conversation", () => {
+    const conversations = adapterInternals.platformConversationsFromApi({ code: 0, data: { sessions: [
+      { avp_session_id: "old-current", session_title: "旧对话", update_time: "2026-08-01T00:00:00Z" },
+      { avp_session_id: "recent", session_title: "新对话", update_time: "2026-11-24T00:00:00Z" },
+      { avp_session_id: "pinned", session_title: "置顶", is_pinned: true, pinned_at: "2026-11-23T00:00:00Z", update_time: "2026-09-01T00:00:00Z" },
+    ] } }, "project", "old-current");
+    expect(conversations.map((item) => item.id)).toEqual(["pinned", "recent", "old-current"]);
+    expect(conversations[0].isPinned).toBe(true);
+    expect(conversations[2].isCurrent).toBe(true);
   });
 
   it("builds a complete directly-openable catalog from Heart's read-only directory responses", () => {

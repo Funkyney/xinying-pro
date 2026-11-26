@@ -15,6 +15,7 @@ import { IPC } from "../shared/ipc";
 import { reserveAutomationPort } from "../shared/automation-port";
 import { CodexExtensionManager } from "./codex-extension";
 import { guardClosedOutputPipe } from "./output-pipe";
+import { localVideoResponse } from "./local-video-response";
 
 guardClosedOutputPipe(process.stdout);
 guardClosedOutputPipe(process.stderr);
@@ -150,7 +151,7 @@ function createWindow(): void {
 }
 
 app.whenReady().then(() => {
-  protocol.handle("xinying-media", (request) => {
+  protocol.handle("xinying-media", async (request) => {
     const url = new URL(request.url);
     const filePath = url.searchParams.get("path");
     if (!filePath) return new Response("Missing path", { status: 400 });
@@ -166,6 +167,12 @@ app.whenReady().then(() => {
       LIMIT 1
     `).get(filePath, filePath, filePath, filePath, filePath, filePath);
     if (!permitted) return new Response("Media path is not registered in the local project database", { status: 403 });
+    const mediaTypes: Record<string, string> = { ".mp4": "video/mp4", ".mov": "video/quicktime", ".webm": "video/webm", ".mp3": "audio/mpeg", ".wav": "audio/wav" };
+    const type = mediaTypes[path.extname(filePath).toLowerCase()];
+    if (type) {
+      try { return await localVideoResponse(filePath, type, request); }
+      catch { return new Response("Media unavailable", { status: 404 }); }
+    }
     return net.fetch(pathToFileURL(filePath).toString());
   });
   registerAppUpdater(() => mainWindow);

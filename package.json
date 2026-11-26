@@ -43,6 +43,10 @@
     "verify:jobs-ui": "node scripts/verify-job-ledger-ui.mjs",
     "verify:jobs-fixture-ui": "npm run build && node scripts/verify-jobs-fixture-ui.mjs",
     "verify:task-status-api": "npm run build && node scripts/verify-task-status-api.mjs",
+    "verify:generation-options": "npm run build:main && node scripts/verify-generation-options.mjs",
+    "verify:conversations-ui": "npm run build && node scripts/verify-conversations-ui.mjs",
+    "verify:clip-markers": "npm run build && node scripts/verify-clip-markers.mjs",
+    "verify:marker-shortcuts": "node scripts/verify-marker-shortcuts.mjs",
     "verify:login-lifecycle": "node scripts/verify-login-lifecycle.mjs",
     "verify:concurrent-sync": "node scripts/verify-concurrent-sync.mjs",
     "verify:update-ui": "node scripts/verify-update-ui.mjs",
@@ -87,6 +91,10 @@
     "vitest": "^4.0.17",
     "wait-on": "^9.0.1"
   },
+  "optionalDependencies": {
+    "exiftool-vendored.exe": "13.60.0",
+    "exiftool-vendored.pl": "13.60.0"
+  },
   "overrides": {
     "@xmldom/xmldom": "0.8.15",
     "fast-uri": "3.1.7",
@@ -97,7 +105,8 @@
     "productName": "心影Pro",
     "asar": true,
     "asarUnpack": [
-      "node_modules/better-sqlite3/**/*"
+      "node_modules/better-sqlite3/**/*",
+      "node_modules/exiftool-vendored.*/**/*"
     ],
     "files": [
       "dist/**/*",

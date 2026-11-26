@@ -30,10 +30,10 @@ export const XINYING_MODEL_PROFILES: XinyingModelProfile[] = [
   {
     name: "Seedance 2.5 全能参考",
     shortName: "SEEDANCE 2.5",
-    description: "最多 50 项 · 30 图 / 10 视频 / 10 音频 · 音频/视频各≤30秒",
+    description: "最多 50 项 · 30 图 / 10 视频 / 10 音频 · 支持 4K",
     modes: ["text-to-video", "reference-to-video"],
     aspectRatios: COMMON_ASPECT_RATIOS,
-    resolutions: ["480p", "720p", "1080p"],
+    resolutions: ["480p", "720p", "1080p", "4k"],
     minDuration: 4,
     maxDuration: 30,
     audioSupported: true,
@@ -58,7 +58,7 @@ export const XINYING_MODEL_PROFILES: XinyingModelProfile[] = [
     minDuration: 4,
     maxDuration: 15,
     audioSupported: true,
-    networkSearchSupported: false,
+    networkSearchSupported: true,
     videoFormats: ["mp4"],
     materialLimits: {
       maxTotal: 15,

@@ -1,5 +1,25 @@
 export type ProjectMode = "text-to-video" | "image-to-video" | "reference-to-video" | "first-last-frame";
 export type VideoFormat = "mp4" | "mov";
+export interface GenerationOptions {
+  autoPortraitAudit?: boolean;
+  promptOptimizer?: boolean;
+  draftMode?: boolean;
+  smartBalance?: boolean;
+  /** 官网灵感分类 → 选项显示名称；每个分类最多一个选项。 */
+  inspiration?: Record<string, string>;
+}
+
+export interface GenerationCapabilities {
+  models: Array<{
+    name: string;
+    autoPortraitAudit: boolean;
+    promptOptimizer: boolean;
+    draftMode: boolean;
+    smartBalance: boolean;
+    inspiration: boolean;
+  }>;
+  inspirations: Record<string, string[]>;
+}
 export type ReferenceRole = "first-frame" | "last-frame" | "character" | "scene" | "product" | "style" | "motion" | "other";
 export type ProjectStatus = "draft" | "ready" | "archived";
 export type JobKind = "generation" | "portrait-review";
@@ -77,6 +97,49 @@ export interface PlatformConversation {
   title: string;
   updatedAt: string;
   isCurrent: boolean;
+  isPinned?: boolean;
+  pinnedAt?: string;
+}
+
+export interface ConversationHistoryMaterial {
+  key: string;
+  kind: ReferenceMediaKind;
+  name: string;
+  previewUrl: string | null;
+  /** Original image only, for preview fallback; never a replacement upload. */
+  originalUrl?: string | null;
+  label: string;
+}
+
+/** Immutable identity of the official message; never a local upload or generation receipt. */
+export interface ConversationHistorySource {
+  remoteProjectId: string;
+  sessionId: string;
+  eventId: string;
+  prompt: string;
+  materials: ConversationHistoryMaterial[];
+  /** Explicit edited draft order. Omitted means reuse all original cloud materials. */
+  materialOrder?: string[];
+}
+
+export interface ConversationHistoryEntry {
+  mediaKind?: "video" | "image";
+  eventId: string;
+  prompt: string;
+  status: "completed" | "running" | "failed" | "unknown";
+  createdAt: string;
+  previewUrl: string | null;
+  outputUrl: string | null;
+  settings: Partial<ProjectInput>;
+  source: ConversationHistorySource;
+  editUnavailableReason: string;
+}
+
+export interface ConversationHistoryPage {
+  sessionId: string;
+  entries: ConversationHistoryEntry[];
+  beforeEventId: string | null;
+  hasMore: boolean;
 }
 
 export interface PlatformCatalogSnapshot {
@@ -102,7 +165,8 @@ export interface PlatformProjectBinding {
   generationUrl: string;
 }
 
-export interface Project {
+export interface Project extends GenerationOptions {
+  historySource?: ConversationHistorySource | null;
   id: string;
   name: string;
   description: string;
@@ -125,7 +189,8 @@ export interface Project {
   updatedAt: string;
 }
 
-export interface ProjectInput {
+export interface ProjectInput extends GenerationOptions {
+  historySource?: ConversationHistorySource | null;
   name: string;
   description?: string;
   prompt?: string;
@@ -172,7 +237,7 @@ export interface DirectorManifest {
   prompt: string;
   count: number;
   replaceMaterials: boolean;
-  settings?: {
+  settings?: GenerationOptions & {
     name?: string;
     description?: string;
     modelName?: string;
@@ -230,7 +295,7 @@ export interface GenerationBatch {
   deduplicated: boolean;
 }
 
-export interface ResultReuseInput {
+export interface ResultReuseInput extends GenerationOptions {
   prompt: string;
   modelName: string;
   mode: ProjectMode;
@@ -320,6 +385,10 @@ export interface PlatformResult {
   previewUrl: string | null;
   outputPath: string | null;
   marked: boolean;
+  /** Last confirmed website favorite; undefined means not read, never "unfavorite". Local marked stays independent. */
+  platformMarked?: boolean;
+  /** Source playback timestamps in milliseconds, exported as Adobe XMP clip markers. */
+  clipMarkersMs?: number[];
   available: boolean;
   createdAt: string;
   lastSeenAt: string;
@@ -521,6 +590,7 @@ export interface TypeSafeConnectionResult extends TypeSafeSettingsStatus {
 }
 
 export interface XinyingApi {
+  generationCapabilities(): Promise<GenerationCapabilities>;
   dashboard(options?: { includeLibraries?: boolean }): Promise<DashboardSnapshot>;
   projects: {
     list(): Promise<Project[]>;
@@ -532,12 +602,14 @@ export interface XinyingApi {
     catalog(): Promise<PlatformCatalogSnapshot>;
     sync(): Promise<PlatformCatalogSnapshot>;
     conversations(projectId: string): Promise<PlatformConversation[]>;
+    history(projectId: string, sessionId: string, beforeEventId?: string): Promise<ConversationHistoryPage>;
     open(projectId: string, conversationId?: string): Promise<Project>;
     create(input: PlatformProjectCreateInput): Promise<Project>;
   };
   references: {
     list(projectId: string): Promise<ReferenceAsset[]>;
-    pickAndAdd(projectId: string): Promise<ReferenceAsset[]>;
+    pickAndAdd(projectId: string, single?: boolean): Promise<ReferenceAsset[]>;
+    pickForHistory(projectId: string, single?: boolean): Promise<ReferenceAsset[] | null>;
     batchReplace(projectId: string): Promise<ReferenceAsset[]>;
     reorder(projectId: string, orderedIds: string[]): Promise<ReferenceAsset[]>;
     updateRole(id: string, role: ReferenceRole): Promise<ReferenceAsset>;
@@ -581,6 +653,8 @@ export interface XinyingApi {
     list(projectId?: string): Promise<PlatformResult[]>;
     sync(projectId: string, source?: PlatformResultSource): Promise<PlatformResult[]>;
     mark(ids: string[], marked: boolean): Promise<PlatformResult[]>;
+    setClipMarker(id: string, timeMs: number, enabled: boolean): Promise<number[]>;
+    onVideoShortcut(listener: (key: "1" | "2") => void): () => void;
     download(id: string): Promise<PlatformResult>;
     batchDownload(ids: string[]): Promise<PlatformResult[]>;
     reuse(id: string, input: ResultReuseInput): Promise<GenerationBatch>;

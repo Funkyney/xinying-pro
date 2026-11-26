@@ -43,6 +43,7 @@ interface ReferenceCardProps {
   onAuthorize: (asset: ReferenceAsset) => void;
   onRemove: (id: string) => void;
   authorizationState: ReferenceAuthorizationState;
+  nativeImageAudit?: boolean;
 }
 
 export interface ReferenceAuthorizationState {
@@ -50,17 +51,18 @@ export interface ReferenceAuthorizationState {
   message?: string;
 }
 
-function ReferenceCard({ asset, label, onRole, onReplace, onAuthorize, onRemove, authorizationState }: ReferenceCardProps) {
+function ReferenceCard({ asset, label, onRole, onReplace, onAuthorize, onRemove, authorizationState, nativeImageAudit }: ReferenceCardProps) {
   const sortable = useSortable({ id: referenceMaterialKey(asset.id) });
   const stopPointerPropagation = (event: React.PointerEvent<HTMLButtonElement>) => event.stopPropagation();
   const kind = mediaKindFromMime(asset.mimeType);
-  const canAuthorize = kind !== "audio" && (authorizationState.status === "idle" || authorizationState.status === "failed");
-  const authorizationLabel = authorizationState.status === "authorizing" ? "授权中"
+  const nativeAudit = kind === "image" && nativeImageAudit;
+  const canAuthorize = !nativeAudit && kind !== "audio" && (authorizationState.status === "idle" || authorizationState.status === "failed");
+  const authorizationLabel = nativeAudit ? "提交后官方自动审核" : authorizationState.status === "authorizing" ? "授权中"
     : authorizationState.status === "authorized" ? "已授权"
       : authorizationState.status === "needs-human" ? "需要处理"
         : authorizationState.status === "failed" ? "重新授权"
           : "授权为虚拟人像";
-  const AuthorizationIcon = authorizationState.status === "authorizing" ? LoaderCircle
+  const AuthorizationIcon = nativeAudit ? UserRoundCheck : authorizationState.status === "authorizing" ? LoaderCircle
     : authorizationState.status === "authorized" ? CheckCircle2
       : authorizationState.status === "needs-human" ? ShieldAlert
         : UserRoundCheck;
@@ -83,7 +85,7 @@ function ReferenceCard({ asset, label, onRole, onReplace, onAuthorize, onRemove,
             </select>}
       </div>
       <div className="reference-actions">
-        <button type="button" className={`authorize-reference-button authorization-${authorizationState.status}`} disabled={!canAuthorize} onPointerDown={stopPointerPropagation} onClick={() => onAuthorize(asset)} title={kind === "audio" ? "音频不能授权为虚拟人像" : authorizationState.message || (canAuthorize ? "将这项图片或视频素材加入虚拟人像库并完成授权" : authorizationLabel)}><AuthorizationIcon size={14} className={authorizationState.status === "authorizing" ? "spinning" : undefined} />{kind === "audio" ? "不可授权" : authorizationLabel}</button>
+        <button type="button" className={`authorize-reference-button authorization-${nativeAudit ? "idle" : authorizationState.status}`} disabled={!canAuthorize} onPointerDown={stopPointerPropagation} onClick={() => onAuthorize(asset)} title={nativeAudit ? "图片会作为参考图直接上传，提交时由官网自动审核；不代表已经审核通过" : kind === "audio" ? "音频不能授权为虚拟人像" : authorizationState.message || (canAuthorize ? "将这项图片或视频素材加入虚拟人像库并完成授权" : authorizationLabel)}><AuthorizationIcon size={14} className={!nativeAudit && authorizationState.status === "authorizing" ? "spinning" : undefined} />{kind === "audio" ? "不可授权" : authorizationLabel}</button>
         <button type="button" className="icon-button" onPointerDown={stopPointerPropagation} onClick={() => onReplace(asset.id)} title="替换但保留编号"><RefreshCw size={15} /></button>
         <button type="button" className="icon-button danger" onPointerDown={stopPointerPropagation} onClick={() => onRemove(asset.id)} title="从当前项目删除这项参考素材"><Trash2 size={15} /></button>
       </div>
@@ -130,6 +132,7 @@ interface ReferenceBoardProps {
   onRemovePortrait: (id: string) => void;
   authorizationStates: Record<string, ReferenceAuthorizationState>;
   materialLimits?: XinyingModelProfile["materialLimits"];
+  nativeImageAudit?: boolean;
 }
 
 export function ReferenceBoard(props: ReferenceBoardProps) {
@@ -199,7 +202,7 @@ export function ReferenceBoard(props: ReferenceBoardProps) {
                   return portrait ? <PortraitReferenceCard key={key} portrait={portrait} label={labels[index]} onRemove={props.onRemovePortrait} /> : null;
                 }
                 const asset = item?.kind === "reference" ? referencesById.get(item.id) : undefined;
-                return asset ? <ReferenceCard key={key} asset={asset} label={labels[index]} onRole={props.onRole} onReplace={props.onReplace} onAuthorize={props.onAuthorize} onRemove={props.onRemove} authorizationState={props.authorizationStates[asset.id] ?? { status: "idle" }} /> : null;
+                return asset ? <ReferenceCard nativeImageAudit={props.nativeImageAudit} key={key} asset={asset} label={labels[index]} onRole={props.onRole} onReplace={props.onReplace} onAuthorize={props.onAuthorize} onRemove={props.onRemove} authorizationState={props.authorizationStates[asset.id] ?? { status: "idle" }} /> : null;
               });
               })()}
             </div>

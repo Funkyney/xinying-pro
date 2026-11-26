@@ -1,5 +1,7 @@
 import Database from "better-sqlite3";
 import type { Database as DatabaseType } from "better-sqlite3";
+import { generationOptions } from "../shared/generation-options";
+import type { GenerationOptions } from "../shared/contracts";
 import type {
   Job,
   JobEvent,
@@ -29,6 +31,8 @@ interface ProjectRow {
   audio_enabled: number;
   video_format: Project["videoFormat"];
   network_enabled: number;
+  generation_options_json: string;
+  history_source_json: string;
   portrait_ids_json: string;
   material_order_json: string;
   status: Project["status"];
@@ -109,6 +113,8 @@ interface PlatformResultRow {
   preview_url: string | null;
   output_path: string | null;
   marked: number;
+  platform_marked: number | null;
+  clip_markers_json: string;
   available: number;
   created_at: string;
   last_seen_at: string;
@@ -376,6 +382,12 @@ export class XinyingDatabase {
     if (!projectColumns.has("network_enabled")) {
       this.db.exec("ALTER TABLE projects ADD COLUMN network_enabled INTEGER NOT NULL DEFAULT 1");
     }
+    if (!projectColumns.has("generation_options_json")) {
+      this.db.exec("ALTER TABLE projects ADD COLUMN generation_options_json TEXT NOT NULL DEFAULT '{}'");
+    }
+    if (!projectColumns.has("history_source_json")) {
+      this.db.exec("ALTER TABLE projects ADD COLUMN history_source_json TEXT NOT NULL DEFAULT 'null'");
+    }
 
     const referenceColumns = new Set(
       (this.db.prepare("PRAGMA table_info(reference_assets)").all() as Array<{ name: string }>).map((column) => column.name),
@@ -441,6 +453,13 @@ export class XinyingDatabase {
       this.db.exec("ALTER TABLE platform_results ADD COLUMN name TEXT NOT NULL DEFAULT ''");
     }
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_platform_results_source ON platform_results(project_id, source, available, created_at DESC)");
+    if (!platformResultColumns.has("clip_markers_json")) {
+      this.db.exec("ALTER TABLE platform_results ADD COLUMN clip_markers_json TEXT NOT NULL DEFAULT '[]'");
+    }
+    if (!platformResultColumns.has("platform_marked")) {
+      this.db.exec("ALTER TABLE platform_results ADD COLUMN platform_marked INTEGER");
+    }
+    this.db.exec("CREATE INDEX IF NOT EXISTS idx_platform_results_annotation_scope ON platform_results(platform_project_id, media_kind)");
 
     const jobColumns = new Set(
       (this.db.prepare("PRAGMA table_info(jobs)").all() as Array<{ name: string }>).map((column) => column.name),
@@ -498,6 +517,8 @@ export class XinyingDatabase {
       audioEnabled: Boolean(row.audio_enabled),
       videoFormat: row.video_format === "mov" ? "mov" : "mp4",
       networkEnabled: Boolean(row.network_enabled),
+      ...generationOptions({ modelName: row.model_name, ...parseJson<GenerationOptions>(row.generation_options_json, {}) }),
+      historySource: parseJson(row.history_source_json, null),
       portraitIds: parseJson(row.portrait_ids_json, []),
       materialOrder: parseJson(row.material_order_json, []),
       status: row.status,
@@ -576,6 +597,7 @@ export class XinyingDatabase {
   }
 
   mapPlatformResult(row: PlatformResultRow): PlatformResult {
+    const clipMarkers = parseJson<unknown>(row.clip_markers_json, []);
     return {
       id: row.id,
       projectId: row.project_id,
@@ -590,6 +612,8 @@ export class XinyingDatabase {
       previewUrl: row.preview_url,
       outputPath: row.output_path,
       marked: Boolean(row.marked),
+      ...(row.platform_marked === 0 || row.platform_marked === 1 ? { platformMarked: Boolean(row.platform_marked) } : {}),
+      clipMarkersMs: Array.isArray(clipMarkers) ? clipMarkers.filter((time): time is number => typeof time === "number" && Number.isSafeInteger(time) && time >= 0) : [],
       available: Boolean(row.available),
       createdAt: row.created_at,
       lastSeenAt: row.last_seen_at,
@@ -658,6 +682,9 @@ export class XinyingDatabase {
       ? this.db.prepare("SELECT * FROM platform_results WHERE project_id = ? ORDER BY created_at DESC, id DESC").all(projectId)
       : this.db.prepare("SELECT * FROM platform_results ORDER BY created_at DESC, id DESC").all()) as PlatformResultRow[],
     platformResult: (id: string) => this.db.prepare("SELECT * FROM platform_results WHERE id = ?").get(id) as PlatformResultRow | undefined,
+    platformResultAnnotationScope: (row: PlatformResultRow) => (row.platform_project_id
+      ? this.db.prepare("SELECT * FROM platform_results WHERE platform_project_id = ? AND media_kind = ?").all(row.platform_project_id, row.media_kind)
+      : this.db.prepare("SELECT * FROM platform_results WHERE platform_project_id = '' AND project_id = ? AND media_kind = ?").all(row.project_id, row.media_kind)) as PlatformResultRow[],
     portrait: (id: string) => this.db.prepare("SELECT * FROM portrait_assets WHERE id = ?").get(id) as PortraitRow | undefined,
     jobs: () => this.db.prepare("SELECT * FROM jobs ORDER BY created_at DESC").all() as JobRow[],
     jobSummaries: () => this.db.prepare(`SELECT

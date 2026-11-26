@@ -214,6 +214,7 @@ export async function resolveDirectorMaterialRouting(
   const cacheEntries = service.mediaAnalysisCache(fileMaterials.map(({ material }) => material.path));
   const cacheByPath = new Map(cacheEntries.map((entry) => [path.resolve(entry.path).toLowerCase(), entry]));
   const materials = [...manifest.materials];
+  const nativeImageAudit = service.directorUsesNativeImageAudit(manifest);
   const summary: DirectorMaterialRoutingSummary = {
     nonAudio: cacheEntries.filter((entry) => entry.mediaKind !== "audio").length,
     explicit: 0,
@@ -227,6 +228,9 @@ export async function resolveDirectorMaterialRouting(
   for (const { material, index } of fileMaterials) {
     const cached = cacheByPath.get(path.resolve(material.path).toLowerCase());
     if (!cached || cached.mediaKind === "audio") continue;
+    // The official switch handles image analysis/review. Do not run Jev or
+    // convert image references into separate portrait-library jobs first.
+    if (nativeImageAudit && cached.mediaKind === "image") continue;
 
     let containsPerson = material.containsPerson;
     if (containsPerson !== undefined) {
@@ -299,6 +303,7 @@ export async function resolveDirectorMaterialRouting(
 
   summary.unresolved = materials.filter((material) => material.kind === "file"
     && cacheByPath.get(path.resolve(material.path).toLowerCase())?.mediaKind !== "audio"
+    && !(nativeImageAudit && cacheByPath.get(path.resolve(material.path).toLowerCase())?.mediaKind === "image")
     && material.containsPerson === undefined).length;
 
   return { manifest: { ...manifest, materials }, summary };

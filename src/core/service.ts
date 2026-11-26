@@ -28,9 +28,12 @@ import type {
   SharedMediaAsset,
   SubmissionPreview,
 } from "../shared/contracts";
-import { assignMediaLabels, mediaKindEnglishLabel, mediaKindFromMime } from "../shared/media";
-import { canonicalPlatformOutputUrl, isPlatformPreviewOutputUrl } from "../shared/platform-results";
+import { assignMediaLabels, canonicalizePromptMaterialReferences, mediaKindEnglishLabel, mediaKindFromMime } from "../shared/media";
+import { canonicalPlatformOutputUrl, isPlatformPreviewOutputUrl, resultMediaExtension } from "../shared/platform-results";
 import { DEFAULT_XINYING_MODEL, modelProfile } from "../shared/model-profiles";
+import { generationOptions, nativeImageAuditEnabled } from "../shared/generation-options";
+import { historySourceMatches } from "../shared/conversation-history";
+import { historyMaterialOrder, resolveHistoryMaterials } from "../shared/history-material-order";
 import {
   parseMaterialKey,
   portraitMaterialKey,
@@ -40,6 +43,8 @@ import {
 import type { AppPaths } from "./paths";
 import { AppError } from "./errors";
 import { XinyingDatabase } from "./database";
+import { exportMarkedClip } from "./export-clip-markers";
+import { mergedResultAnnotations, resultAnnotationGroups } from "../shared/result-annotations";
 
 const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg"]);
 const VIDEO_EXTENSIONS = new Set([".mp4", ".mov"]);
@@ -84,7 +89,8 @@ interface PreparedReferenceReplacement {
 
 type DirectorFileMaterial = Extract<DirectorManifest["materials"][number], { kind: "file" }>;
 
-function requiresDirectorPortraitAuthorization(material: DirectorFileMaterial): boolean {
+function requiresDirectorPortraitAuthorization(material: DirectorFileMaterial, nativeImageAudit = false): boolean {
+  if (nativeImageAudit && mimeFromExtension(material.path).startsWith("image/")) return false;
   return material.containsPerson === true || material.authorizeAsPortrait === true || material.role === "character";
 }
 
@@ -152,7 +158,7 @@ function safeOutputName(value: string): string {
 }
 
 function platformResultExtension(result: Pick<PlatformResult, "mediaKind" | "name" | "outputUrl" | "previewUrl">): string {
-  const candidates = [result.name, result.outputUrl, result.previewUrl];
+  const candidates = [result.outputUrl, result.name, result.previewUrl];
   for (const candidate of candidates) {
     if (!candidate) continue;
     try {
@@ -181,12 +187,18 @@ function normalizePlatformUrl(rawUrl: string | undefined): string {
   } catch {
     throw new AppError("INVALID_PLATFORM_URL", "心影生成链接不是有效网址");
   }
-  if (url.protocol !== "https:" || url.hostname !== "blueaivideo.com" || url.pathname !== "/avpAgent") {
-    throw new AppError("INVALID_PLATFORM_URL", "心影生成链接必须是 https://blueaivideo.com/avpAgent 页面");
+  if (url.protocol !== "https:" || url.hostname !== "blueaivideo.com" || !["/avpAgent", "/agentlab"].includes(url.pathname)) {
+    throw new AppError("INVALID_PLATFORM_URL", "心影生成链接必须是官网 AgentLab 或旧版 avpAgent 页面");
   }
   if (!url.searchParams.get("projectId")) {
     throw new AppError("INVALID_PLATFORM_URL", "心影项目链接缺少 projectId");
   }
+  // Old avpAgent links now redirect to designer/creation. Preserve the bound
+  // project/session but explicitly select AgentLab's generation tab.
+  url.pathname = "/agentlab";
+  url.searchParams.delete("view");
+  url.searchParams.delete("homeView");
+  url.searchParams.set("tab", "generation");
   return url.toString();
 }
 
@@ -285,6 +297,7 @@ export class XinyingService {
   ) {
     this.backfillPortraitSourceReferences();
     this.backfillSharedMediaLibrary();
+    this.reconcileResultAnnotations();
   }
 
   private backfillPortraitSourceReferences(): void {
@@ -479,6 +492,7 @@ export class XinyingService {
       audioEnabled: input.audioEnabled ?? true,
       videoFormat: input.videoFormat ?? "mp4",
       networkEnabled: input.networkEnabled ?? true,
+      ...generationOptions({ ...input, modelName: input.modelName ?? DEFAULT_XINYING_MODEL }),
       portraitIds: normalizePortraitIds(input.portraitIds),
       materialOrder: [],
       status: "draft",
@@ -487,13 +501,14 @@ export class XinyingService {
     };
 
     project.materialOrder = reconcileMaterialOrder(input.materialOrder, project.portraitIds, []);
+    if (project.draftMode) { project.resolution = "480p"; project.videoFormat = "mp4"; }
     validateProjectSettings(project);
     this.validatePlatformPortraitSelection(project.portraitIds);
     this.database.db
       .prepare(`INSERT INTO projects
-        (id, name, description, prompt, model_name, platform_url, platform_workspace_id, platform_project_id, mode, aspect_ratio, duration, resolution, audio_enabled, video_format, network_enabled, portrait_ids_json, material_order_json, status, created_at, updated_at)
-        VALUES (@id, @name, @description, @prompt, @modelName, @platformUrl, @platformWorkspaceId, @platformProjectId, @mode, @aspectRatio, @duration, @resolution, @audioEnabled, @videoFormat, @networkEnabled, @portraitIdsJson, @materialOrderJson, @status, @createdAt, @updatedAt)`)
-      .run({ ...project, audioEnabled: project.audioEnabled ? 1 : 0, networkEnabled: project.networkEnabled ? 1 : 0, portraitIdsJson: JSON.stringify(project.portraitIds), materialOrderJson: JSON.stringify(project.materialOrder) });
+        (id, name, description, prompt, model_name, platform_url, platform_workspace_id, platform_project_id, mode, aspect_ratio, duration, resolution, audio_enabled, video_format, network_enabled, generation_options_json, portrait_ids_json, material_order_json, status, created_at, updated_at)
+        VALUES (@id, @name, @description, @prompt, @modelName, @platformUrl, @platformWorkspaceId, @platformProjectId, @mode, @aspectRatio, @duration, @resolution, @audioEnabled, @videoFormat, @networkEnabled, @generationOptionsJson, @portraitIdsJson, @materialOrderJson, @status, @createdAt, @updatedAt)`)
+      .run({ ...project, generationOptionsJson: JSON.stringify(generationOptions(project)), audioEnabled: project.audioEnabled ? 1 : 0, networkEnabled: project.networkEnabled ? 1 : 0, portraitIdsJson: JSON.stringify(project.portraitIds), materialOrderJson: JSON.stringify(project.materialOrder) });
     return project;
   }
 
@@ -515,6 +530,8 @@ export class XinyingService {
       ...(input.audioEnabled !== undefined ? { audioEnabled: input.audioEnabled } : {}),
       ...(input.videoFormat !== undefined ? { videoFormat: input.videoFormat } : {}),
       ...(input.networkEnabled !== undefined ? { networkEnabled: input.networkEnabled } : {}),
+      ...(input.historySource !== undefined ? { historySource: input.historySource } : {}),
+      ...generationOptions({ ...current, ...input }),
       ...(input.portraitIds !== undefined ? { portraitIds: normalizePortraitIds(input.portraitIds) } : {}),
       updatedAt: now(),
     };
@@ -525,8 +542,14 @@ export class XinyingService {
       references.map((reference) => reference.id),
     );
     if (!next.name) throw new AppError("INVALID_PROJECT", "项目名称不能为空");
+    if (next.historySource && !historySourceMatches(next.historySource, next.platformUrl)) {
+      // Switching conversations exits the old history draft; never carry it to another session.
+      if (input.historySource === undefined && input.platformUrl !== undefined) next.historySource = null;
+      else throw new AppError("HISTORY_SCOPE_MISMATCH", "历史记录不属于当前项目对话，请重新选择后编辑");
+    }
+    if (next.draftMode) { next.resolution = "480p"; next.videoFormat = "mp4"; }
     validateProjectSettings(next);
-    if (input.portraitIds !== undefined) this.validatePlatformPortraitSelection(next.portraitIds);
+    if (input.portraitIds !== undefined && !next.historySource) this.validatePlatformPortraitSelection(next.portraitIds);
 
     this.database.db.prepare(`UPDATE projects SET
       name = @name, description = @description, prompt = @prompt, model_name = @modelName,
@@ -534,8 +557,8 @@ export class XinyingService {
       aspect_ratio = @aspectRatio, duration = @duration, resolution = @resolution,
       audio_enabled = @audioEnabled, video_format = @videoFormat, network_enabled = @networkEnabled,
       portrait_ids_json = @portraitIdsJson, material_order_json = @materialOrderJson,
-      status = @status, updated_at = @updatedAt
-      WHERE id = @id`).run({ ...next, audioEnabled: next.audioEnabled ? 1 : 0, networkEnabled: next.networkEnabled ? 1 : 0, portraitIdsJson: JSON.stringify(next.portraitIds), materialOrderJson: JSON.stringify(next.materialOrder) });
+      status = @status, updated_at = @updatedAt, generation_options_json = @generationOptionsJson, history_source_json = @historySourceJson
+      WHERE id = @id`).run({ ...next, historySourceJson: JSON.stringify(next.historySource ?? null), generationOptionsJson: JSON.stringify(generationOptions(next)), audioEnabled: next.audioEnabled ? 1 : 0, networkEnabled: next.networkEnabled ? 1 : 0, portraitIdsJson: JSON.stringify(next.portraitIds), materialOrderJson: JSON.stringify(next.materialOrder) });
     if (input.materialOrder !== undefined) this.persistReferencePositions(id, next.materialOrder);
     return next;
   }
@@ -566,10 +589,18 @@ export class XinyingService {
     }
     const sessionId = target?.searchParams.get("sessionId") ?? "";
     if (!target || !sessionId) return project;
+    // A job queued in A may report after the user has selected B. Its receipt
+    // must never silently switch the project's next generation back to A.
+    const selectedSessionId = current?.searchParams.get("sessionId");
+    if (selectedSessionId && selectedSessionId !== sessionId) return project;
     const currentRemoteId = remoteProjectIdFromUrl(project.platformUrl);
     if (currentRemoteId && target.searchParams.get("projectId") !== currentRemoteId) return project;
     const normalized = target.toString();
     return normalized === project.platformUrl ? project : this.updateProject(projectId, { platformUrl: normalized });
+  }
+
+  directorUsesNativeImageAudit(manifest: DirectorManifest): boolean {
+    return nativeImageAuditEnabled({ ...this.getProject(manifest.projectId), ...manifest.settings });
   }
 
   validateDirectorRun(manifest: DirectorManifest): DirectorRunValidation {
@@ -581,6 +612,7 @@ export class XinyingService {
     }
     const settings = manifest.settings ?? {};
     const targetModelName = settings.modelName ?? project.modelName;
+    const nativeImageAudit = this.directorUsesNativeImageAudit(manifest);
 
     const seenFiles = new Set<string>();
     const seenPortraits = new Set<string>();
@@ -600,14 +632,14 @@ export class XinyingService {
       ensureFile(material.path, REFERENCE_EXTENSIONS);
       const mediaKind = mediaKindFromMime(mimeFromExtension(material.path));
       materialKinds.push(mediaKind);
-      if (mediaKind !== "audio" && material.containsPerson === undefined) {
+      if ((mediaKind === "video" || mediaKind === "image" && !nativeImageAudit) && material.containsPerson === undefined) {
         throw new AppError(
           "DIRECTOR_PERSON_CHECK_REQUIRED",
           `图片或视频必须先完成人物检查并填写 containsPerson；有人填 true、确认完全无人填 false：${material.path}`,
         );
       }
       const fingerprint = hashFile(material.path);
-      const cached = this.database.db.prepare(
+      const cached = mediaKind === "image" && nativeImageAudit ? undefined : this.database.db.prepare(
         "SELECT contains_person FROM media_analysis_cache WHERE sha256 = ?",
       ).get(fingerprint) as { contains_person: number } | undefined;
       if (cached?.contains_person === 1 && material.containsPerson === false) {
@@ -618,7 +650,7 @@ export class XinyingService {
       }
       if (seenFiles.has(fingerprint)) throw new AppError("DUPLICATE_DIRECTOR_MATERIAL", `导演任务不能重复使用同一份本地素材：${material.path}`);
       seenFiles.add(fingerprint);
-      if (requiresDirectorPortraitAuthorization(material) && mediaKind === "audio") {
+      if (requiresDirectorPortraitAuthorization(material, nativeImageAudit) && mediaKind === "audio") {
         throw new AppError("AUDIO_PORTRAIT_UNSUPPORTED", `音频不能授权为虚拟人像：${material.path}`);
       }
     }
@@ -631,15 +663,15 @@ export class XinyingService {
       mode: settings.mode ?? project.mode,
       aspectRatio: settings.aspectRatio ?? project.aspectRatio,
       duration: settings.duration ?? project.duration,
-      resolution: settings.resolution ?? project.resolution,
-      videoFormat: settings.videoFormat ?? project.videoFormat,
+      resolution: (settings.draftMode ?? project.draftMode) ? "480p" : settings.resolution ?? project.resolution,
+      videoFormat: (settings.draftMode ?? project.draftMode) ? "mp4" : settings.videoFormat ?? project.videoFormat,
     });
     return {
       manifest,
       project,
       materialCount: manifest.materials.length,
       authorizationCount: manifest.materials.filter((item): item is DirectorFileMaterial => item.kind === "file")
-        .filter(requiresDirectorPortraitAuthorization).length,
+        .filter((material) => requiresDirectorPortraitAuthorization(material, nativeImageAudit)).length,
       estimatedGenerationTasks: manifest.count,
     };
   }
@@ -691,6 +723,7 @@ export class XinyingService {
 
   prepareDirectorRun(manifest: DirectorManifest): DirectorRunPreparation {
     const validation = this.validateDirectorRun(manifest);
+    const nativeImageAudit = this.directorUsesNativeImageAudit(manifest);
     this.rememberDirectorMediaAnalyses(manifest);
     const project = validation.project;
     const existingReferences = this.listReferences(project.id);
@@ -703,7 +736,7 @@ export class XinyingService {
 
     const reusableByPath = new Map<string, PlatformPortrait>();
     for (const { material } of selectedFiles) {
-      if (!requiresDirectorPortraitAuthorization(material)) continue;
+      if (!requiresDirectorPortraitAuthorization(material, nativeImageAudit)) continue;
       const reusable = this.reusablePlatformPortrait(material.path, project.platformWorkspaceId);
       if (reusable) reusableByPath.set(material.path, reusable);
     }
@@ -737,7 +770,7 @@ export class XinyingService {
         });
         return;
       }
-      const requiresAuthorization = requiresDirectorPortraitAuthorization(material);
+      const requiresAuthorization = requiresDirectorPortraitAuthorization(material, nativeImageAudit);
       const effectiveRole: ReferenceRole | undefined = requiresAuthorization ? "character" : material.role;
       const reusable = reusableByPath.get(material.path);
       if (reusable) {
@@ -795,6 +828,7 @@ export class XinyingService {
     this.updateProject(project.id, {
       ...settings,
       prompt: manifest.prompt,
+      historySource: null,
       portraitIds: finalPortraitIds,
       materialOrder: finalOrder,
     });
@@ -915,6 +949,13 @@ export class XinyingService {
       this.database.db.prepare("DELETE FROM shared_media_assets WHERE id = ?").run(id);
     });
     fs.rmSync(asset.filePath, { force: true });
+  }
+
+  selectHistoryReferences(projectId: string, filePaths: string[]): ReferenceAsset[] {
+    this.getProject(projectId);
+    const selected = filePaths.map((filePath) => this.ensureSharedMediaAsset(filePath).id);
+    const references = this.addReferences(projectId, filePaths);
+    return [...new Set(selected)].map((id) => references.find((item) => item.sourceSharedMediaId === id)!);
   }
 
   addReferences(projectId: string, filePaths: string[]): ReferenceAsset[] {
@@ -1295,10 +1336,31 @@ export class XinyingService {
 
   listResults(projectId?: string): PlatformResult[] {
     this.upsertCompletedJobResults();
+    const groups = this.annotationGroups();
     return this.database.rows.platformResults(projectId)
       .map((row) => this.database.mapPlatformResult(row))
       .filter((result) => result.available)
-      .map((result) => this.enrichResultSnapshot(result));
+      .map((result) => this.enrichResultSnapshot({ ...result, ...mergedResultAnnotations(groups.get(result.id) ?? [result]) }));
+  }
+
+  private annotationGroups(): Map<string, PlatformResult[]> {
+    return resultAnnotationGroups(this.database.rows.platformResults().map(row => this.database.mapPlatformResult(row)));
+  }
+
+  private reconcileResultAnnotations(): void {
+    const groups = new Set(this.annotationGroups().values());
+    const update = this.database.db.prepare("UPDATE platform_results SET marked = ?, clip_markers_json = ? WHERE id = ?");
+    this.database.transaction(() => {
+      for (const group of groups) {
+        const annotations = mergedResultAnnotations(group);
+        const markers = JSON.stringify(annotations.clipMarkersMs);
+        for (const item of group) {
+          if (item.marked !== annotations.marked || JSON.stringify(item.clipMarkersMs ?? []) !== markers) {
+            update.run(annotations.marked ? 1 : 0, markers, item.id);
+          }
+        }
+      }
+    });
   }
 
   private enrichResultSnapshot(result: PlatformResult): PlatformResult {
@@ -1313,7 +1375,10 @@ export class XinyingService {
     this.upsertCompletedJobResults();
     const row = this.database.rows.platformResult(id);
     if (!row) throw new AppError("RESULT_NOT_FOUND", `结果不存在：${id}`);
-    return this.enrichResultSnapshot(this.database.mapPlatformResult(row));
+    const result = this.database.mapPlatformResult(row);
+    const aliases = resultAnnotationGroups(this.database.rows.platformResultAnnotationScope(row)
+      .map(item => this.database.mapPlatformResult(item))).get(id) ?? [result];
+    return this.enrichResultSnapshot({ ...result, ...mergedResultAnnotations(aliases) });
   }
 
   submitResultReuse(resultId: string, input: ResultReuseInput): GenerationBatch {
@@ -1335,6 +1400,8 @@ export class XinyingService {
       resolution: input.resolution,
       videoFormat: input.videoFormat,
     };
+    const advancedOptions = generationOptions({ ...project, ...input, modelName: settings.modelName });
+    if (advancedOptions.draftMode) { settings.resolution = "480p"; settings.videoFormat = "mp4"; }
     validateProjectSettings(settings);
     const sourceJobRow = result.jobId ? this.database.rows.job(result.jobId) : undefined;
     const sourceJob = sourceJobRow ? this.database.mapJob(sourceJobRow) : null;
@@ -1367,8 +1434,9 @@ export class XinyingService {
             duration: settings.duration,
             resolution: settings.resolution,
             audioEnabled: Boolean(input.audioEnabled),
-            videoFormat: input.videoFormat,
+            videoFormat: settings.videoFormat,
             networkEnabled: Boolean(input.networkEnabled),
+            ...advancedOptions,
             batchId,
             takeNumber: takeIndex + 1,
             takeCount: input.count,
@@ -1454,17 +1522,52 @@ export class XinyingService {
           END,
           available = 1, last_seen_at = excluded.last_seen_at`);
       for (const result of normalized) upsert.run({ ...result, marked: result.marked ? 1 : 0 });
+      // Apply only confirmed website snapshots. Missing/failed reads must never
+      // clear remote favorites, local favorites, or PR markers. Write all aliases
+      // atomically so an old hidden row cannot resurrect an unfavorited asset.
+      const groups = this.annotationGroups();
+      const updateFavorite = this.database.db.prepare("UPDATE platform_results SET platform_marked = ? WHERE id = ?");
+      for (const result of normalized) {
+        if (typeof result.platformMarked !== "boolean") continue;
+        for (const alias of groups.get(result.id) ?? []) updateFavorite.run(result.platformMarked ? 1 : 0, alias.id);
+      }
     });
+    this.reconcileResultAnnotations();
     return this.listResults(projectId);
+  }
+
+  setClipMarker(id: string, timeMs: number, enabled: boolean): number[] {
+    if (!Number.isSafeInteger(timeMs) || timeMs < 0 || typeof enabled !== "boolean") {
+      throw new AppError("INVALID_MARKER", "无效的剪辑标记时间");
+    }
+    const row = this.database.rows.platformResult(id);
+    if (!row || row.media_kind !== "video") throw new AppError("RESULT_NOT_FOUND", "请选择视频素材");
+    const result = this.database.mapPlatformResult(row);
+    if (![".mp4", ".mov"].includes(resultMediaExtension(result))) {
+      throw new AppError("MARKER_FORMAT_UNSUPPORTED", "PR 打点支持 MP4 和 MOV 视频");
+    }
+    // Include hidden history and other local bindings of the same remote asset.
+    const aliases = resultAnnotationGroups(this.database.rows.platformResultAnnotationScope(row)
+      .map(item => this.database.mapPlatformResult(item))).get(id)!;
+    const times = new Set(aliases.flatMap(item => item.clipMarkersMs ?? []));
+    if (enabled) times.add(timeMs); else times.delete(timeMs);
+    const sorted = [...times].sort((a, b) => a - b);
+    const update = this.database.db.prepare("UPDATE platform_results SET clip_markers_json = ?, marked = CASE WHEN ? THEN 1 ELSE marked END WHERE id = ?");
+    this.database.transaction(() => {
+      for (const alias of aliases) update.run(JSON.stringify(sorted), enabled ? 1 : 0, alias.id);
+    });
+    return sorted;
   }
 
   markResults(ids: string[], marked: boolean): PlatformResult[] {
     const normalized = [...new Set(ids.map((id) => id.trim()).filter(Boolean))];
     if (!normalized.length) throw new AppError("RESULT_SELECTION_EMPTY", "请至少选择一个结果");
+    if (typeof marked !== "boolean") throw new AppError("INVALID_MARKER", "无效的收藏状态");
+    const groups = this.annotationGroups();
     const update = this.database.db.prepare("UPDATE platform_results SET marked = ? WHERE id = ?");
     this.database.transaction(() => normalized.forEach((id) => {
       if (!this.database.rows.platformResult(id)) throw new AppError("RESULT_NOT_FOUND", `结果不存在：${id}`);
-      update.run(marked ? 1 : 0, id);
+      for (const alias of groups.get(id) ?? []) update.run(marked ? 1 : 0, alias.id);
     }));
     return normalized.map((id) => this.getResult(id));
   }
@@ -1474,7 +1577,7 @@ export class XinyingService {
     const exportPath = path.resolve(destination);
     fs.mkdirSync(path.dirname(exportPath), { recursive: true });
     if (result.jobId) {
-      const job = await this.downloadJob(result.jobId, exportPath);
+      const job = await this.downloadJob(result.jobId, exportPath, result.clipMarkersMs);
       this.database.db.prepare("UPDATE platform_results SET output_path = ?, last_seen_at = ? WHERE id = ?")
         .run(job.outputPath, now(), id);
       return this.getResult(id);
@@ -1494,7 +1597,8 @@ export class XinyingService {
       result = this.getResult(id);
     }
     if (!sourcePath) throw new AppError("OUTPUT_NOT_FOUND", "该心影结果暂时没有可直接下载的地址，请先重新同步");
-    if (!samePath(sourcePath, exportPath)) fs.copyFileSync(sourcePath, exportPath);
+    if (result.clipMarkersMs?.length) await exportMarkedClip(sourcePath, exportPath, result.clipMarkersMs);
+    else if (!samePath(sourcePath, exportPath)) fs.copyFileSync(sourcePath, exportPath);
     return result;
   }
 
@@ -1591,6 +1695,32 @@ export class XinyingService {
 
   previewSubmission(projectId: string): SubmissionPreview {
     const storedProject = this.getProject(projectId);
+    if (storedProject.historySource) {
+      const source = storedProject.historySource;
+      const materials = resolveHistoryMaterials(source, this.listReferences(projectId), this.listPlatformPortraits());
+      const references = materials.flatMap((item) => item.reference ? [item.reference] : []);
+      const selectedPortraits = materials.flatMap((item) => item.portrait ? [item.portrait] : []);
+      const warnings: string[] = [];
+      if (new Set(historyMaterialOrder(source)).size !== materials.length) warnings.push("历史编辑素材包含重复项，请重新选择");
+      if (materials.some((item) => item.unavailable || item.kind === "unknown")) warnings.push("至少一项参考素材已失效或类型未知，请重新选择");
+      if (selectedPortraits.some((item) => item.workspaceId && item.workspaceId !== storedProject.platformWorkspaceId)) warnings.push("虚拟人像不属于当前空间，请重新选择");
+      for (const reference of references) {
+        if (!fs.existsSync(reference.filePath)) warnings.push(`素材文件已丢失：${reference.name}`);
+        if (reference.role === "character" && (mediaKindFromMime(reference.mimeType) === "video" || !nativeImageAuditEnabled(storedProject))) warnings.push(`人物图片/视频必须先通过虚拟人像授权并替换原素材：${reference.name}`);
+      }
+      if (!historySourceMatches(source, storedProject.platformUrl)) warnings.push("历史素材与所选对话不一致，请重新选择记录");
+      if (!storedProject.prompt.trim()) warnings.push("提示词为空");
+      const profile = modelProfile(storedProject.modelName);
+      if (!profile || !profile.modes.includes(storedProject.mode)) warnings.push("当前模型或生成模式不支持历史素材复用");
+      warnings.push(...materialLimitWarnings(storedProject.modelName, materials.map((item) => item.kind)));
+      if (storedProject.mode === "text-to-video" && materials.length) warnings.push("文生视频模式不能包含历史参考素材");
+      if (storedProject.mode !== "text-to-video" && !materials.length) warnings.push("当前模式需要参考素材");
+      if (storedProject.mode === "first-last-frame" && (materials.length !== 2 || materials.some((item) => item.kind !== "image" || item.portrait))) warnings.push("首尾帧模式必须正好包含两张图片，不能使用视频角色");
+      const labels = new Set(materials.map((item) => item.label));
+      const invalid = [...canonicalizePromptMaterialReferences(storedProject.prompt).matchAll(/@(图|视频|音频)\d+/g)].map((match) => match[0]).filter((label) => !labels.has(label));
+      if (invalid.length) warnings.push(`提示词引用了不存在的编号：${[...new Set(invalid)].join("、")}`);
+      return { project: storedProject, references, selectedPortraits, orderedLabels: materials.map((item) => `${item.label} · ${item.cloud ? "官网原素材" : item.portrait ? "心影虚拟人像" : "新上传素材"} · ${item.name}`), warnings, ready: warnings.length === 0 };
+    }
     const references = this.listReferences(projectId);
     const platformPortraits = new Map(this.listPlatformPortraits().map((portrait) => [portrait.id, portrait]));
     const materialOrder = reconcileMaterialOrder(storedProject.materialOrder, storedProject.portraitIds, references.map((reference) => reference.id));
@@ -1624,7 +1754,8 @@ export class XinyingService {
       warnings.push("首尾帧模式请将 @图1 标为首帧、@图2 标为尾帧");
     }
     const unresolvedPersonReferences = references.filter((reference) =>
-      reference.role === "character" && ["image", "video"].includes(mediaKindFromMime(reference.mimeType)));
+      reference.role === "character" && (mediaKindFromMime(reference.mimeType) === "video"
+        || mediaKindFromMime(reference.mimeType) === "image" && !nativeImageAuditEnabled(project)));
     if (unresolvedPersonReferences.length) {
       warnings.push(`人物图片/视频必须先通过虚拟人像授权并替换原素材：${unresolvedPersonReferences.map((item) => item.name).join("、")}`);
     }
@@ -1731,8 +1862,11 @@ export class XinyingService {
             audioEnabled: preview.project.audioEnabled,
             videoFormat: preview.project.videoFormat,
             networkEnabled: preview.project.networkEnabled,
-            portraitIds: preview.project.portraitIds,
-            materialOrder: preview.project.materialOrder,
+            ...generationOptions(preview.project),
+            conversationHistorySource: preview.project.historySource ?? undefined,
+            reuseUnknownMaterials: preview.project.historySource ? true : undefined,
+            portraitIds: preview.project.historySource ? preview.selectedPortraits.map((item) => item.id) : preview.project.portraitIds,
+            materialOrder: preview.project.historySource ? historyMaterialOrder(preview.project.historySource) : preview.project.materialOrder,
             platformPortraits: preview.selectedPortraits,
             batchId,
             directorRunKey: normalizedRunKey || undefined,
@@ -1995,7 +2129,7 @@ export class XinyingService {
     return this.getPortrait(id);
   }
 
-  async downloadJob(id: string, destination: string): Promise<Job> {
+  async downloadJob(id: string, destination: string, clipMarkersMs?: number[]): Promise<Job> {
     const job = this.getJob(id);
     if (job.status !== "completed") throw new AppError("JOB_NOT_COMPLETE", "任务尚未完成");
     const exportPath = path.resolve(destination);
@@ -2028,7 +2162,9 @@ export class XinyingService {
     if (!sourcePath) {
       throw new AppError("OUTPUT_NOT_FOUND", "任务没有可下载的输出");
     }
-    if (!samePath(sourcePath, exportPath)) fs.copyFileSync(sourcePath, exportPath);
+    const times = clipMarkersMs ?? this.listResults(job.projectId ?? undefined).find(result => result.jobId === id)?.clipMarkersMs;
+    if (times?.length) await exportMarkedClip(sourcePath, exportPath, times);
+    else if (!samePath(sourcePath, exportPath)) fs.copyFileSync(sourcePath, exportPath);
     this.addJobEvent(id, "info", "OUTPUT_DOWNLOADED", "结果已导出，结果库主文件保持不变", {
       destination: exportPath,
       libraryPath: current.outputPath,

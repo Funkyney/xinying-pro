@@ -6,6 +6,7 @@ import type { DirectorRunRequest, PlatformAutomationState, PlatformPortraitDelet
 // corresponding main-process contract and the values are checked in tests.
 const IPC = {
   dashboard: "dashboard:get",
+  generationCapabilities: "generation:capabilities",
   projectsList: "projects:list",
   projectsCreate: "projects:create",
   projectsUpdate: "projects:update",
@@ -13,10 +14,12 @@ const IPC = {
   platformProjectsCatalog: "platform-projects:catalog",
   platformProjectsSync: "platform-projects:sync",
   platformProjectsConversations: "platform-projects:conversations",
+  platformProjectsHistory: "platform-projects:history",
   platformProjectsOpen: "platform-projects:open",
   platformProjectsCreate: "platform-projects:create",
   referencesList: "references:list",
   referencesPickAdd: "references:pick-add",
+  referencesPickHistory: "references:pick-history",
   referencesBatchReplace: "references:batch-replace",
   referencesReorder: "references:reorder",
   referencesRole: "references:role",
@@ -51,6 +54,8 @@ const IPC = {
   resultsList: "results:list",
   resultsSync: "results:sync",
   resultsMark: "results:mark",
+  resultsSetClipMarker: "results:set-clip-marker",
+  resultsVideoShortcut: "results:video-shortcut",
   resultsDownload: "results:download",
   resultsBatchDownload: "results:batch-download",
   resultsReuse: "results:reuse",
@@ -80,6 +85,7 @@ const IPC = {
 } as const;
 
 const api: XinyingApi = {
+  generationCapabilities: () => ipcRenderer.invoke(IPC.generationCapabilities),
   dashboard: (options) => ipcRenderer.invoke(IPC.dashboard, options),
   projects: {
     list: () => ipcRenderer.invoke(IPC.projectsList),
@@ -91,12 +97,14 @@ const api: XinyingApi = {
     catalog: () => ipcRenderer.invoke(IPC.platformProjectsCatalog),
     sync: () => ipcRenderer.invoke(IPC.platformProjectsSync),
     conversations: (projectId: string) => ipcRenderer.invoke(IPC.platformProjectsConversations, projectId),
+    history: (projectId: string, sessionId: string, beforeEventId?: string) => ipcRenderer.invoke(IPC.platformProjectsHistory, projectId, sessionId, beforeEventId),
     open: (projectId: string, conversationId?: string) => ipcRenderer.invoke(IPC.platformProjectsOpen, projectId, conversationId),
     create: (input: PlatformProjectCreateInput) => ipcRenderer.invoke(IPC.platformProjectsCreate, input),
   },
   references: {
     list: (projectId: string) => ipcRenderer.invoke(IPC.referencesList, projectId),
-    pickAndAdd: (projectId: string) => ipcRenderer.invoke(IPC.referencesPickAdd, projectId),
+    pickAndAdd: (projectId: string, single?: boolean) => ipcRenderer.invoke(IPC.referencesPickAdd, projectId, single),
+    pickForHistory: (projectId: string, single?: boolean) => ipcRenderer.invoke(IPC.referencesPickHistory, projectId, single),
     batchReplace: (projectId: string) => ipcRenderer.invoke(IPC.referencesBatchReplace, projectId),
     reorder: (projectId: string, orderedIds: string[]) => ipcRenderer.invoke(IPC.referencesReorder, projectId, orderedIds),
     updateRole: (id: string, role: ReferenceRole) => ipcRenderer.invoke(IPC.referencesRole, id, role),
@@ -144,6 +152,12 @@ const api: XinyingApi = {
     list: (projectId?: string) => ipcRenderer.invoke(IPC.resultsList, projectId),
     sync: (projectId: string, source: PlatformResultSource = "personal") => ipcRenderer.invoke(IPC.resultsSync, projectId, source),
     mark: (ids: string[], marked: boolean) => ipcRenderer.invoke(IPC.resultsMark, ids, marked),
+    setClipMarker: (id: string, timeMs: number, enabled: boolean) => ipcRenderer.invoke(IPC.resultsSetClipMarker, id, timeMs, enabled),
+    onVideoShortcut: (listener) => {
+      const handler = (_event: Electron.IpcRendererEvent, key: "1" | "2") => listener(key);
+      ipcRenderer.on(IPC.resultsVideoShortcut, handler);
+      return () => ipcRenderer.removeListener(IPC.resultsVideoShortcut, handler);
+    },
     download: (id: string) => ipcRenderer.invoke(IPC.resultsDownload, id),
     batchDownload: (ids: string[]) => ipcRenderer.invoke(IPC.resultsBatchDownload, ids),
     reuse: (id: string, input: ResultReuseInput) => ipcRenderer.invoke(IPC.resultsReuse, id, input),

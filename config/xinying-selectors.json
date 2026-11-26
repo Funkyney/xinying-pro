@@ -1,9 +1,9 @@
 {
-  "version": 7,
-  "updatedAt": "2026-10-09",
+  "version": 8,
+  "updatedAt": "2026-11-24",
   "baseUrl": "https://blueaivideo.com/",
   "loginUrl": "https://blueaivideo.com/login?from=%252Fhome",
-  "authenticatedUrlPatterns": ["/home", "/avpAgent", "/aiCharacter"],
+  "authenticatedUrlPatterns": ["/home", "/agentlab", "/avpAgent", "/aiCharacter"],
   "humanCheckpointTexts": [
     "验证码",
     "请使用飞书扫码",

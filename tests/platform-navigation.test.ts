@@ -1,12 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { classifyPlatformNavigation, platformHomeUrl, sessionNavigationPriority } from "../src/main/platform-navigation";
 
-const authenticatedPatterns = ["/home", "/avpAgent", "/aiCharacter"];
+const authenticatedPatterns = ["/home", "/avpAgent", "/agentlab", "/aiCharacter"];
 
 describe("platform login navigation", () => {
   it("recognizes authenticated Heart pages", () => {
     expect(classifyPlatformNavigation("https://blueaivideo.com/home", authenticatedPatterns)).toBe("authenticated");
     expect(classifyPlatformNavigation("https://blueaivideo.com/avpAgent?projectId=1", authenticatedPatterns)).toBe("authenticated");
+    expect(classifyPlatformNavigation("https://blueaivideo.com/agentlab?tab=generation&projectId=1", authenticatedPatterns)).toBe("authenticated");
     expect(classifyPlatformNavigation("https://blueaivideo.com/aiCharacter", authenticatedPatterns)).toBe("authenticated");
   });
 

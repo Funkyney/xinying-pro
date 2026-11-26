@@ -169,7 +169,11 @@ project.command("create")
   .option("--resolution <value>", "分辨率；auto 表示沿用心影当前值", "auto")
   .option("--audio <boolean>", "是否生成声音", "true")
   .option("--video-format <format>", "Seedance 2.5 输出格式：mp4 或 mov", "mp4")
-  .option("--network <boolean>", "Seedance 2.5 是否开启联网搜索", "true")
+  .option("--network <boolean>", "Seedance 2.0 / 2.5 是否开启联网搜索", "true")
+  .option("--auto-portrait-audit <boolean>", "使用心影官方自动图片人像审核")
+  .option("--prompt-optimizer <boolean>", "提示词优化")
+  .option("--draft <boolean>", "480P MP4 样片模式")
+  .option("--smart-balance <boolean>", "智能均衡模式")
   .option("--portrait-ids <ids>", "心影已同步虚拟人像 ID，逗号分隔", "")
   .option("--material-order <keys>", "最终素材顺序，逗号分隔；使用 portrait:<id> 或 reference:<id>", "")
   .action((options) => {
@@ -188,6 +192,10 @@ project.command("create")
       audioEnabled: parseBoolean(options.audio),
       videoFormat: options.videoFormat.toLowerCase() as ProjectInput["videoFormat"],
       networkEnabled: parseBoolean(options.network),
+      ...(options.autoPortraitAudit !== undefined ? { autoPortraitAudit: parseBoolean(options.autoPortraitAudit) } : {}),
+      ...(options.promptOptimizer !== undefined ? { promptOptimizer: parseBoolean(options.promptOptimizer) } : {}),
+      ...(options.draft !== undefined ? { draftMode: parseBoolean(options.draft) } : {}),
+      ...(options.smartBalance !== undefined ? { smartBalance: parseBoolean(options.smartBalance) } : {}),
       portraitIds: options.portraitIds.split(",").map((item: string) => item.trim()).filter(Boolean),
       materialOrder: options.materialOrder.split(",").map((item: string) => item.trim()).filter(Boolean),
     };
@@ -209,6 +217,10 @@ project.command("update")
   .option("--audio <boolean>")
   .option("--video-format <format>")
   .option("--network <boolean>")
+  .option("--auto-portrait-audit <boolean>")
+  .option("--prompt-optimizer <boolean>")
+  .option("--draft <boolean>")
+  .option("--smart-balance <boolean>")
   .option("--portrait-ids <ids>", "心影已同步虚拟人像 ID，逗号分隔；传空字符串可清空")
   .option("--material-order <keys>", "最终素材顺序，逗号分隔；使用 portrait:<id> 或 reference:<id>")
   .action((id: string, options) => {
@@ -227,6 +239,10 @@ project.command("update")
       ...(options.audio !== undefined ? { audioEnabled: parseBoolean(options.audio) } : {}),
       ...(options.videoFormat !== undefined ? { videoFormat: options.videoFormat.toLowerCase() as ProjectInput["videoFormat"] } : {}),
       ...(options.network !== undefined ? { networkEnabled: parseBoolean(options.network) } : {}),
+      ...(options.autoPortraitAudit !== undefined ? { autoPortraitAudit: parseBoolean(options.autoPortraitAudit) } : {}),
+      ...(options.promptOptimizer !== undefined ? { promptOptimizer: parseBoolean(options.promptOptimizer) } : {}),
+      ...(options.draft !== undefined ? { draftMode: parseBoolean(options.draft) } : {}),
+      ...(options.smartBalance !== undefined ? { smartBalance: parseBoolean(options.smartBalance) } : {}),
       ...(options.portraitIds !== undefined ? { portraitIds: options.portraitIds.split(",").map((item: string) => item.trim()).filter(Boolean) } : {}),
       ...(options.materialOrder !== undefined ? { materialOrder: options.materialOrder.split(",").map((item: string) => item.trim()).filter(Boolean) } : {}),
     };

@@ -19,15 +19,19 @@
     "resolution": "1080p",
     "audioEnabled": true,
     "videoFormat": "mov",
-    "networkEnabled": true
+    "networkEnabled": true,
+    "autoPortraitAudit": true,
+    "promptOptimizer": false,
+    "draftMode": false,
+    "smartBalance": false,
+    "inspiration": {}
   },
   "materials": [
     {
       "kind": "file",
       "path": "C:\\shots\\07\\actor.png",
       "containsPerson": true,
-      "role": "character",
-      "authorizeAsPortrait": true
+      "role": "character"
     },
     {
       "kind": "file",
@@ -64,9 +68,15 @@
 - `settings`：可选。`mode` 为 `text-to-video`、`image-to-video`、`reference-to-video` 或 `first-last-frame`；其余值须符合当前心影模型能力。Seedance 2.5 支持 `videoFormat: "mp4" | "mov"` 和 `networkEnabled: boolean`；未填写时心影Pro默认使用 MP4 并开启联网搜索。
 - `materials`：数组顺序就是 APP 的最终创作顺序。Seedance 2.5 最多 30 图 / 10 视频 / 10 音频、合计 50 项；Seedance 2.0 最多 9 图 / 3 视频 / 3 音频、合计 15 项。虚拟人像计入对应的图片或视频数量。
 - `kind: file`：本地图片、视频或音频。`role` 可为 `first-frame`、`last-frame`、`character`、`scene`、`product`、`style`、`motion`、`other`。
-- `containsPerson`：结论明确时，每个图片和视频都显式填写。任意画面/帧出现真人、虚拟人物或人形角色时为 `true`；确认整项素材完全无人时为 `false`。视频必须检查覆盖全片的关键帧，不能只看封面。音频不填写该字段。
+- `autoPortraitAudit`：Seedance 2.0 / 2.5 默认 true。图片由官网自动分析、审核并辅助录入角色库，不再单独创建授权任务；提交前必须确认官网开关生效。官网注明为实验功能，请勿传入真人形象 IP；满 300 项时官网会自动删除最旧角色。含人物视频不在该功能范围内。
+- `resolution` / `networkEnabled`：当前官网的 Seedance 2.0 / 2.5 均提供 `4k` 与联网搜索；联网默认开启，实际参数会逐项回读确认。
+- `promptOptimizer`：官网提示词优化，默认 false，避免改变定稿提示词。
+- `draftMode`：样片模式，强制 480P + MP4。官网提供 7 天内二次高清渲染，当前可在原网页操作后续渲染。
+- `smartBalance`：官网“智能均衡模式”，智能调配资源降低积分消耗，可能增加生成时间。
+- `inspiration`：分类到选项名称的映射，每个分类最多一项；只使用“同步官网选项”读到的当前名称，不编造枚举。
+- `containsPerson`：启用官方自动图片审核时图片可省略。视频、或未启用该功能的图片，需要人物检查：任意帧有人为 true，确认整项无人为 false；不能只检查视频封面。音频不填。
 - `personCheck`：仅用于已经完成视觉检查但结论仍需置信度路由的图片/视频。`verdict` 为 `person`、`no-person` 或 `uncertain`，`confidence` 为 0-1，`summary` 写可见证据，视频可写 `inspectedFrames`，完整覆盖检查时写 `inspectionComplete: true`。使用该字段时可省略 `containsPerson`；APP 会先复用文件缓存，再将全部歧义项批量交给 TypeSafe JEV。JEV 不接收原图/视频，不能凭空完成视觉识别；证据不足时仍会停止。
-- `authorizeAsPortrait`：只用于图片或视频。`containsPerson: true`、`role: character` 或本字段为 `true`，任一条件都会被 APP 强制视为需要虚拟人像授权，不能按普通本地参考提交。
+- `authorizeAsPortrait`：独立授权路径的图片/视频使用。开启官方自动图片审核时，图片忽略旧清单中的此字段，不重复授权；含人物视频仍强制独立授权。
 - `kind: platform-portrait`：直接复用已同步到当前心影空间的虚拟人像。
 
-同一内容不能重复加入；提示词引用必须能在最终 `preview.orderedLabels` 中找到。图片、视频、音频分别独立编号，材料数组中的不同媒体类型可以穿插。含人图片/视频审核完成并执行 `director resolve` 后，该项必须显示 `referenceId: null` 和非空 `platformPortraitId`；否则不得提交生成。多人、背脸、远景或人物不完整的素材仍必须写为 `containsPerson: true` 并原样提交心影虚拟人像审核，不能由 Codex 提前拒绝，也不能改为 `false` 绕过；只有心影实际返回失败时才停止并报告真实原因。
+同一内容不能重复加入；提示词引用必须能在最终 `preview.orderedLabels` 中找到。图片、视频、音频独立编号，可以混排。开启官方自动图片审核时，图片保留非空 `referenceId` 和 `authorizationState: not-needed`，这是正确路径，不表示已通过审核；实际由官网处理。需要独立授权的含人物视频（及关闭自动审核时的含人图片）审核完成后必须替换为非空 `platformPortraitId`。官网审核失败时停止，不能降级绕过。

@@ -170,6 +170,8 @@ class HeartAppBridge {
           const rows = await window.xinying.platformProjects.conversations(String(value.projectId));
           return { ok: true, projectId: value.projectId, conversations: rows };
         }
+        case "generation-options":
+          return { ok: true, ...await window.xinying.generationCapabilities() };
         case "select": {
           const project = await window.xinying.platformProjects.open(
             String(value.projectId),
@@ -217,7 +219,7 @@ const bridge = new HeartAppBridge();
 
 function buildServer(): McpServer {
   const server = new McpServer({ name: "xinying-pro", version: SERVER_VERSION }, {
-    instructions: "心影Pro负责执行已完成的Seedance提示词。优先一次调用generate完成清单校验、素材上传、所有含人物图片/视频的虚拟人像授权、编号映射和批量提交；当返回successBoundary=heart-generating时立即视为成功，不继续轮询或下载。目录与人像默认读缓存，仅在用户要求刷新或缓存过期时force=true。任何生成必须由用户明确要求并传confirm=true。登录、验证码、实名、审核或付费检查不得绕过。",
+    instructions: "心影Pro负责执行已完成的Seedance提示词。优先一次调用generate完成清单校验、素材上传、官网自动图片人像审核（须开启并确认生效）、含人物视频的虚拟人像授权、编号映射和批量提交；当返回successBoundary=heart-generating时立即视为成功，不继续轮询或下载。目录与人像默认读缓存，仅在用户要求刷新或缓存过期时force=true。任何生成必须由用户明确要求并传confirm=true。登录、验证码、实名、审核或付费检查不得绕过。",
   });
 
   server.registerTool("status", {
@@ -260,9 +262,18 @@ function buildServer(): McpServer {
     try { return jsonResult(await bridge.invoke("select", input) as Record<string, unknown>); } catch (error) { return failedResult(error); }
   });
 
+  server.registerTool("generation_options", {
+    title: "读取官网生成能力与灵感镜头",
+    description: "只读查询当前登录账号的模型高级选项和灵感镜头名称；仅需使用这些预设或确认支持能力时调用。",
+    inputSchema: z.object({}),
+    annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
+  }, async () => {
+    try { return jsonResult(await bridge.invoke("generation-options") as Record<string, unknown>); } catch (error) { return failedResult(error); }
+  });
+
   server.registerTool("generate", {
     title: "用心影Pro生成",
-    description: "一次完成导演清单的素材上传、含人物图片/视频授权、编号映射和1-20条提交；全部进入生成中后立刻返回。",
+    description: "一次完成导演清单的素材上传、官方自动图片审核与含人物视频授权、编号映射和1-20条提交；全部进入生成中后立刻返回。",
     inputSchema: z.object({
       manifestPath: z.string().min(1).describe("已完成的.xinying-run.json绝对路径"),
       count: z.number().int().min(1).max(20).optional(),

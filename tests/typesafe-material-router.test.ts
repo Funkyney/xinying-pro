@@ -24,6 +24,7 @@ describe("TypeSafe material routing", () => {
     service = new XinyingService(database, paths);
     projectId = service.createProject({
       name: "素材路由",
+      autoPortraitAudit: false,
       platformWorkspaceId: "workspace-team",
       platformProjectId: "platform-project",
       platformUrl: "https://blueaivideo.com/avpAgent?projectId=platform-project&sessionId=test-session",
