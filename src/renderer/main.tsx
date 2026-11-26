@@ -5,6 +5,7 @@ import "./styles.css";
 import "./theme-light.css";
 import "./ios27-shell.css";
 import "./conversations.css";
+import "./studio-layout.css";
 
 const savedTheme = localStorage.getItem("xinying:theme");
 document.documentElement.dataset.theme = savedTheme === "dark" ? "dark" : "light";

@@ -39,6 +39,7 @@ export interface MaterialRoutingAdvisor {
 
 export interface DirectorMaterialRoutingSummary {
   nonAudio: number;
+  officialImages: number;
   explicit: number;
   cacheHits: number;
   deterministic: number;
@@ -211,12 +212,20 @@ export async function resolveDirectorMaterialRouting(
   const fileMaterials = manifest.materials
     .map((material, index) => ({ material, index }))
     .filter((entry): entry is { material: DirectorFileMaterialInput; index: number } => entry.material.kind === "file");
-  const cacheEntries = service.mediaAnalysisCache(fileMaterials.map(({ material }) => material.path));
+  const nativeImageAudit = service.directorUsesNativeImageAudit(manifest);
+  const officialImages = nativeImageAudit
+    ? fileMaterials.filter(({ material }) => /\.(?:png|jpe?g)$/i.test(material.path)) : [];
+  const officialPaths = new Set(officialImages.map(({ material }) => path.resolve(material.path).toLowerCase()));
+  // Review routing needs neither image analysis nor audio hashes. Import still
+  // validates every file and hashes it for identity/order and immutable snapshots.
+  const routingFiles = fileMaterials.filter(({ material }) => !officialPaths.has(path.resolve(material.path).toLowerCase())
+    && !/\.(?:wav|mp3)$/i.test(material.path));
+  const cacheEntries = routingFiles.length ? service.mediaAnalysisCache(routingFiles.map(({ material }) => material.path)) : [];
   const cacheByPath = new Map(cacheEntries.map((entry) => [path.resolve(entry.path).toLowerCase(), entry]));
   const materials = [...manifest.materials];
-  const nativeImageAudit = service.directorUsesNativeImageAudit(manifest);
   const summary: DirectorMaterialRoutingSummary = {
-    nonAudio: cacheEntries.filter((entry) => entry.mediaKind !== "audio").length,
+    nonAudio: cacheEntries.length + officialImages.length,
+    officialImages: officialImages.length,
     explicit: 0,
     cacheHits: 0,
     deterministic: 0,
@@ -301,10 +310,10 @@ export async function resolveDirectorMaterialRouting(
     }
   }
 
-  summary.unresolved = materials.filter((material) => material.kind === "file"
-    && cacheByPath.get(path.resolve(material.path).toLowerCase())?.mediaKind !== "audio"
-    && !(nativeImageAudit && cacheByPath.get(path.resolve(material.path).toLowerCase())?.mediaKind === "image")
-    && material.containsPerson === undefined).length;
+  summary.unresolved = routingFiles.filter(({ index }) => {
+    const material = materials[index];
+    return material.kind === "file" && material.containsPerson === undefined;
+  }).length;
 
   return { manifest: { ...manifest, materials }, summary };
 }

@@ -30,7 +30,6 @@
     {
       "kind": "file",
       "path": "C:\\shots\\07\\actor.png",
-      "containsPerson": true,
       "role": "character"
     },
     {
@@ -78,5 +77,7 @@
 - `personCheck`：仅用于已经完成视觉检查但结论仍需置信度路由的图片/视频。`verdict` 为 `person`、`no-person` 或 `uncertain`，`confidence` 为 0-1，`summary` 写可见证据，视频可写 `inspectedFrames`，完整覆盖检查时写 `inspectionComplete: true`。使用该字段时可省略 `containsPerson`；APP 会先复用文件缓存，再将全部歧义项批量交给 TypeSafe JEV。JEV 不接收原图/视频，不能凭空完成视觉识别；证据不足时仍会停止。
 - `authorizeAsPortrait`：独立授权路径的图片/视频使用。开启官方自动图片审核时，图片忽略旧清单中的此字段，不重复授权；含人物视频仍强制独立授权。
 - `kind: platform-portrait`：直接复用已同步到当前心影空间的虚拟人像。
+
+自动审核图片示例故意不填 `containsPerson`、`personCheck` 和 `authorizeAsPortrait`，无需在 Codex 侧逐图识别；APP 会验证官网开关再交付原始路径。图片审核不会创建独立授权任务。含人物视频仍填 `containsPerson: true`，由一次 `generate` 在后台自动完成角色库授权，不需要用户再点击；APP 同时保留视频手动授权入口。
 
 同一内容不能重复加入；提示词引用必须能在最终 `preview.orderedLabels` 中找到。图片、视频、音频独立编号，可以混排。开启官方自动图片审核时，图片保留非空 `referenceId` 和 `authorizationState: not-needed`，这是正确路径，不表示已通过审核；实际由官网处理。需要独立授权的含人物视频（及关闭自动审核时的含人图片）审核完成后必须替换为非空 `platformPortraitId`。官网审核失败时停止，不能降级绕过。

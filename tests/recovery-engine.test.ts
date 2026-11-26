@@ -36,6 +36,14 @@ function job(overrides: Partial<Job> = {}): Job {
 }
 
 describe("automation recovery classification", () => {
+  it("does not retry deterministic file transport limits or ambiguous handoffs", () => {
+    for (const failure of [
+      { code: "INTERNAL_ERROR", message: "Cannot transfer files larger than 50Mb to a browser not co-located with the server" },
+      { code: "LOCAL_FILE_HANDOFF_FAILED", message: "本地文件交接中断" },
+    ]) expect(classifyAutomationFailure(job(), failure)).toMatchObject({ action: "manual", maxAttempts: 0 });
+    expect(classifyAutomationFailure(job(), { code: "LOCAL_FILE_HANDOFF_UNAVAILABLE", message: "本地交接不可用" })).toMatchObject({ action: "manual", category: "page-state", maxAttempts: 0 });
+    expect(classifyAutomationFailure(job(), { code: "NEEDS_UNKNOWN", message: "心影未确认关闭自适应时长，已停止", reason: "unknown" })).toMatchObject({ action: "manual", category: "page-state", maxAttempts: 0 });
+  });
   it("retries a main-process EOF as a bounded connection recovery", () => {
     const decision = classifyThrownAutomationError(job(), new Error("write EOF"));
 

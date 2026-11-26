@@ -62,20 +62,24 @@ try {
   }));
   await window.waitForTimeout(4_500);
   await window.getByRole("button", { name: "生成工作台", exact: true }).click();
-  await window.getByRole("heading", { name: "Playwright 桌面验收" }).waitFor({ timeout: 10_000 });
+  await window.getByRole("heading", { name: "生成工作台", exact: true }).waitFor({ timeout: 10_000 });
   await window.getByText("0 / 50", { exact: true }).waitFor({ timeout: 10_000 });
   await window.getByText(/最多 50 项 · 30 图 \/ 10 视频 \/ 10 音频/).waitFor({ timeout: 10_000 });
   const advancedControls = window.locator(".advanced-generation-controls");
+  await window.getByRole("tab", { name: "高级选项", exact: true }).click();
   await advancedControls.getByRole("heading", { name: "官网高级配置" }).waitFor();
   const advancedSwitch = (name) => advancedControls.locator(".switch-row").filter({ has: window.getByText(name, { exact: true }) }).locator("input");
   if (!await advancedSwitch("自动图片人像审核").isChecked()) throw new Error("Native image review is not enabled by default");
   await advancedSwitch("样片模式").check();
+  await window.getByRole("tab", { name: "模型", exact: true }).click();
   const resolutionSelect = window.locator(".form-grid label").filter({ hasText: "分辨率" }).locator("select");
   const formatSelect = window.locator(".form-grid label").filter({ hasText: "视频格式" }).locator("select");
   if (!await resolutionSelect.isDisabled() || await resolutionSelect.inputValue() !== "480p") throw new Error("Draft mode did not lock 480p");
   if (!await formatSelect.isDisabled() || await formatSelect.inputValue() !== "mp4") throw new Error("Draft mode did not lock MP4");
   if (!await advancedSwitch("智能均衡模式").isDisabled()) throw new Error("Draft mode did not disable smart balance");
+  await window.getByRole("tab", { name: "高级选项", exact: true }).click();
   await advancedSwitch("样片模式").uncheck();
+  await window.getByRole("tab", { name: "模型", exact: true }).click();
   await window.getByRole("button", { name: "预览提交", exact: true }).click();
   const generationCount = window.locator(".generation-count-control input");
   await generationCount.waitFor({ state: "visible", timeout: 10_000 });
@@ -104,10 +108,14 @@ try {
     ["结果库", "结果库"],
     ["Codex扩展", "让 Codex 直接指挥心影Pro"],
     ["设置", "TypeSafe Jev"],
-    ["生成工作台", "Playwright 桌面验收"],
+    ["生成工作台", "生成工作台"],
   ];
   const navigationLatencyMs = {};
   for (const [buttonName, headingName] of oneClickPages) {
+    if (await window.locator(".global-tabbar.compact").count()) {
+      await window.locator(".global-tabbar.compact .global-tab-item.active").click();
+      await window.locator(".global-tabbar:not(.compact)").waitFor({ state: "visible" });
+    }
     const startedAt = Date.now();
     const destination = window.getByRole("button", { name: buttonName, exact: true });
     if (await destination.count() === 0) {

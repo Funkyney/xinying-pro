@@ -54,7 +54,31 @@ function unresolvedMaterials(preparation: DirectorRunPreparation) {
     material.referenceId && material.authorizationState !== "not-needed");
 }
 
-export async function runDirectorManifest(
+const inFlightRuns = new WeakMap<XinyingService, Map<string, {
+  projectId: string; count: number; promise: ReturnType<typeof executeDirectorManifest>;
+}>>();
+
+/** Share a pending request before routing/authorization, not just at submission. */
+export function runDirectorManifest(service: XinyingService, manifest: DirectorManifest, options: DirectorRunOptions) {
+  const requestId = options.requestId?.trim();
+  if (!requestId) return executeDirectorManifest(service, manifest, options);
+  let runs = inFlightRuns.get(service);
+  if (!runs) { runs = new Map(); inFlightRuns.set(service, runs); }
+  const count = options.count ?? manifest.count;
+  const existing = runs.get(requestId);
+  if (existing) {
+    if (existing.projectId !== manifest.projectId || existing.count !== count) {
+      return Promise.reject(new AppError("DIRECTOR_RUN_KEY_CONFLICT", "同一生成请求正在执行，项目或数量不一致；已停止以防止重复扣费"));
+    }
+    return existing.promise;
+  }
+  const promise = executeDirectorManifest(service, manifest, { ...options, requestId })
+    .finally(() => { if (runs!.get(requestId)?.promise === promise) runs!.delete(requestId); });
+  runs.set(requestId, { projectId: manifest.projectId, count, promise });
+  return promise;
+}
+
+async function executeDirectorManifest(
   service: XinyingService,
   manifest: DirectorManifest,
   options: DirectorRunOptions,

@@ -169,4 +169,30 @@ describe("director run", () => {
     expect(service.listJobEvents(interrupted.id).some((event) => event.code === "DIRECTOR_AUTO_RESUMED")).toBe(true);
     database.close();
   });
+
+  it("shares an in-flight request before preparation and rejects a conflicting count", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "xinying-director-single-flight-"));
+    temporaryDirectories.push(directory);
+    const paths = createAppPaths(directory), database = new XinyingDatabase(paths.databasePath);
+    const service = new XinyingService(database, paths);
+    const project = service.createProject({ name: "并发请求", mode: "text-to-video", platformProjectId: "remote", platformWorkspaceId: "space", platformUrl: "https://blueaivideo.com/agentlab?projectId=remote&sessionId=s" });
+    const manifest: DirectorManifest = { version: 1, projectId: project.id, prompt: "固定镜头", count: 1, replaceMaterials: true, materials: [] };
+    let ready!: () => void;
+    const ensureAppReady = vi.fn(() => new Promise<void>(resolve => { ready = resolve; }));
+    const prepare = vi.spyOn(service, "prepareDirectorRun");
+    const options = { requestId: "one-click", timeoutMs: 10_000, ensureAppReady, sleep: async () => {
+      service.listJobsByKind("generation").forEach(job => service.updateJob(job.id, { status: "running", platformTaskId: "chat:remote:s:0" }));
+    } };
+    try {
+      const first = runDirectorManifest(service, manifest, options);
+      const second = runDirectorManifest(service, manifest, options);
+      expect(first).toBe(second);
+      await expect(runDirectorManifest(service, manifest, { ...options, count: 2 })).rejects.toMatchObject({ code: "DIRECTOR_RUN_KEY_CONFLICT" });
+      ready();
+      const [a, b] = await Promise.all([first, second]);
+      expect(a.batch.jobs).toEqual(b.batch.jobs);
+      expect(ensureAppReady).toHaveBeenCalledOnce(); expect(prepare).toHaveBeenCalledOnce();
+      expect(service.listJobsByKind("generation")).toHaveLength(1);
+    } finally { database.close(); }
+  });
 });

@@ -1,15 +1,17 @@
 import { useEffect, useRef, useState } from "react";
-import { History, PencilLine, RefreshCw } from "lucide-react";
+import { PencilLine, RefreshCw } from "lucide-react";
 import type { ConversationHistoryEntry, ConversationHistoryPage, ConversationHistorySource } from "../../shared/contracts";
 import { historyMaterialPreviewUrls } from "../../shared/conversation-history";
 import { HistoryPreview } from "./HistoryPreview";
 import { HistoryResultCover, HistoryResultViewer } from "./HistoryResultPreview";
+import { StudioDisclosure, useStudioDisclosure } from "./StudioDisclosure";
 export { HistoryPreview } from "./HistoryPreview";
 
 export function ConversationHistory({ projectId, sessionId, selectedEventId, disabled, onEdit }: {
   projectId: string; sessionId: string; selectedEventId?: string; disabled?: boolean;
   onEdit: (entry: ConversationHistoryEntry) => void;
 }) {
+  const [expanded, setExpanded] = useStudioDisclosure("history");
   const [history, setHistory] = useState<ConversationHistoryPage | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -39,18 +41,20 @@ export function ConversationHistory({ projectId, sessionId, selectedEventId, dis
   };
   useEffect(() => {
     setHistory(null); setHoveredId(null); setPreview(null); inFlight.current = false;
-    void load();
+    if (expanded) void load();
     return () => { sequence.current += 1; };
   }, [projectId, sessionId]);
+  useEffect(() => {
+    if (expanded && !history && !inFlight.current) void load();
+  }, [expanded]);
   useEffect(() => {
     const pause = () => setHoveredId(null);
     window.addEventListener("blur", pause); document.addEventListener("visibilitychange", pause);
     return () => { window.removeEventListener("blur", pause); document.removeEventListener("visibilitychange", pause); };
   }, []);
 
-  return <section className="conversation-history" aria-label="当前对话的生成记录" aria-busy={loading}>
-    <div className="conversation-history-heading"><div><History size={18} /><h2>当前对话的生成记录</h2><span>{history ? `${history.entries.length}${history.hasMore ? "+" : ""} 条` : ""}</span></div>
-      <button type="button" className="button ghost" disabled={loading || disabled || !sessionId} onClick={() => void load()}><RefreshCw size={14} className={loading ? "spinning" : ""} />刷新记录</button></div>
+  return <StudioDisclosure className="conversation-history" title="当前对话的生成记录" summary={history ? `${history.entries.length}${history.hasMore ? "+" : ""} 条记录` : "按需查看 · 重新编辑"} expanded={expanded} onExpandedChange={next => { setExpanded(next); if (!next) { setHoveredId(null); setPreview(null); } }} actions={
+      <button type="button" className="button ghost" disabled={loading || disabled || !sessionId} onClick={() => void load()}><RefreshCw size={14} className={loading ? "spinning" : ""} />刷新记录</button>}>
     <p className="conversation-history-hint">悬停视频静音播放，点击封面放大查看。选择“重新编辑”回填提示词、官网原素材和参数，不提交生成。</p>
     {error && <div className="project-conversation-error" role="alert">{error}<button type="button" disabled={loading || disabled} onClick={() => void load()}>重试</button></div>}
     {!history && loading && <p role="status" className="conversation-history-hint">正在读取所选对话…</p>}
@@ -65,7 +69,7 @@ export function ConversationHistory({ projectId, sessionId, selectedEventId, dis
     </article>)}</div>}
     {history?.hasMore && <button type="button" className="button ghost history-load-more" disabled={loading || disabled} onClick={() => void load(history.beforeEventId ?? undefined)}>{loading ? "正在读取…" : "加载更早记录"}</button>}
     {preview?.projectId === projectId && preview.sessionId === sessionId && <HistoryResultViewer key={preview.entry.eventId} entry={preview.entry} disabled={disabled} onClose={() => setPreview(null)} onEdit={() => { setPreview(null); setHoveredId(null); onEdit(preview.entry); }} />}
-  </section>;
+  </StudioDisclosure>;
 }
 
 export function HistoryMaterialTray({ source, onExit }: { source: ConversationHistorySource; onExit: () => void }) {

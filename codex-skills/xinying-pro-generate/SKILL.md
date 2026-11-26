@@ -11,7 +11,7 @@ description: Execute finished Seedance prompts through 心影Pro with ordered im
 
 - 只有用户明确说“用心影生成/提交/生成 N 条”等会创建任务时，才可运行带 `--confirm` 的提交命令。讨论、改提示词和预览不算授权。
 - 未指定数量时只生成 1 条；不得擅自增加，一次最多 20 条。
-- 将人物素材送审前，确认它是用户有权使用的原创、公司或已授权素材。第三方真人、名人、来源不明或授权不清时暂停询问。
+- 本次生成授权覆盖清单内用户有权使用的原创、公司或已授权素材，不要逐张重复询问或要求用户手点授权。出现第三方真人、名人、来源不明或授权不清的具体证据时再暂停询问。
 - 图片优先开启官网 `autoPortraitAudit: true`，作为参考图上传并由官网自动分析、审核、录入角色库；不要重复创建图片虚拟人像授权任务。APP 必须在上传/提交前确认官方开关实际生效，缺失或审核失败就停止，不能关闭审核兜底。
 - 官网自动审核仅覆盖图片。视频的任意帧包含人物时仍须虚拟人像授权；不支持图片自动审核的模型也保留独立授权。不能改角色字段绕过审核。
 - 官网说明自动图片审核为实验功能、可能失败；请勿传入真人形象 IP。角色库满 300 项时官网会自动删除最旧素材。开启视为同意官网《虚拟人像素材合规承诺与授权确认书》。
@@ -23,7 +23,7 @@ description: Execute finished Seedance prompts through 心影Pro with ordered im
 
 收集每个 `@图N / @视频N / @音频N` 对应的绝对路径，顺序以提示词意图为准，不能依赖文件系统排序。优先复用镜头文件夹中已有的 `.xinying-run.json` 和其中的 `projectId`。
 
-先检查当前 Codex 是否已提供心影Pro MCP 工具（`status/catalog/conversations/select/generate/jobs/portraits/results`）。已提供时只调用 MCP；它会连接或自动启动心影Pro，并复用 APP 内登录态。需要查项目时先用 `catalog` 的本地缓存，只有用户要求刷新或缓存确实过期才传 `force: true`；需要复用对话时用 `conversations`，随后用 `select` 绑定精确对话。
+先检查当前 Codex 是否已提供心影Pro MCP 工具（`status/catalog/conversations/select/generate/jobs/portraits/results`）。已提供时只调用 MCP；它会连接或自动启动心影Pro，并复用 APP 内登录态。已有有效本地 `projectId` 和绑定对话时直接 `generate`，不例行调用 `status/catalog/conversations/select/portraits`，也不先校验一遍再提交一遍。确实缺少项目时才查 `catalog` 本地缓存，用户要求刷新或缓存过期才传 `force: true`；需要选择另一对话时用 `conversations`，随后用 `select` 绑定精确对话。
 
 只有当前 Codex 会话尚未加载心影Pro MCP 时，才使用本 Skill 的 CLI 启动器；不要求用户下载源码或执行 `npm install`：
 
@@ -44,11 +44,15 @@ XINYING_CLI="${CODEX_HOME:-$HOME/.codex}/skills/xinying-pro-generate/scripts/xin
 
 Seedance 2.0 / 2.5 默认在清单设置 `autoPortraitAudit: true`。图片可以省略 `containsPerson` 和 `personCheck`，无需为了路由而逐张看图、查询人物缓存或调用 JEV，也不要填写 `authorizeAsPortrait: true`。图片仍可标为 `role: character`，保持创作语义与素材顺序；出现在 `preview.references` 是此模式的正常状态，不表示绕过审核。
 
+这条图片路径不需要人工点授权、单独上传角色库或等待角色库同步。旧清单里即使保留 `containsPerson: true` / `authorizeAsPortrait: true`，APP 也应按已开启的官网图片审核路径执行，不能因此重复送审。上传文件直接交给 APP 的同机路径接口，不把图片转成 Base64 放进 MCP；批量超过 50 MiB 也不要求用户压缩，但仍受官网各素材限制约束。
+
 仅对视频，或用户关闭/模型不支持自动图片审核时的图片，一次执行 `media cache --file` 查询 SHA-256 缓存。命中则复用；未命中时视频检查首帧、尾帧和覆盖全片的关键帧，图片逐张检查。无法检查时停止，不猜测无人。
 
 这些需独立路由的素材，结论明确时填写 `containsPerson`：有人为 `true` 并设 `authorizeAsPortrait: true`；确认整项无人为 `false`。结论不稳时不要猜布尔值，可填写实际视觉证据 `personCheck: { verdict, confidence, summary, inspectedFrames, inspectionComplete }`，由 APP 的缓存/规则/JEV 路由。JEV 不读取媒体文件，不能代替视觉检查。
 
 多人、背脸、远景或人物不完整时不要在 Codex 侧预判审核失败；仍交官网相应审核流程。只有官网实际拒绝才报告原因，不能把含人视频降级为普通视频上传。
+
+视频保留 APP 卡片上的手动授权入口。自动生成时，含人物视频的角色库上传、合规勾选、审核等待和回绑由 APP 在后台自动执行，不再要求用户逐项手点；官网明确拒绝、登录失效或最终 `needs-human` 时才提示用户处理。当前官网帮助仍注明含人视频需录入角色库，不能把图片开关解释成视频已获审核。
 
 素材上限：Seedance 2.5 最多 30 图、10 视频、10 音频，合计最多 50 项，视频和音频总时长各不超过 30 秒；Seedance 2.0 最多 9 图、3 视频、3 音频，合计最多 15 项。
 

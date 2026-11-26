@@ -105,6 +105,7 @@ try {
   await sidebar.locator('.project-conversation-item.selected').filter({ hasText: "城市漫游" }).waitFor();
   assert.equal(await page.locator(".prompt-panel textarea").inputValue(), "切换对话时必须保留的本地提示词");
   const historyPanel = page.getByRole("region", { name: "当前对话的生成记录", exact: true });
+  await historyPanel.locator(".studio-disclosure-toggle").click();
   await historyPanel.getByText("session-second 的历史生成 @图1", { exact: true }).first().waitFor();
   assert.equal(await historyPanel.getByText("session-first 的历史生成 @图1", { exact: true }).count(), 0);
   const firstCover = historyPanel.locator(".conversation-history-cover").first();

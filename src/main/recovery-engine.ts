@@ -77,6 +77,10 @@ export function classifyAutomationFailure(job: Job, failure: RecoveryFailure): R
   if (PERMANENT_CODES.has(failure.code)) {
     return { action: "fail", category: "permanent", code: failure.code, message: failure.message, delayMs: 0, maxAttempts: 0, source: "rules" };
   }
+  if (["LOCAL_FILE_HANDOFF_FAILED", "LOCAL_FILE_HANDOFF_UNAVAILABLE"].includes(failure.code)
+    || /Cannot transfer files larger than 50Mb|Cannot set buffer larger than 50Mb|心影未确认关闭自适应时长|心影未接受时长参数/i.test(failure.message)) {
+    return { action: "manual", category: "page-state", code: failure.code, message: failure.message, delayMs: 0, maxAttempts: 0, source: "rules" };
+  }
   if (failure.reason === "login" || /登录|扫码|login|unauthorized|401|403/.test(normalized)) {
     return { action: "manual", category: "login", code: failure.code, message: failure.message, delayMs: 0, maxAttempts: 0, source: "rules" };
   }

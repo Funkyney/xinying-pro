@@ -25,6 +25,7 @@ import type {
 } from "../shared/contracts";
 import type { AppPaths } from "../core/paths";
 import { AppError } from "../core/errors";
+import { setLocalInputFiles } from "./local-file-upload";
 import { generationOptions } from "../shared/generation-options";
 import { parseGenerationCapabilities } from "../shared/generation-capabilities";
 import { historyMaterialsMatch, historySourceMatches, parseConversationHistory } from "../shared/conversation-history";
@@ -1097,7 +1098,7 @@ export class PlaywrightXinyingAdapter {
         if (!firstLast && await input.getAttribute("multiple") !== null) {
           while (cursor + run.length < local.length && local[cursor + run.length].kind === item.kind) run.push(local[cursor + run.length]);
         }
-        await input.setInputFiles(run.map((selection) => selection.reference!.filePath));
+        await setLocalInputFiles(page, input, run.map((selection) => selection.reference!.filePath));
         const expected = historyMaterialSlots.reduce((sum, key) => sum + before[key].length, 0) + run.length;
         if (!await this.waitForMaterialCount(page, expected)) return { reason: "approval", message: `新素材上传未完成或被心影拒绝：${run.map((selection) => selection.name).join("、")}` };
         // The website renders a deletable upload placeholder before it commits
@@ -2430,13 +2431,21 @@ export class PlaywrightXinyingAdapter {
     return page;
   }
 
-  private async uploadedMaterialCount(page: Page): Promise<number> {
+  private async uploadedMaterialTiles(page: Page): Promise<Locator | null> {
     const list = await firstVisible(page, this.selectors.generation.materialList);
-    if (!list) return 0;
-    return list.locator(":scope > *").evaluateAll((elements) => {
-      const staticLabels = new Set(["+V角色", "图片", "视频", "音频", "首帧", "尾帧"]);
-      return elements.filter((element) => !staticLabels.has((element.textContent ?? "").trim())).length;
-    });
+    if (!list) return null;
+    const cards = list.locator(":scope > .ContentChatUploadItem");
+    // New conversations briefly mount upload controls, skeletons and helper
+    // nodes here. They are not selected media. Delete controls can also be
+    // mounted only on hover, so their presence must not be the sole identity.
+    return list.locator(":scope > [data-material-key]")
+      .or(cards.filter({ has: page.locator(".content-preview, .content-delete, .upload-progress") }))
+      .or(cards.filter({ hasText: /^(?:图|视频|音频)\s*\d+(?:\s*\/\s*\d+)?(?:\s|$)/ }))
+      .filter({ visible: true });
+  }
+
+  private async uploadedMaterialCount(page: Page): Promise<number> {
+    return (await this.uploadedMaterialTiles(page))?.count() ?? 0;
   }
 
   private async uploadedMaterialLabels(page: Page): Promise<string[]> {
@@ -2461,14 +2470,22 @@ export class PlaywrightXinyingAdapter {
   }
 
   private async clearUploadedMaterials(page: Page): Promise<void> {
-    const list = await firstVisible(page, this.selectors.generation.materialList);
-    if (!list) return;
-    for (let guard = 0; guard < 60; guard += 1) {
-      const material = list.locator(":scope > .ContentChatUploadItem").filter({ has: page.locator(".content-delete") }).last();
-      if ((await material.count()) === 0) break;
+    const deadline = Date.now() + 15_000;
+    for (let guard = 0; guard < 60 && Date.now() < deadline; guard += 1) {
+      const materials = await this.uploadedMaterialTiles(page);
+      const before = materials ? await materials.count() : 0;
+      if (!before) return;
+      const material = materials!.last();
       const remove = material.locator(".content-delete").first();
+      if (!(await remove.count())) await material.hover({ timeout: 1_500 }).catch(() => undefined);
+      await remove.waitFor({ state: "attached", timeout: Math.min(2_000, Math.max(1, deadline - Date.now())) }).catch(() => undefined);
+      if (!(await remove.count())) break;
       await remove.evaluate((element) => (element as HTMLElement).click());
-      await page.waitForTimeout(100);
+      // Wait for this removal to be acknowledged by Vue. Repeatedly clicking
+      // the same stale card during a transition can race session hydration.
+      const removedBy = Math.min(deadline, Date.now() + 3_000);
+      while ((await this.uploadedMaterialCount(page)) >= before && Date.now() < removedBy) await page.waitForTimeout(50);
+      if ((await this.uploadedMaterialCount(page)) >= before) break;
     }
     if ((await this.uploadedMaterialCount(page)) !== 0) throw new AppError("DRAFT_CLEAR_FAILED", "APP 未能清空心影素材草稿");
   }
@@ -2594,7 +2611,8 @@ export class PlaywrightXinyingAdapter {
     if ((await this.uploadedMaterialCount(page)) >= expected) return true;
     const list = await this.waitForVisible(page, this.selectors.generation.materialList, 5_000);
     if (!list) return false;
-    const materials = list.locator(":scope > .ContentChatUploadItem").filter({ has: page.locator(".content-delete") });
+    const materials = await this.uploadedMaterialTiles(page);
+    if (!materials) return false;
     const failure = page.getByText(/上传失败|素材解析失败|文件不支持/).filter({ visible: true }).first();
     const state = await waitForReadyOrFailure(materials.nth(Math.max(0, expected - 1)), failure, 90_000);
     return state === "ready" && (await this.uploadedMaterialCount(page)) >= expected;
@@ -2663,15 +2681,29 @@ export class PlaywrightXinyingAdapter {
       if (!popover) return { reason: "page-changed", message: "心影参数面板未打开" };
       // The parameter popover now also contains smart balance. Only the
       // duration header's adaptive switch may be changed when setting seconds.
-      const adaptive = popover.locator("div").filter({ hasText: /^自适应$/ }).locator("input[role='switch']").first();
+      // Element Plus can put role/aria-checked on the switch wrapper rather
+      // than its hidden input. Locate only the adaptive-duration switch, never
+      // the separate smart-balance switch in this same popover.
+      let adaptive = popover.getByRole("switch", { name: /^自适应(?:时长)?$/ }).first();
+      if (!(await adaptive.count())) {
+        const label = popover.getByText("自适应", { exact: true }).first();
+        adaptive = label.locator("xpath=..").locator("[role='switch']").first();
+      }
       if ((await adaptive.count()) > 0 && (await adaptive.getAttribute("aria-checked")) === "true") {
-        await clickDom(adaptive.locator("xpath=.."));
-        await page.waitForTimeout(150);
+        await adaptive.evaluate(control => {
+          const clickable = control.closest(".el-switch") ?? control;
+          if (clickable.getAttribute("aria-disabled") !== "true") (clickable as HTMLElement).click();
+        });
       }
       const durationInput = popover.locator("input[role='spinbutton'], .duration-input input").first();
       if ((await durationInput.count()) === 0) return { reason: "page-changed", message: "找不到心影时长输入框" };
-      if ((await durationInput.getAttribute("aria-disabled")) === "true" || await durationInput.isDisabled()) {
-        return { reason: "page-changed", message: "心影时长仍处于自适应或不可编辑状态，已停止提交" };
+      const editable = async () => (await durationInput.getAttribute("aria-disabled")) !== "true"
+        && await durationInput.isEditable()
+        && (!(await adaptive.count()) || (await adaptive.getAttribute("aria-checked")) !== "true");
+      const editableDeadline = Date.now() + 3_000;
+      while (!(await editable()) && Date.now() < editableDeadline) await page.waitForTimeout(100);
+      if (!(await editable())) {
+        return { reason: "unknown", message: "心影未确认关闭自适应时长，或当前时长不可编辑；本次未点击生成，请检查原网页时长设置后恢复原任务" };
       }
       await durationInput.evaluate((input, nextDuration) => {
         const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
@@ -2680,9 +2712,11 @@ export class PlaywrightXinyingAdapter {
         input.dispatchEvent(new Event("change", { bubbles: true }));
         input.dispatchEvent(new FocusEvent("blur", { bubbles: true }));
       }, duration);
-      await page.waitForTimeout(300);
-      if (Number(await durationInput.inputValue()) !== duration || !durationMatchesSummary(await toggle.innerText(), duration)) {
-        return { reason: "page-changed", message: `心影未接受时长参数：${duration} 秒` };
+      const confirmed = async () => Number(await durationInput.inputValue()) === duration && durationMatchesSummary(await toggle.innerText(), duration);
+      const confirmationDeadline = Date.now() + 3_000;
+      while (!(await confirmed()) && Date.now() < confirmationDeadline) await page.waitForTimeout(100);
+      if (!(await confirmed())) {
+        return { reason: "unknown", message: `心影未接受时长参数：${duration} 秒；本次未点击生成，请检查原网页参数后恢复原任务` };
       }
     }
 
@@ -2982,7 +3016,7 @@ export class PlaywrightXinyingAdapter {
         if (!input || (await input.count()) === 0) {
           return { status: "needs-human", checkpoint: { reason: "page-changed", message: `找不到心影参考图上传入口；尚未上传 @图${index + 1}` } };
         }
-        await input.setInputFiles(orderedReferences[index].filePath);
+        await setLocalInputFiles(page, input, orderedReferences[index].filePath);
         await page.waitForTimeout(1_000);
         const failure = page.getByText(/上传失败|素材解析失败|文件不支持/).filter({ visible: true }).first();
         if ((await failure.count()) > 0) {
@@ -3060,7 +3094,7 @@ export class PlaywrightXinyingAdapter {
         }
         const supportsMultiple = (await input.getAttribute("multiple")) !== null;
         const uploadRun = supportsMultiple ? compatibleRun : compatibleRun.slice(0, 1);
-        await input.setInputFiles(uploadRun.map((entry) => entry.reference.filePath));
+        await setLocalInputFiles(page, input, uploadRun.map((entry) => entry.reference.filePath));
         materialCount += uploadRun.length;
         if (!(await this.waitForMaterialCount(page, materialCount))) {
           await this.clearUploadedMaterials(page).catch(() => undefined);
@@ -3295,7 +3329,7 @@ export class PlaywrightXinyingAdapter {
     const input = await firstExistingWithin(dialog, ["input[type='file']"])
       ?? await firstExisting(page, this.selectors.portrait.uploadInput);
     if (!input) return { status: "needs-human", checkpoint: { reason: "page-changed", message: "找不到虚拟人像图片/视频上传控件" } };
-    await input.setInputFiles(portrait.filePath);
+    await setLocalInputFiles(page, input, portrait.filePath);
     const uploadTimeoutMs = portrait.mimeType.startsWith("video/") ? 180_000 : 90_000;
     const failure = dialog.getByText(/上传失败|文件不支持|素材解析失败|图片校验失败|视频校验失败/).filter({ visible: true }).first();
     const targetRow = formRows.nth(beforeRowCount);
@@ -3419,7 +3453,7 @@ export class PlaywrightXinyingAdapter {
       ?? await firstExisting(page, this.selectors.portrait.uploadInput);
     if (!input) return finishAll({ status: "needs-human", checkpoint: { reason: "page-changed", message: "找不到虚拟人像图片/视频上传控件" } });
 
-    await input.setInputFiles(entries.map(({ portrait }) => portrait.filePath));
+    await setLocalInputFiles(page, input, entries.map(({ portrait }) => portrait.filePath));
     const hasVideo = entries.some(({ portrait }) => portrait.mimeType.startsWith("video/"));
     const uploadTimeoutMs = hasVideo ? 240_000 : 120_000;
     const failure = dialog.getByText(/上传失败|文件不支持|素材解析失败|图片校验失败|视频校验失败/).filter({ visible: true }).first();

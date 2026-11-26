@@ -383,6 +383,7 @@ export class XinyingService {
   }
 
   private rememberDirectorMediaAnalyses(manifest: DirectorManifest): void {
+    const nativeImageAudit = this.directorUsesNativeImageAudit(manifest);
     const statement = this.database.db.prepare(`INSERT INTO media_analysis_cache
       (sha256, mime_type, contains_person, checked_at) VALUES (?, ?, ?, ?)
       ON CONFLICT(sha256) DO UPDATE SET
@@ -397,7 +398,7 @@ export class XinyingService {
       for (const material of manifest.materials) {
         if (material.kind !== "file" || material.containsPerson === undefined) continue;
         const mimeType = mimeFromExtension(material.path);
-        if (mediaKindFromMime(mimeType) === "audio") continue;
+        if (mediaKindFromMime(mimeType) === "audio" || nativeImageAudit && mimeType.startsWith("image/")) continue;
         statement.run(hashFile(material.path), mimeType, material.containsPerson ? 1 : 0, timestamp);
       }
     });

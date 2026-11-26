@@ -2,6 +2,7 @@ import { useMemo, useRef, useState } from "react";
 import { Image as ImageIcon, Music2, Plus, RefreshCw, Trash2, Upload, UserRoundCheck, Video } from "lucide-react";
 import type { PlatformPortrait, ReferenceAsset, ReferenceMediaKind, SharedMediaAsset } from "../../shared/contracts";
 import { portraitMaterialKey, referenceMaterialKey } from "../../shared/material-order";
+import { StudioDisclosure, useStudioDisclosure } from "./StudioDisclosure";
 
 type LibraryCategory = "all" | "portrait" | ReferenceMediaKind;
 
@@ -40,6 +41,7 @@ function MediaPreview({ asset }: { asset: SharedMediaAsset }) {
 }
 
 export function SharedMaterialLibrary(props: SharedMaterialLibraryProps) {
+  const [expanded, setExpanded] = useStudioDisclosure("shared-library");
   const [category, setCategory] = useState<LibraryCategory>("all");
   const [query, setQuery] = useState("");
   const pendingRef = useRef(new Set<string>());
@@ -100,9 +102,9 @@ export function SharedMaterialLibrary(props: SharedMaterialLibraryProps) {
   };
 
   return (
-    <section className="panel shared-material-library">
+    <StudioDisclosure className="shared-material-library" title="共享素材库" summary={`${counts.all} 项可复用素材 · 需要时展开`} expanded={expanded} onExpandedChange={setExpanded}>
       <div className="panel-heading compact">
-        <div><span className="eyebrow">SHARED MATERIAL LIBRARY</span><h2>共享素材库</h2><p>图片、视频、音频跨项目复用；虚拟人像按当前心影空间同步。点击卡片即可加入或移出上方创作顺序。</p></div>
+        <div><p>图片、视频、音频跨项目复用；虚拟人像按当前心影空间同步。点击卡片即可加入或移出上方创作顺序。</p></div>
         <div className="portrait-toolbar">
           <input className="portrait-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索素材或角色名称…" />
           <button className="button ghost" onClick={props.onSyncPortraits}><RefreshCw size={15} />同步人像</button>
@@ -133,6 +135,6 @@ export function SharedMaterialLibrary(props: SharedMaterialLibraryProps) {
         {!visibleEntries.length && <div className="shared-library-empty"><Plus size={24} /><strong>当前分类还没有素材</strong><span>{category === "portrait" ? "点击“同步人像”读取当前心影空间的授权角色。" : "点击“上传共享素材”导入图片、视频或音频。"}</span></div>}
       </div>
       {entries.length > visibleEntries.length && <p className="shared-library-limit">当前显示前 120 项；可通过分类或搜索快速定位其余素材。</p>}
-    </section>
+    </StudioDisclosure>
   );
 }

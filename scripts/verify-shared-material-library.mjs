@@ -66,6 +66,7 @@ try {
   await page.getByRole("button", { name: "生成工作台", exact: true }).click();
   const libraryPanel = page.locator(".shared-material-library");
   await libraryPanel.waitFor({ state: "visible", timeout: 15_000 });
+  await libraryPanel.locator(".studio-disclosure-toggle").click();
 
   const tabText = await libraryPanel.locator(".shared-library-tabs").innerText();
   for (const expected of ["全部", "5", "虚拟人像", "2", "图片", "1", "视频", "1", "音频", "1"]) {

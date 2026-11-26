@@ -147,4 +147,44 @@ describe("TypeSafe material routing", () => {
     expect(result.manifest.materials[0]).toMatchObject({ containsPerson: true, authorizeAsPortrait: true });
     expect(result.summary).toMatchObject({ deterministic: 1, unresolved: 0 });
   });
+
+  it("skips image and audio analysis entirely when official image review is enabled", async () => {
+    const input = manifest([
+      { kind: "file", path: fixture("actor.JPG"), role: "character", containsPerson: true, authorizeAsPortrait: true },
+      { kind: "file", path: fixture("scene.png") },
+      { kind: "file", path: fixture("voice.wav") },
+    ]);
+    input.settings = { autoPortraitAudit: true };
+    const cache = vi.spyOn(service, "mediaAnalysisCache");
+    const advisor = { assess: vi.fn(async () => []) };
+    const result = await resolveDirectorMaterialRouting(service, input, advisor);
+    expect(cache).not.toHaveBeenCalled(); expect(advisor.assess).not.toHaveBeenCalled();
+    expect(result.summary).toMatchObject({ officialImages: 2, nonAudio: 2, unresolved: 0 });
+    const prepared = service.prepareDirectorRun(result.manifest);
+    expect(prepared.authorizationReferenceIds).toEqual([]);
+    expect(prepared.materials.every(m => m.authorizationState === "not-needed")).toBe(true);
+    expect(prepared.preview.ready).toBe(true);
+    expect(service.listJobsByKind("portrait-review")).toHaveLength(0);
+  });
+
+  it("still routes only the video in a mixed automatic-image manifest", async () => {
+    const video = fixture("actor.mp4");
+    const input = manifest([{ kind: "file", path: fixture("scene.jpg") }, { kind: "file", path: video, containsPerson: true }]);
+    input.settings = { autoPortraitAudit: true };
+    const cache = vi.spyOn(service, "mediaAnalysisCache");
+    const result = await resolveDirectorMaterialRouting(service, input, null);
+    expect(cache).toHaveBeenCalledExactlyOnceWith([video]);
+    expect(result.summary).toMatchObject({ officialImages: 1, explicit: 1, unresolved: 0 });
+    expect(result.manifest.materials[1]).toMatchObject({ containsPerson: true, authorizeAsPortrait: true });
+    expect(service.prepareDirectorRun(result.manifest).authorizationReferenceIds).toHaveLength(1);
+  });
+
+  it("does not mistake the image switch for authorization of an uninspected video", async () => {
+    const input = manifest([{ kind: "file", path: fixture("unknown.mp4") }]);
+    input.settings = { autoPortraitAudit: true };
+    const result = await resolveDirectorMaterialRouting(service, input, null);
+    expect(result.summary.unresolved).toBe(1);
+    expect(() => service.prepareDirectorRun(result.manifest)).toThrow(/人物检查/);
+    expect(service.listJobs()).toHaveLength(0);
+  });
 });

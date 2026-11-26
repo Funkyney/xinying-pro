@@ -176,6 +176,7 @@ export class JobWorker {
       job = this.service.updateJob(job.id, {
         status: "submitting",
         automationStage: job.kind === "generation" ? "preparing" : "authorizing",
+        progressLabel: job.kind === "generation" ? "正在准备网页、参数和参考素材；心影尚未确认接收" : "正在上传并提交虚拟人像审核",
         recoveryState: job.recoveryState === "recovering" ? "recovering" : "none",
         nextRetryAt: null,
         submittedAt: job.submittedAt ?? new Date().toISOString(),

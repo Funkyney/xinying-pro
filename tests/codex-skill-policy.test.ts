@@ -57,4 +57,12 @@ describe("xinying-pro-generate completion policy", () => {
     expect(source).toContain("networkEnabled: true");
     expect(source).toContain("高级配置");
   });
+
+  it("avoids per-image approvals and repeated discovery but retains a manual video entry", () => {
+    expect(source).toContain("不例行调用 `status/catalog/conversations/select/portraits`");
+    expect(source).toContain("不需要人工点授权、单独上传角色库或等待角色库同步");
+    expect(source).toContain("视频保留 APP 卡片上的手动授权入口");
+    expect(source).toContain("由 APP 在后台自动执行");
+    expect(source).toContain("不把图片转成 Base64 放进 MCP");
+  });
 });

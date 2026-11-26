@@ -165,7 +165,7 @@ p { color: var(--muted); line-height: 1.6; }
 .empty-drop strong { font-size: 12px; }.empty-drop span { color: var(--muted); font-size: 10px; }
 .studio-columns { display: grid; grid-template-columns: 1.45fr 1fr; gap: 14px; }
 .prompt-panel textarea { width: calc(100% - 40px); height: 210px; margin: 0 20px; padding: 14px; resize: vertical; line-height: 1.7; }
-.prompt-footer { display: flex; justify-content: space-between; padding: 9px 21px 17px; color: #6f7688; font-size: 9px; }
+.prompt-footer { display: flex; flex-wrap: wrap; gap: 6px 12px; justify-content: space-between; padding: 9px 21px 17px; color: #6f7688; font-size: 9px; }
 .parameters-panel { padding-bottom: 17px; }
 .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 13px; padding: 0 20px 15px; }
 .form-stack { display: grid; gap: 12px; padding: 0 20px 13px; }

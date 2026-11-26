@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { PlaywrightXinyingAdapter } from "../src/main/playwright-adapter";
 import * as composer from "../src/main/history-composer";
+import * as localUpload from "../src/main/local-file-upload";
 import { parseConversationHistory } from "../src/shared/conversation-history";
 import { historyMaterialOrder, resolveHistoryMaterials, updateHistoryMaterialSelection } from "../src/shared/history-material-order";
 import type { Job, ReferenceAsset } from "../src/shared/contracts";
@@ -13,7 +14,7 @@ const reference = { id: "new", projectId: "local", name: "新图", mimeType: "im
 const job = (): Job => ({ promptSnapshot: "@图1 @图2 @图3", references: [reference], parameters: { platformUrl: "https://blueaivideo.com/agentlab?projectId=remote&sessionId=session", mode: "reference-to-video", platformPortraits: [] } } as unknown as Job);
 
 describe("editable history material preparation", () => {
-  beforeEach(() => vi.restoreAllMocks());
+  beforeEach(() => { vi.restoreAllMocks(); vi.spyOn(localUpload, "setLocalInputFiles").mockResolvedValue(); });
   it("replaces at the requested position, re-adds removed files, and never duplicates an existing selection", () => {
     expect(updateHistoryMaterialSelection(["a", "b", "c"], ["c"], "a")).toEqual(["c", "b"]);
     expect(updateHistoryMaterialSelection(["a", "b"], ["a", "c"])).toEqual(["a", "b", "c"]);
@@ -44,7 +45,8 @@ describe("editable history material preparation", () => {
     expect(state.image[0]).toMatchObject(params.image[2]);
     expect(state.image[0]).not.toHaveProperty("_uid");
     expect(params.image[2]).not.toHaveProperty("_uid");
-    expect(input.setInputFiles).toHaveBeenCalledExactlyOnceWith(["new.png"]);
+    expect(localUpload.setLocalInputFiles).toHaveBeenCalledExactlyOnceWith(page, input, ["new.png"]);
+    expect(input.setInputFiles).not.toHaveBeenCalled();
     expect(page.goto).not.toHaveBeenCalled(); expect(page.click).not.toHaveBeenCalled();
     expect(page.waitForTimeout).toHaveBeenCalledExactlyOnceWith(200);
     expect(bridge).toHaveBeenCalledTimes(5);

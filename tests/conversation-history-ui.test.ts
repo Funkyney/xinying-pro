@@ -14,6 +14,8 @@ const button = (label: string) => [...host.querySelectorAll<HTMLButtonElement>("
 const render = (sessionId = "a") => act(() => root.render(createElement(ConversationHistory, { projectId: "local", sessionId, onEdit: edit })));
 const settle = () => act(async () => { await Promise.resolve(); });
 beforeEach(() => {
+  localStorage.clear();
+  localStorage.setItem("xinying:studio-disclosure:v1:history", "open");
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   host = document.createElement("div"); document.body.append(host); root = createRoot(host);
   history = vi.fn().mockResolvedValue(page()); edit = vi.fn();
@@ -25,6 +27,25 @@ beforeEach(() => {
   Object.defineProperty(HTMLDialogElement.prototype, "close", { configurable: true, value: function (this: HTMLDialogElement) { this.open = false; } });
 });
 afterEach(() => { act(() => root.unmount()); host.remove(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+
+it("starts collapsed without history/media requests, loads on demand and releases playback on collapse", async () => {
+  localStorage.clear();
+  history.mockResolvedValue({ ...page(), entries: [{ ...entry("123"), outputUrl: "https://example.com/123.mp4" }] });
+  render(); await settle();
+  const toggle = host.querySelector<HTMLButtonElement>('[aria-expanded]')!;
+  expect(toggle.getAttribute("aria-expanded")).toBe("false");
+  expect(history).not.toHaveBeenCalled(); expect(host.querySelector("article, img, video")).toBeNull();
+  await act(async () => toggle.click());
+  expect(history).toHaveBeenCalledTimes(1);
+  act(() => host.querySelector("article")!.dispatchEvent(new MouseEvent("mouseover", { bubbles: true })));
+  expect(host.querySelector("video")).not.toBeNull();
+  act(() => toggle.click());
+  expect(host.querySelector("video")).toBeNull();
+  expect(localStorage.getItem("xinying:studio-disclosure:v1:history")).toBe("closed");
+  await act(async () => toggle.click());
+  expect(history).toHaveBeenCalledTimes(1); expect(host.querySelector("video")).toBeNull();
+  expect(edit).not.toHaveBeenCalled();
+});
 
 it("loads the exact conversation without editing or submitting, then explicitly fills the selected record", async () => {
   render(); await settle(); expect(history).toHaveBeenCalledExactlyOnceWith("local", "a", undefined); expect(edit).not.toHaveBeenCalled();

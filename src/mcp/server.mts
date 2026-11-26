@@ -10,7 +10,7 @@ import { z } from "zod";
 type Browser = import("playwright-core").Browser;
 type Page = import("playwright-core").Page;
 
-const SERVER_VERSION = "0.1.0";
+const SERVER_VERSION = "0.2.0";
 
 function dataDir(): string {
   if (process.env.XINYING_DATA_DIR?.trim()) return path.resolve(process.env.XINYING_DATA_DIR.trim());
@@ -19,6 +19,12 @@ function dataDir(): string {
 }
 
 function automationPorts(): number[] {
+  const explicit = process.env.XINYING_CDP_PORT?.trim();
+  if (explicit) {
+    const port = Number(explicit);
+    if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error("XINYING_CDP_PORT 必须是有效的本地端口");
+    return [port];
+  }
   let marker = 0;
   try {
     marker = Number(fs.readFileSync(path.join(dataDir(), "automation-port"), "utf8").trim());
@@ -117,6 +123,7 @@ class HeartAppBridge {
     const page = browser.contexts().flatMap((context) => context.pages())
       .find((candidate) => candidate.url().startsWith("file:") || candidate.url().includes("127.0.0.1:5173"));
     if (!page) throw new Error("已连接心影Pro，但主界面尚未就绪");
+    await page.waitForFunction(() => Boolean(window.xinying?.automation?.directorRun), undefined, { timeout: 10_000 });
     return page;
   }
 
@@ -142,7 +149,7 @@ class HeartAppBridge {
               platformUrl: project.platformUrl,
               updatedAt: project.updatedAt,
             })),
-            activeJobs: jobs.filter((job) => ["queued", "preparing", "uploading", "running", "needs-human", "needs-login"].includes(job.status))
+            activeJobs: jobs.filter((job) => ["queued", "submitting", "running", "needs-human", "needs-login"].includes(job.status))
               .slice(0, 20)
               .map((job) => ({ id: job.id, projectId: job.projectId, kind: job.kind, status: job.status, progress: job.progress, progressLabel: job.progressLabel, automationStage: job.automationStage, recoveryState: job.recoveryState, nextRetryAt: job.nextRetryAt })),
           };
@@ -190,7 +197,7 @@ class HeartAppBridge {
         case "jobs": {
           const ids = Array.isArray(value.ids) ? value.ids.map(String) : [];
           const jobs = ids.length ? await Promise.all(ids.map((id) => window.xinying.jobs.status(id))) : await window.xinying.jobs.list();
-          const selected = jobs.filter((job) => ids.length || ["queued", "preparing", "uploading", "running", "needs-human", "needs-login"].includes(job.status)).slice(0, 50);
+          const selected = jobs.filter((job) => ids.length || ["queued", "submitting", "running", "needs-human", "needs-login"].includes(job.status)).slice(0, 50);
           return { ok: true, jobs: selected.map((job) => ({ id: job.id, projectId: job.projectId, kind: job.kind, status: job.status, platformTaskId: job.platformTaskId, progress: job.progress, progressLabel: job.progressLabel, automationStage: job.automationStage, recoveryState: job.recoveryState, nextRetryAt: job.nextRetryAt, lastRecoveryCode: job.lastRecoveryCode, errorCode: job.errorCode, errorMessage: job.errorMessage, requiresHumanReason: job.requiresHumanReason, updatedAt: job.updatedAt })) };
         }
         case "portraits": {
@@ -273,7 +280,7 @@ function buildServer(): McpServer {
 
   server.registerTool("generate", {
     title: "用心影Pro生成",
-    description: "一次完成导演清单的素材上传、官方自动图片审核与含人物视频授权、编号映射和1-20条提交；全部进入生成中后立刻返回。",
+    description: "一次完成有序素材上传、官网图片自动审核、含人物视频的后台自动授权和1-20条提交。图片开启autoPortraitAudit时不做本地人物识别，不要先查角色库或逐张授权；视频人物授权由APP自动执行，不要求用户逐项点击。已有本地projectId时直接调用本工具，无需例行status/catalog/select。全部进入生成中后立刻返回。",
     inputSchema: z.object({
       manifestPath: z.string().min(1).describe("已完成的.xinying-run.json绝对路径"),
       count: z.number().int().min(1).max(20).optional(),
